@@ -25,7 +25,8 @@ const ROWS_SHOWN = 10;
 export class MyRequestsComponent {
   private readonly api = inject(BulkApiService);
   private readonly plugin = inject(SailpointPluginService);
-  private readonly cfg = inject(BulkConfigService).config;
+  protected readonly cfg = inject(BulkConfigService).config;
+  protected readonly isAdmin = computed(() => this.plugin.user()?.capabilities?.isOrgAdmin ?? false);
 
   protected readonly groups = signal<BulkGroup[] | null>(null);
   protected readonly loading = signal(false);
