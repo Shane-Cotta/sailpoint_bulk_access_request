@@ -52,9 +52,18 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
   - An ORG_ADMIN can approve or reject on someone's behalf (`/v2025/generic-approvals/{id}/approve|reject`). That's recorded as a manual reassignment: the original approver is the first `reassignmentHistory[].reassignedFrom`.
   - `/v2025/generic-approvals` also returns access-request approvals, as `type: ACCESS_REQUEST_APPROVAL` (with `requestee`,
     `requestedTarget`, `assignedTo`, `approvalConfig.serialChain`, `referenceData`). Their `comments[]` (where our INC is) only
-    come back with `include-comments=true`; comment text can't be searched or filtered, so group by INC in the page. `mine=true` returns only the caller's.
+    come back with `include-comments=true`, and `assignedTo` is then left out. Comment text can't be searched or filtered, so group by INC in the page.
+  - `mine=true` returns only the caller's approvals. For a non-admin the plain list is already theirs, and `approverId=<someone else>` returns 400.
   - `generic-approvals/bulk-approve` and `bulk-reject` take at most 50 IDs and return `202 {}` even for unknown IDs, so re-read
-    to confirm. The spec marks them ORG_ADMIN-only (not yet tested as a non-admin).
+    to confirm. **A non-admin gets 403**, even for their own approvals.
+  - **Deciding as a non-admin:**
+    - Single `/{id}/approve|reject` works on the caller's own approvals and is recorded as theirs (`approvedBy`/`rejectedBy`,
+      with `actionedAs`, e.g. `ACCESS_PROFILE_OWNER`).
+    - On someone else's approval it returns 403.
+    - Reject returns 200 with the approval (the spec says 204).
+  - The list leaves `approvedBy`/`rejectedBy` empty; only the single GET has them.
+  - Item approval schemes still apply to requests a workflow submits. The requester is the workflow owner, and if that identity
+    is also the approver, ISC escalates the approval to an admin.
 - **Requesting access from a workflow:**
   - `sp:create-approval-request` breaks on one-item lists (the engine unwraps single-element arrays); use `sp:access:manage`.
   - A request takes at most 10 recipients, and nested loops are rejected, so the workflow loops over people and each request carries all the items.
