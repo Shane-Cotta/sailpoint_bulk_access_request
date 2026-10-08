@@ -122,6 +122,7 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
     (`{id,type}`); identities missing from the search index get no warning. Pending = `GET /v3/access-request-status?requested-for=<id>&request-state=EXECUTING`
     (the row `id` is the item's ID).
   - There's no v3 identities API; use `/v2025/identities`.
+  - Some tenants sit behind Cloudflare, which rejects Python's default User-Agent; the client sends its own.
 - **What a non-admin's own ISC session may call** (verified 2026-10-08 with two `sp:user` test users; the plugin branches on
   `capabilities.isOrgAdmin`):
 
@@ -144,4 +145,3 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
   `lastname`, `displayName` eq/sw, case-insensitive, combinable with `or`/`and`; `in` only on `id`; `name`, `status` and `co`
   → 400. `sorters=name` (`alias` → 400), `limit` ≤ 250. No `/{id}` (404). It lists only what the tenant's public identity
   config shows: unlike the admin path there's no accounts fallback for identities not listed.
-  - Some tenants sit behind Cloudflare, which rejects Python's default User-Agent; the client sends its own.
