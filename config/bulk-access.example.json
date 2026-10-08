@@ -1,0 +1,63 @@
+{
+  "_comment": "The ONE settings file for both deployments. Copy to config/<tenant>.json, edit, then run: python bulkaccess.py apply --config config/<tenant>.json. Credentials are NOT stored here: set SAIL_BASE_URL, SAIL_CLIENT_ID and SAIL_CLIENT_SECRET (a PAT of an ORG_ADMIN) in the environment or in the .env file named below.",
+  "envFile": ".env",
+  "prefix": "ACME",
+  "mode": "dry-run",
+  "deployments": {
+    "launcher": true,
+    "plugin": true
+  },
+  "inc": {
+    "pattern": "^INC\\d{7}$",
+    "example": "INC0012345",
+    "message": "Enter a ServiceNow incident number: INC followed by 7 digits, e.g. INC0012345."
+  },
+  "catalog": {
+    "types": [
+      "ACCESS_PROFILE",
+      "ROLE",
+      "ENTITLEMENT"
+    ],
+    "nameStartsWith": null,
+    "maxItems": 25
+  },
+  "people": {
+    "max": null,
+    "partSize": 250,
+    "_comment": "max: null = no limit (the Launcher form is always capped at 30 by SailPoint). Requests above partSize (at most 250, SailPoint's workflow loop limit) are sent as several approvals with the same INC."
+  },
+  "temporaryAccess": {
+    "enabled": true,
+    "allow": [
+      "duration",
+      "endDate"
+    ],
+    "units": [
+      "HOURS",
+      "DAYS",
+      "WEEKS",
+      "MONTHS"
+    ],
+    "maxDays": null,
+    "_comment": "Lets requesters choose access that is removed automatically. The Launcher offers durations only; the plugin also offers an end date."
+  },
+  "approval": {
+    "timeoutDays": 7,
+    "actionAtTimeout": "EXPIRED",
+    "priority": "MEDIUM"
+  },
+  "notifications": {
+    "overrideRecipients": [],
+    "ccApprover": true
+  },
+  "owner": null,
+  "access": {
+    "launcherApproval": "MANAGER",
+    "_comment": "Who approves requests for the Launcher Access profile: MANAGER (the requester's manager) or NONE (auto-approved)."
+  },
+  "plugin": {
+    "alias": "acme-bulk-access",
+    "displayName": "ACME Bulk Access Request",
+    "public": false
+  }
+}

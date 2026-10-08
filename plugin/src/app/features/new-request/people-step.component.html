@@ -1,0 +1,171 @@
+<div class="step">
+  <p class="step__intro">
+    Choose everyone who needs the access. Each person gets every item you pick in the next step.
+  </p>
+
+  <div class="columns">
+    <section class="panel">
+      <label class="field__label" for="people-search">Search for people</label>
+      <input
+        id="people-search"
+        pInputText
+        type="search"
+        class="field__input"
+        autocomplete="off"
+        placeholder="Name, username or email"
+        [ngModel]="store.peopleQuery()"
+        (ngModelChange)="onQuery($event)"
+      />
+      <small class="field__hint">At least 2 characters.</small>
+
+      @if (searching()) {
+        <p class="muted">Searching…</p>
+      }
+      @if (store.peopleResults().length) {
+        <ul class="results" aria-label="Search results">
+          @for (p of store.peopleResults(); track p.id) {
+            <li class="result">
+              <div class="result__text">
+                <span class="result__name">{{ p.name }}</span>
+                <span class="result__meta">{{ p.email || '' }}{{ p.email && p.detail ? ' · ' : '' }}{{ p.detail || '' }}</span>
+              </div>
+              @if (isChosen(p)) {
+                <span class="result__added">✓ Added</span>
+              } @else {
+                <p-button label="Add" size="small" [outlined]="true" [disabled]="full" (onClick)="add(p)" />
+              }
+            </li>
+          }
+        </ul>
+      } @else if (store.peopleQuery().trim().length >= 2 && !searching()) {
+        <p class="muted">No one matches "{{ store.peopleQuery() }}".</p>
+      }
+    </section>
+
+    <section class="panel">
+      <label class="field__label" for="people-paste">Or paste a list</label>
+      <textarea
+        id="people-paste"
+        pTextarea
+        rows="6"
+        class="field__input"
+        placeholder="One per line: identity IDs, usernames or email addresses"
+        [ngModel]="store.pasteText()"
+        (ngModelChange)="store.pasteText.set($event)"
+      ></textarea>
+      <div class="actions actions--start">
+        <p-button
+          label="Find these people"
+          size="small"
+          [loading]="resolving()"
+          [disabled]="!store.pasteText().trim() || full || resolving()"
+          (onClick)="resolvePaste()"
+        />
+        <small class="field__hint">Any length; looked up in batches.</small>
+      </div>
+      @if (progress(); as pr) {
+        <div class="progress" role="status" aria-live="polite">
+          <p-progressbar [value]="percent()" [showValue]="false" styleClass="progress__bar" />
+          <small class="field__hint">Looked up {{ pr.done.toLocaleString() }} of {{ pr.total.toLocaleString() }}…</small>
+        </div>
+      }
+
+      @if (store.resolution(); as r) {
+        @if (r.resolved.length) {
+          <p-message severity="success" size="small" [text]="'Found ' + r.resolved.length.toLocaleString() + ' ' + (r.resolved.length === 1 ? 'person' : 'people') + ' from the list.'" />
+        }
+        @if (full && pasteAdded() < r.resolved.length) {
+          <p-message severity="warn" size="small" [text]="'Only ' + pasteAdded() + ' fit: this installation allows at most ' + cfg().peopleMax + ' people per request.'" />
+        }
+        @if (r.unresolved.length) {
+          <p-message severity="warn" size="small">
+            <div>
+              <strong>Not found ({{ r.unresolved.length.toLocaleString() }}):</strong>
+              {{ first(r.unresolved).join(', ') }}{{ r.unresolved.length > shownLimit ? ' and ' + (r.unresolved.length - shownLimit) + ' more' : '' }}.
+              They're left in the box. Check the spelling, or search for them instead.
+            </div>
+          </p-message>
+        }
+        @for (a of first(r.ambiguous); track a.token) {
+          <p-message severity="info" size="small">
+            <div>
+              <strong>"{{ a.token }}" matches {{ a.matches.length }} people.</strong> Pick one:
+              <div class="pick">
+                @for (m of a.matches; track m.id) {
+                  <p-button [label]="m.name + (m.detail ? ' (' + m.detail + ')' : '')" size="small" [text]="true" (onClick)="pickAmbiguous(a.token, m)" />
+                }
+              </div>
+            </div>
+          </p-message>
+        }
+        @if (r.ambiguous.length > shownLimit) {
+          <small class="field__hint">{{ r.ambiguous.length - shownLimit }} more entries match several people; pick the ones above to see them.</small>
+        }
+      }
+    </section>
+  </div>
+
+  @if (error()) {
+    <p-message severity="error" [text]="error()" />
+  }
+
+  <section class="chosen" aria-label="Chosen people">
+    <div class="chosen__head">
+      <span class="field__label">Chosen people</span>
+      <span class="counter" [class.counter--full]="full">
+        @if (cfg().peopleMax === null) { {{ store.people().length.toLocaleString() }} chosen }
+        @else { {{ store.people().length.toLocaleString() }} of {{ cfg().peopleMax }} }
+      </span>
+      @if (store.people().length > 1) {
+        <p-button label="Remove all" size="small" severity="secondary" [text]="true" (onClick)="store.clearPeople()" />
+      }
+    </div>
+    @if (partsCount() > 1) {
+      <p-message severity="info" size="small" styleClass="parts-note">
+        <div>
+          <strong>{{ store.people().length.toLocaleString() }} people → sent as {{ partsCount() }} approvals of up to {{ cfg().partSize }}, same INC.</strong>
+          SailPoint's workflow loop handles at most {{ cfg().partSize }} people per run; the approver decides each part.
+        </div>
+      </p-message>
+    }
+
+    @if (store.people().length > pageSize || store.chosenFilter()) {
+      <input
+        pInputText
+        type="search"
+        class="field__input chosen__filter"
+        aria-label="Filter the chosen people"
+        placeholder="Filter the chosen people"
+        [ngModel]="store.chosenFilter()"
+        (ngModelChange)="onChosenFilter($event)"
+      />
+    }
+    @if (store.people().length) {
+      <ul class="people" aria-label="Chosen people list">
+        @for (p of chosenPage(); track p.id) {
+          <li class="person">
+            <div class="result__text">
+              <span class="person__name">{{ p.name }}</span>
+              <span class="result__meta">{{ p.email || p.detail || '' }}</span>
+            </div>
+            <button type="button" class="person__remove" [attr.aria-label]="'Remove ' + p.name" title="Remove" (click)="store.removePerson(p.id)">✕</button>
+          </li>
+        } @empty {
+          <li class="muted person--empty">No chosen person matches "{{ store.chosenFilter() }}".</li>
+        }
+      </ul>
+      @if (pageCount() > 1) {
+        <div class="pager">
+          <p-button label="‹ Previous" size="small" [text]="true" [disabled]="page() === 0" (onClick)="goPage(-1)" />
+          <span class="muted">
+            {{ (page() * pageSize + 1).toLocaleString() }}–{{ pageEnd().toLocaleString() }}
+            of {{ chosenMatches().length.toLocaleString() }}{{ store.chosenFilter() ? ' matching' : '' }}
+          </span>
+          <p-button label="Next ›" size="small" [text]="true" [disabled]="page() >= pageCount() - 1" (onClick)="goPage(1)" />
+        </div>
+      }
+    } @else {
+      <span class="muted">No one yet.</span>
+    }
+  </section>
+</div>

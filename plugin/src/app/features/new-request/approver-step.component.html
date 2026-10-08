@@ -1,0 +1,161 @@
+<div class="step">
+  <p class="step__intro">
+    One person approves or denies the whole request. It can't be you: SailPoint hands self-approvals to another administrator.
+  </p>
+
+  <div class="columns">
+    <section class="panel">
+      <span class="field__label" id="approver-label">Approver</span>
+      @if (store.approver(); as a) {
+        <div class="approver" [class.approver--bad]="isSelf() || isOnRequest()">
+          <div class="result__text">
+            <span class="result__name">{{ a.name }}</span>
+            <span class="result__meta">{{ a.email || a.detail || '' }}</span>
+          </div>
+          <p-button label="Change" size="small" [text]="true" (onClick)="store.approver.set(null)" />
+        </div>
+        @if (isSelf()) {
+          <p-message severity="error" size="small" text="You can't approve your own request. Choose someone else." />
+        } @else if (isOnRequest()) {
+          <p-message severity="error" size="small"
+            [text]="a.name + ' is one of the people on this request, and nobody approves their own access. Choose someone else.'" />
+        }
+      } @else {
+        <input
+          pInputText
+          type="search"
+          class="field__input"
+          aria-labelledby="approver-label"
+          autocomplete="off"
+          placeholder="Search by name, username or email"
+          [ngModel]="store.approverQuery()"
+          (ngModelChange)="onQuery($event)"
+        />
+        @if (searching()) {
+          <p class="muted">Searching…</p>
+        }
+        @if (store.approverResults().length) {
+          <ul class="results" aria-label="Approver search results">
+            @for (p of store.approverResults(); track p.id) {
+              <li class="result">
+                <div class="result__text">
+                  <span class="result__name">{{ p.name }}{{ isMe(p) ? ' (you)' : onRequest(p) ? ' (on this request)' : '' }}</span>
+                  <span class="result__meta">{{ p.email || p.detail || '' }}</span>
+                </div>
+                <p-button label="Choose" size="small" [outlined]="true" [disabled]="isMe(p) || onRequest(p)" (onClick)="choose(p)" />
+              </li>
+            }
+          </ul>
+        }
+      }
+      @if (error()) {
+        <p-message severity="error" size="small" [text]="error()" />
+      }
+    </section>
+
+    <section class="panel">
+      <label class="field__label" for="inc">ServiceNow incident (INC) number</label>
+      <input
+        id="inc"
+        pInputText
+        class="field__input field__input--mono"
+        autocomplete="off"
+        [class.ng-invalid]="!!incError()"
+        [class.ng-dirty]="!!incError()"
+        [attr.aria-invalid]="!!incError()"
+        aria-describedby="inc-help"
+        [placeholder]="cfg().incExample"
+        [ngModel]="store.inc()"
+        (ngModelChange)="store.inc.set($event)"
+      />
+      @if (incError()) {
+        <p-message id="inc-help" severity="error" size="small" [text]="incError()" />
+      } @else if (incOk()) {
+        <small id="inc-help" class="field__ok">✓ Valid INC number. It goes on every access item's comment.</small>
+      } @else {
+        <small id="inc-help" class="field__hint">{{ cfg().incMessage }}</small>
+      }
+
+      <label class="field__label field__label--spaced" for="justification">Business justification</label>
+      <textarea
+        id="justification"
+        pTextarea
+        rows="4"
+        class="field__input"
+        [maxlength]="store.justificationMax()"
+        placeholder="Why do these people need this access?"
+        [ngModel]="store.justification()"
+        (ngModelChange)="store.justification.set($event)"
+      ></textarea>
+      <small class="field__hint">Shown to the approver and stored on every access request. {{ store.justification().length }}/{{ store.justificationMax() }}</small>
+    </section>
+  </div>
+
+  @if (store.temporaryModes().length) {
+    <section class="panel temporary" aria-labelledby="access-length-label">
+      <span class="field__label" id="access-length-label">How long should the access last?</span>
+      <p-selectbutton
+        [options]="modeOptions()"
+        optionLabel="label"
+        optionValue="value"
+        [allowEmpty]="false"
+        ariaLabelledBy="access-length-label"
+        [ngModel]="store.accessMode()"
+        (ngModelChange)="setMode($event)"
+      />
+      @switch (store.accessMode()) {
+        @case ('duration') {
+          <div class="temporary__row">
+            <label class="sr-only" for="duration-n">Duration</label>
+            <input
+              id="duration-n"
+              pInputText
+              type="number"
+              min="1"
+              step="1"
+              inputmode="numeric"
+              class="temporary__number"
+              [ngModel]="store.durationN()"
+              (ngModelChange)="setDuration($event)"
+            />
+            <p-select
+              [options]="unitOptions()"
+              optionLabel="label"
+              optionValue="value"
+              ariaLabel="Unit"
+              styleClass="temporary__unit"
+              [ngModel]="store.unit()"
+              (ngModelChange)="setUnit($event)"
+            />
+          </div>
+        }
+        @case ('endDate') {
+          <div class="temporary__row">
+            <label class="sr-only" for="end-date">End date</label>
+            <input
+              id="end-date"
+              pInputText
+              type="date"
+              class="temporary__date"
+              [attr.min]="minDate()"
+              [attr.max]="maxDate()"
+              [ngModel]="store.endDate()"
+              (ngModelChange)="store.endDate.set($event ?? '')"
+            />
+          </div>
+        }
+      }
+      @if (store.accessMode() !== 'permanent') {
+        @for (p of store.accessProblems(); track p) {
+          <p-message severity="error" size="small" [text]="p" />
+        } @empty {
+          <small class="field__ok">✓ {{ store.accessLabel() }}. {{ removalPreview() }}</small>
+        }
+      } @else {
+        <small class="field__hint">The access stays until someone removes it.
+          @if (cfg().temporary.maxDays !== null) { Temporary access can last at most {{ cfg().temporary.maxDays }} days. }
+        </small>
+      }
+    </section>
+  }
+</div>

@@ -1,0 +1,64 @@
+{
+  // Run and Debug (⇧⌘D). Python entries use the interpreter selected in VS Code (any Python 3.10+;
+  // the core has no dependencies, pytest is only needed for the unit tests). Each tenant entry asks
+  // for your config file, e.g. config/my-tenant.json (copied from config/bulk-access.example.json).
+  "version": "0.2.0",
+  "inputs": [
+    { "id": "config", "type": "promptString", "description": "Tenant config file", "default": "config/my-tenant.json" },
+    { "id": "people", "type": "promptString", "description": "TEST identity IDs (comma-separated)" },
+    { "id": "approver", "type": "promptString", "description": "TEST approver identity ID (not you)" }
+  ],
+  "configurations": [
+    { "name": "Tests: core + plugin installer (pytest)", "type": "debugpy", "request": "launch", "module": "pytest",
+      "args": ["-q", "core/tests", "plugin/tests"], "cwd": "${workspaceFolder}", "console": "integratedTerminal",
+      "presentation": { "group": "1 tests", "order": 1 } },
+    { "name": "Tests: plugin UI (installs on first run)", "type": "node-terminal", "request": "launch",
+      "command": "m=node_modules/.installed-$(uname -s); [ -f $m ] || { rm -rf node_modules && npx -y npm@11 install && touch $m; } && npx ng test --watch=false",
+      "cwd": "${workspaceFolder}/plugin", "presentation": { "group": "1 tests", "order": 2 } },
+
+    // The one command for both deployments (runs every deployment the config's "deployments" turns on).
+    { "name": "Bulk access: show config", "type": "debugpy", "request": "launch",
+      "program": "${workspaceFolder}/bulkaccess.py", "args": ["show-config", "--config", "${input:config}"],
+      "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "2 bulkaccess", "order": 1 } },
+    { "name": "Bulk access: apply (preview, changes nothing)", "type": "debugpy", "request": "launch",
+      "program": "${workspaceFolder}/bulkaccess.py", "args": ["apply", "--config", "${input:config}", "--dry-run"],
+      "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "2 bulkaccess", "order": 2 } },
+    { "name": "Bulk access: apply (install / update)", "type": "debugpy", "request": "launch",
+      "program": "${workspaceFolder}/bulkaccess.py", "args": ["apply", "--config", "${input:config}"],
+      "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "2 bulkaccess", "order": 3 } },
+    { "name": "Bulk access: status", "type": "debugpy", "request": "launch",
+      "program": "${workspaceFolder}/bulkaccess.py", "args": ["status", "--config", "${input:config}"],
+      "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "2 bulkaccess", "order": 4 } },
+    { "name": "Bulk access: export JSON", "type": "debugpy", "request": "launch",
+      "program": "${workspaceFolder}/bulkaccess.py", "args": ["export", "--config", "${input:config}"],
+      "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "2 bulkaccess", "order": 5 } },
+
+    // Advanced: the per-deployment scripts on their own.
+    { "name": "Launcher: install (preview, changes nothing)", "type": "debugpy", "request": "launch",
+      "program": "${workspaceFolder}/launcher/install.py", "args": ["--config", "${input:config}", "--dry-run"],
+      "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "3 launcher", "order": 1 } },
+    { "name": "Launcher: install / update", "type": "debugpy", "request": "launch",
+      "program": "${workspaceFolder}/launcher/install.py", "args": ["--config", "${input:config}"],
+      "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "3 launcher", "order": 2 } },
+    { "name": "Launcher: status", "type": "debugpy", "request": "launch",
+      "program": "${workspaceFolder}/launcher/status.py", "args": ["--config", "${input:config}"],
+      "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "3 launcher", "order": 3 } },
+    { "name": "Launcher: end-to-end test (approve)", "type": "debugpy", "request": "launch",
+      "program": "${workspaceFolder}/launcher/e2e.py",
+      "args": ["--config", "${input:config}", "--people", "${input:people}", "--approver", "${input:approver}", "--scenario", "approve"],
+      "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "3 launcher", "order": 4 } },
+    { "name": "Launcher: uninstall (preview)", "type": "debugpy", "request": "launch",
+      "program": "${workspaceFolder}/launcher/uninstall.py", "args": ["--config", "${input:config}"],
+      "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "3 launcher", "order": 5 } },
+
+    { "name": "Plugin: install (preview, changes nothing)", "type": "debugpy", "request": "launch",
+      "program": "${workspaceFolder}/plugin/install.py", "args": ["--config", "${input:config}", "--dry-run"],
+      "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "4 plugin", "order": 1 } },
+    { "name": "Plugin: status", "type": "debugpy", "request": "launch",
+      "program": "${workspaceFolder}/plugin/status.py", "args": ["--config", "${input:config}"],
+      "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "4 plugin", "order": 2 } },
+    { "name": "Plugin: dev server (installs on first run)", "type": "node-terminal", "request": "launch",
+      "command": "m=node_modules/.installed-$(uname -s); [ -f $m ] || { rm -rf node_modules && npx -y npm@11 install && touch $m; } && npm start",
+      "cwd": "${workspaceFolder}/plugin", "presentation": { "group": "4 plugin", "order": 3 } }
+  ]
+}

@@ -1,0 +1,13 @@
+# Per-tenant config holds tenant-specific choices (and may point at credentials); keep it local.
+config/*.json
+!config/bulk-access.example.json
+.env
+__pycache__/
+.venv*/
+.pytest_cache/
+.DS_Store
+plugin/.angular/
+plugin/node_modules/
+plugin/dist/
+# bulkaccess.py export output (tenant-specific IDs)
+exports/

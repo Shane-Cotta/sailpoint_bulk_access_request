@@ -1,0 +1,108 @@
+<div class="history">
+  <div class="history__bar">
+    <div class="stats">
+      <span class="stat"><strong>{{ counts().total }}</strong> requests</span>
+      <span class="stat stat--warn"><strong>{{ counts().pending }}</strong> waiting</span>
+      <span class="stat stat--ok"><strong>{{ counts().approved }}</strong> approved</span>
+      <span class="stat stat--bad"><strong>{{ counts().denied }}</strong> denied</span>
+    </div>
+    <div class="history__tools">
+      <input pInputText type="search" aria-label="Filter by INC" placeholder="Filter by INC" class="history__filter"
+             [ngModel]="filter()" (ngModelChange)="filter.set($event)" />
+      <p-button label="Refresh" size="small" [outlined]="true" [loading]="loading()" (onClick)="load()" />
+    </div>
+  </div>
+
+  @for (e of errors(); track e) {
+    <p-message severity="warn" size="small" [text]="'Could not load everything. ' + e" />
+  }
+
+  @if (groups() === null) {
+    <p-skeleton height="5rem" />
+    <p-skeleton height="5rem" />
+  } @else {
+    @for (g of shown(); track g.inc) {
+      <article class="group" [class.group--open]="open().has(g.inc)">
+        <button type="button" class="group__head" (click)="toggle(g.inc)" [attr.aria-expanded]="open().has(g.inc)">
+          <span class="group__inc mono">{{ g.inc }}</span>
+          <p-tag [severity]="statusLabel(g.status).severity" [value]="statusLabel(g.status).label" />
+          @if (g.latest.length > 1) {
+            <span class="group__parts">{{ g.approvedParts }} of {{ g.latest.length }} approved</span>
+          }
+          <span class="group__meta">
+            @if (g.submissions[0]; as s) { Approver: {{ s.approver }} · }
+            @if (g.requests.length) { {{ g.people }} {{ g.people === 1 ? 'person' : 'people' }} × {{ g.items }} {{ g.items === 1 ? 'item' : 'items' }} · }
+            {{ date(g.lastActivity) }}
+          </span>
+          <span class="group__chevron" aria-hidden="true">{{ open().has(g.inc) ? '▾' : '▸' }}</span>
+        </button>
+
+        @if (open().has(g.inc)) {
+          <div class="group__body">
+            @if (g.submissions.length) {
+              <h4 class="group__sub">
+                @if (g.latest.length > 1) { Approvals ({{ g.latest.length }} parts, same INC) }
+                @else { Approval{{ g.submissions.length > 1 ? 's (' + g.submissions.length + ' submissions)' : '' }} }
+              </h4>
+              <table class="mini">
+                <thead><tr>@if (hasParts(g)) { <th>Part</th> }<th>Submitted</th><th>Approver</th><th>Decision</th><th>Decided</th></tr></thead>
+                <tbody>
+                  @for (s of approvalRows(g); track s.approvalId) {
+                    <tr [class.row--old]="!g.latest.includes(s)">
+                      @if (hasParts(g)) { <td>{{ s.part ? s.part + '/' + s.parts : '–' }}</td> }
+                      <td>{{ date(s.created) }}</td>
+                      <td>{{ s.approver }}</td>
+                      <td><p-tag [severity]="statusLabel(s.status).severity" [value]="statusLabel(s.status).label" />
+                        @if (s.decidedBy) { <span class="muted"> by {{ s.decidedBy }}</span> }</td>
+                      <td>{{ date(s.completed) }}</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+            }
+
+            <h4 class="group__sub">Access requests</h4>
+            @if (g.requests.length) {
+              <table class="mini">
+                <thead><tr><th>Person</th><th>Item</th><th>Status</th><th>Access</th><th>Requested</th></tr></thead>
+                <tbody>
+                  @for (r of shownRequests(g); track $index) {
+                    <tr>
+                      <td>{{ r.person }}</td>
+                      <td>{{ r.item }}</td>
+                      <td><p-tag [severity]="requestStateLabel(r.state).severity" [value]="requestStateLabel(r.state).label" /></td>
+                      <td>
+                        @if (r.removeDate) { <span class="temp">Temporary until {{ day(r.removeDate) }}</span> }
+                        @else { <span class="muted">Permanent</span> }
+                      </td>
+                      <td>{{ date(r.created) }}</td>
+                    </tr>
+                  }
+                </tbody>
+              </table>
+              @if (g.requests.length > shownRequests(g).length) {
+                <p-button [label]="'Show all ' + g.requests.length + ' access requests'" size="small" [text]="true" (onClick)="showAll(g.inc)" />
+              }
+            } @else {
+              <p class="muted">
+                @switch (g.status) {
+                  @case ('PENDING') { None yet: access is requested once {{ g.submissions[0]?.approver }} approves. }
+                  @case ('APPROVED') { None: approved while the installation was in dry-run mode, or still being filed. }
+                  @default { None: nothing is requested unless the request is approved. }
+                }
+              </p>
+            }
+          </div>
+        }
+      </article>
+    } @empty {
+      <p class="empty">
+        @if (filter()) { No bulk request matches "{{ filter() }}". }
+        @else { You haven't submitted any bulk requests yet. Start one on the New request tab. }
+      </p>
+    }
+    @if (loadedAt(); as t) {
+      <p class="muted history__foot">Updated {{ t.toLocaleTimeString() }}. Shows approvals named "Bulk access &lt;INC&gt;" that you requested, and access requests you filed whose comment carries an INC number.</p>
+    }
+  }
+</div>

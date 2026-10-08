@@ -1,0 +1,26 @@
+:host {
+  display: block;
+  box-sizing: border-box;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1.75rem 1.5rem 4rem;
+  color: var(--spds-text-color);
+}
+
+.page { display: flex; flex-direction: column; gap: 1.25rem; }
+
+.page__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--spds-content-border-color);
+}
+.page__title { margin: 0; }
+.page__subtitle { margin: 0.35rem 0 0; color: var(--spds-text-muted-color); }
+.page__meta { display: flex; align-items: center; gap: 0.5rem; white-space: nowrap; }
+.page__user { color: var(--spds-text-muted-color); }
+
+.banner__text { line-height: 1.45; }

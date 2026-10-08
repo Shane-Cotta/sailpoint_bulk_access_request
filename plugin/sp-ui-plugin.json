@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "manifest": {
+    "alias": "acme-bulk-access",
+    "name": {
+      "en": "ACME Bulk Access Request"
+    },
+    "description": {
+      "en": "Request access for several people at once: one approver for the whole request, and a ServiceNow INC number on every item. Requires ORG_ADMIN (it starts a workflow through the workflow test endpoint)."
+    },
+    "apiScopes": [
+      "sp:scopes:all"
+    ],
+    "permissionPolicy": {},
+    "iframeAllow": {},
+    "contentSecurityPolicies": {},
+    "slots": [
+      {
+        "slotId": "full-page"
+      }
+    ],
+    "state": "ENABLED"
+  },
+  "build": {
+    "outDir": "./dist/bulk-access-request-plugin/browser",
+    "port": 4200
+  }
+}

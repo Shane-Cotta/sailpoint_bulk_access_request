@@ -1,0 +1,13 @@
+[project]
+name = "bulk-access-request"
+version = "0.1.0"
+description = "Bulk access requests for SailPoint Identity Security Cloud: one approver, ServiceNow INC tracking. Launcher and UI plugin deployments."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["core/tests"]
+pythonpath = ["core"]

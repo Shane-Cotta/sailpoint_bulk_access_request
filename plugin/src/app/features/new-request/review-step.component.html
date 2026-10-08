@@ -1,0 +1,196 @@
+<div class="step">
+  @if (store.submission(); as s) {
+    <section [class]="'outcome outcome--' + s.state" aria-live="polite">
+      <div class="outcome__head">
+        @switch (s.state) {
+          @case ('starting') { <p-progressSpinner styleClass="outcome__spinner" strokeWidth="6" /> }
+          @case ('waiting') { <p-progressSpinner styleClass="outcome__spinner" strokeWidth="6" /> }
+          @case ('approved') { <span class="outcome__icon">✓</span> }
+          @case ('denied') { <span class="outcome__icon">✕</span> }
+          @case ('mixed') { <span class="outcome__icon">±</span> }
+          @case ('failed') { <span class="outcome__icon">!</span> }
+          @case ('error') { <span class="outcome__icon">!</span> }
+          @default { <span class="outcome__icon">…</span> }
+        }
+        <div>
+          <h2 class="outcome__title">
+            @switch (s.state) {
+              @case ('starting') { Submitting {{ s.inc }}… }
+              @case ('waiting') { Waiting for {{ s.approver }} }
+              @case ('still-waiting') { Still waiting for {{ s.approver }} }
+              @case ('approved') { Approved: {{ s.inc }} }
+              @case ('denied') { Not approved: {{ s.inc }} }
+              @case ('mixed') { Partly approved: {{ s.inc }} }
+              @case ('failed') { The workflow stopped }
+              @case ('error') { Could not submit }
+            }
+          </h2>
+          <p class="outcome__message">{{ s.message }}</p>
+        </div>
+      </div>
+      <dl class="facts facts--inline">
+        <div><dt>INC</dt><dd class="mono">{{ s.inc }}</dd></div>
+        <div><dt>People</dt><dd>{{ store.people().length.toLocaleString() }}</dd></div>
+        <div><dt>Items</dt><dd>{{ store.items().length }}</dd></div>
+        <div><dt>Access</dt><dd>{{ s.accessLabel }}</dd></div>
+        @if (s.parts.length > 1) {
+          <div><dt>Approvals</dt><dd>{{ summary() }}</dd></div>
+        } @else if (s.parts[0]; as p) {
+          @if (p.executionId) { <div><dt>Workflow execution</dt><dd class="mono">{{ p.executionId }}</dd></div> }
+          @if (p.approvalId) { <div><dt>Approval</dt><dd class="mono">{{ p.approvalId }}</dd></div> }
+        }
+      </dl>
+
+      @if (s.parts.length > 1) {
+        <table class="mini parts" aria-label="Approvals, one per part">
+          <thead><tr><th>Approval</th><th>People</th><th>Status</th><th>Details</th></tr></thead>
+          <tbody>
+            @for (p of s.parts; track p.part) {
+              <tr>
+                <td class="mono">{{ approvalPrefix }}{{ s.inc }}{{ p.label }}</td>
+                <td>{{ p.people.length }}</td>
+                <td><p-tag [severity]="partState(p.state).severity" [value]="partState(p.state).label" /></td>
+                <td>
+                  <span>{{ p.message }}</span>
+                  @if (p.approvalId) { <br /><span class="muted mono parts__id">Approval {{ p.approvalId }}</span> }
+                  @else if (p.executionId) { <br /><span class="muted mono parts__id">Execution {{ p.executionId }}</span> }
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      }
+
+      @if (store.startFailed().length && s.state !== 'error') {
+        <p-message severity="error" size="small">
+          <div>
+            <strong>{{ failedNames() }} didn't start.</strong> {{ store.startFailed()[0].message }}
+            The other parts are unaffected.
+          </div>
+        </p-message>
+      }
+
+      <div class="actions actions--start">
+        @if (store.startFailed().length) {
+          <p-button [label]="s.parts.length > 1 ? 'Retry ' + failedNames() : 'Try again'" (onClick)="store.retryFailedParts()"
+                    [disabled]="!canRetry()" />
+        }
+        <p-button label="My bulk requests" [outlined]="true" (onClick)="showHistory.emit()" />
+        <p-button label="Start a new request" [text]="true" (onClick)="store.reset()" />
+      </div>
+    </section>
+  } @else {
+    <p class="step__intro">
+      Check the request.
+      @if (store.parts().length > 1) {
+        It goes out as {{ store.parts().length }} approvals with the same INC, one per {{ cfg().partSize }} people.
+      } @else {
+        One approval covers all of it.
+      }
+    </p>
+
+    <div class="summary">
+      <section class="summary__card">
+        <h3 class="summary__title">People <span class="counter">{{ store.people().length.toLocaleString() }}</span></h3>
+        <ul class="summary__list">
+          @for (p of store.people().slice(0, previewMax); track p.id) {
+            <li>{{ p.name }} @if (p.email) { <span class="muted">· {{ p.email }}</span> }</li>
+          } @empty { <li class="muted">No one chosen.</li> }
+        </ul>
+        @if (store.people().length > previewMax) {
+          <p class="muted summary__more">and {{ (store.people().length - previewMax).toLocaleString() }} more</p>
+        }
+      </section>
+      <section class="summary__card">
+        <h3 class="summary__title">Access <span class="counter">{{ store.items().length }}</span></h3>
+        <ul class="summary__list">
+          @for (o of store.items(); track o.value.id) {
+            <li>{{ o.label }} <span class="muted">· {{ o.subLabel }}</span></li>
+          } @empty { <li class="muted">Nothing chosen.</li> }
+        </ul>
+      </section>
+      <section class="summary__card">
+        <h3 class="summary__title">Approval</h3>
+        <dl class="facts">
+          <div><dt>Approver</dt><dd>{{ store.approver()?.name || '–' }}</dd></div>
+          <div><dt>INC</dt><dd class="mono">{{ store.inc() || '–' }}</dd></div>
+          <div><dt>Access</dt><dd>
+            @if (store.accessLabel()) {
+              @if (store.accessMode() === 'permanent') { {{ store.accessLabel() }} }
+              @else { <p-tag severity="info" [value]="store.accessLabel()" /> }
+            } @else { – }
+          </dd></div>
+          <div><dt>Justification</dt><dd>{{ store.justification() || '–' }}</dd></div>
+        </dl>
+      </section>
+    </div>
+
+    @if (store.parts().length > 1) {
+      <section class="summary__card parts-card" aria-label="Parts">
+        <h3 class="summary__title">Approvals <span class="counter">{{ store.parts().length }}</span></h3>
+        <p class="muted">
+          SailPoint's workflow loop handles at most {{ cfg().partSize }} people per run, so this request is sent as
+          {{ store.parts().length }} approvals, one after another. Each carries the same INC, items, justification and access;
+          {{ store.approver()?.name || 'the approver' }} decides each one, and only approved parts are requested.
+        </p>
+        <table class="mini parts">
+          <thead><tr><th>Approval</th><th>People</th><th>From</th><th>To</th></tr></thead>
+          <tbody>
+            @for (part of store.parts(); track $index) {
+              <tr>
+                <td class="mono">{{ approvalPrefix }}{{ store.inc() || 'INC…' }} ({{ $index + 1 }}/{{ store.parts().length }})</td>
+                <td>{{ part.length }}</td>
+                <td>{{ part[0].name }}</td>
+                <td>{{ part[part.length - 1].name }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </section>
+    }
+
+    <p class="muted">
+      On approval{{ store.parts().length > 1 ? ' of each part' : '' }}, SailPoint files {{ requestCount().toLocaleString() }} access {{ requestCount() === 1 ? 'request' : 'requests' }}
+      (one per person, each with all {{ store.items().length }} items), with <span class="mono">{{ store.inc() || 'the INC' }}</span>
+      on every item's comment.
+      @if (store.accessMode() !== 'permanent' && store.accessLabel()) {
+        The access is temporary ({{ store.accessLabel().replace('Temporary: ', '') }}) and SailPoint removes it automatically.
+      }
+      @if (cfg().mode === 'dry-run') {
+        <strong>This installation is in dry-run mode:</strong> the approval runs, but nothing is requested.
+      }
+    </p>
+
+    @if (checking()) {
+      <p class="muted">Checking who already has this access…</p>
+    } @else if (store.people().length > existingCheckMax) {
+      <p class="muted">With more than {{ existingCheckMax }} people the page doesn't check who already has this access. SailPoint skips what people already have.</p>
+    }
+    @for (w of warnings(); track w.item) {
+      <p-message severity="warn" size="small">
+        <div>
+          <strong>{{ w.item }}:</strong>
+          @if (w.assigned.length) { already held by {{ w.assigned.join(', ') }}. }
+          @if (w.pending.length) { already requested for {{ w.pending.join(', ') }}. }
+          You can still submit; SailPoint skips what people already have.
+        </div>
+      </p-message>
+    }
+
+    @if (store.problems().length) {
+      <p-message severity="error">
+        <ul class="problems">
+          @for (p of store.problems(); track p) { <li>{{ p }}</li> }
+        </ul>
+      </p-message>
+    }
+    @if (!isAdmin()) {
+      <p-message severity="warn" text="You are not an ORG_ADMIN, so SailPoint won't let this page start the workflow. Use the Launcher in the Launchpad instead." />
+    }
+
+    <div class="actions actions--start">
+      <p-button [label]="store.parts().length > 1 ? 'Submit ' + store.parts().length + ' approvals' : 'Submit for approval'"
+                [disabled]="!canSubmit()" (onClick)="store.submit()" />
+    </div>
+  }
+</div>

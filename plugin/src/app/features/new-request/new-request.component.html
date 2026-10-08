@@ -1,0 +1,46 @@
+<p-stepper [value]="store.step()" (valueChange)="go($event)" [linear]="false">
+  <p-step-list>
+    <p-step [value]="1" [disabled]="locked(1)">People</p-step>
+    <p-step [value]="2" [disabled]="locked(2)">Access</p-step>
+    <p-step [value]="3" [disabled]="locked(3)">Approver &amp; INC</p-step>
+    <p-step [value]="4" [disabled]="locked(4)">Review &amp; submit</p-step>
+  </p-step-list>
+  <p-step-panels>
+    <p-step-panel [value]="1">
+      <ng-template #content>
+        <app-people-step />
+        <div class="actions">
+          <p-button label="Next: access" [disabled]="!ready()[1]" (onClick)="go(2)" />
+        </div>
+      </ng-template>
+    </p-step-panel>
+    <p-step-panel [value]="2">
+      <ng-template #content>
+        <app-items-step />
+        <div class="actions">
+          <p-button label="Back" severity="secondary" [text]="true" (onClick)="go(1)" />
+          <p-button label="Next: approver" [disabled]="!ready()[2]" (onClick)="go(3)" />
+        </div>
+      </ng-template>
+    </p-step-panel>
+    <p-step-panel [value]="3">
+      <ng-template #content>
+        <app-approver-step />
+        <div class="actions">
+          <p-button label="Back" severity="secondary" [text]="true" (onClick)="go(2)" />
+          <p-button label="Next: review" [disabled]="!ready()[3]" (onClick)="go(4)" />
+        </div>
+      </ng-template>
+    </p-step-panel>
+    <p-step-panel [value]="4">
+      <ng-template #content>
+        <app-review-step (showHistory)="showHistory.emit()" />
+        @if (!store.submission()) {
+          <div class="actions">
+            <p-button label="Back" severity="secondary" [text]="true" (onClick)="go(3)" />
+          </div>
+        }
+      </ng-template>
+    </p-step-panel>
+  </p-step-panels>
+</p-stepper>

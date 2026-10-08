@@ -1,0 +1,90 @@
+<div class="step">
+  <p class="step__intro">
+    Pick the access everyone should get, from the Request Center catalog.
+    @if (cfg().nameStartsWith) {
+      This installation offers items whose names start with <strong>{{ cfg().nameStartsWith }}</strong>.
+    }
+  </p>
+
+  <div class="toolbar">
+    <input
+      pInputText
+      type="search"
+      class="field__input toolbar__filter"
+      aria-label="Filter the catalog"
+      placeholder="Filter by name, type or source"
+      [ngModel]="store.itemFilter()"
+      (ngModelChange)="store.itemFilter.set($event)"
+    />
+    <span class="counter" [class.counter--full]="store.items().length >= cfg().itemsMax">
+      {{ store.items().length }} of {{ cfg().itemsMax }} chosen
+    </span>
+  </div>
+
+  @if (catalog.error()) {
+    <p-message severity="error">
+      <div>Could not load the catalog: {{ catalog.error() }}
+        <p-button label="Try again" size="small" [text]="true" (onClick)="catalog.reload()" />
+      </div>
+    </p-message>
+  }
+  @if (overLimit()) {
+    <p-message severity="warn" size="small" [text]="'You can request at most ' + cfg().itemsMax + ' items at once (SailPoint\'s limit per request).'" />
+  }
+
+  @if (catalog.loading() && !catalog.options()) {
+    <p-skeleton height="16rem" />
+  } @else {
+    <p-table
+      [value]="filtered()"
+      [selection]="store.items()"
+      (selectionChange)="onSelection($event)"
+      dataKey="value.id"
+      [scrollable]="true"
+      scrollHeight="22rem"
+      styleClass="p-datatable-sm catalog"
+    >
+      <ng-template #header>
+        <tr>
+          <th class="col-check"></th>
+          <th>Item</th>
+          <th class="col-type">Type</th>
+          <th class="col-source">Source</th>
+        </tr>
+      </ng-template>
+      <ng-template #body let-opt>
+        <tr [class.row--chosen]="isChosen(opt)">
+          <td class="col-check">
+            <p-tableCheckbox [value]="opt" [ariaLabel]="'Choose ' + opt.label" />
+          </td>
+          <td>
+            <div class="item__name">{{ opt.label }}</div>
+            @if (opt.description) {
+              <div class="item__desc">{{ opt.description }}</div>
+            }
+          </td>
+          <td class="col-type"><p-tag [severity]="typeSeverity(opt.value.type)" [value]="typeLabel(opt.value.type)" /></td>
+          <td class="col-source">{{ opt.source || '–' }}</td>
+        </tr>
+      </ng-template>
+      <ng-template #emptymessage>
+        <tr>
+          <td colspan="4" class="cell-empty">
+            {{ (catalog.options() ?? []).length ? 'Nothing matches the filter.' : 'The catalog offers nothing that matches this installation\'s settings.' }}
+          </td>
+        </tr>
+      </ng-template>
+    </p-table>
+  }
+
+  <section class="chosen" aria-label="Chosen items">
+    <span class="field__label">Chosen items</span>
+    <div class="chips">
+      @for (o of store.items(); track o.value.id) {
+        <p-chip [label]="o.label + ' · ' + typeLabel(o.value.type)" [removable]="true" (onRemove)="remove(o)" />
+      } @empty {
+        <span class="muted">Nothing yet.</span>
+      }
+    </div>
+  </section>
+</div>
