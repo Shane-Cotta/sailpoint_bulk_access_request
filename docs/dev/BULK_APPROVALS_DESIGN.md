@@ -16,10 +16,10 @@ and approving there records the admin as overriding the owner.
 **Goal:** an item approver decides everything one bulk request (one INC) created for them in one action. The approval is
 recorded **as that approver's own decision**.
 
-## Verified live (2026-10-08, demo tenant)
+## Verified live (2026-10-08, test tenant)
 | Fact | Result |
 |---|---|
-| Item approval schemes on workflow requests | **Applied.** A live bulk run (INC9967647, 3 people, an access profile with `approvalSchemes: [{approverType: OWNER}]`) created 3 approvals (`scheme ACCESS_PROFILE_OWNER`), all assigned to the non-admin owner, not forwarded. |
+| Item approval schemes on workflow requests | **Applied.** A live bulk run (3 people, an access profile with `approvalSchemes: [{approverType: OWNER}]`) created 3 approvals (`scheme ACCESS_PROFILE_OWNER`), all assigned to the non-admin owner, not forwarded. |
 | Requester of workflow requests | Always the **workflow owner** (the PAT user), not the person who filled in the form. |
 | Workflow owner is also the approver | ISC **escalates** that approval to an admin ("…because the Identity X is the Requester"). It doesn't approve it automatically. |
 | Access-request approvals in the unified API | `GET /v2025/generic-approvals` returns them as `type: ACCESS_REQUEST_APPROVAL`, with `requestee`, `requestedTarget`, `assignedTo`, `approvalConfig.serialChain`, `dueDate` and `referenceData[type=accessRequestId]`. |
@@ -142,10 +142,3 @@ required to deny.
   recommending a service identity when `owner` is null.
 - **Remaining (optional):** `approval.bulkApprover: "skip"`; the admin "show everyone's pending (view only)" switch; an
   installer helper to fill `restrictToUsers` from item owners; a live governance-group test.
-
-## Test fixtures in the demo tenant (clean up afterwards)
-- **Access profile:** "UCSF Bulk Owner-Approval Test" `5c9fc6cd83114a1c957a75928cd7159e` (owner Elliot.Reid, OWNER approval).
-- **Pending approvals:** 3, for INC9967647 (Elena Petrova, Brenda Cooper, Beatriz Santos), assigned to Elliot.Reid.
-  They expire with the 7-day removal date (2026-10-15).
-- **Elliot.Reid** is a non-admin who has never registered. His email comes from a JDBC HR source, so it can't be changed
-  for him alone through the API.
