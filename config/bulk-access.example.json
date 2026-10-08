@@ -59,5 +59,14 @@
     "alias": "acme-bulk-access",
     "displayName": "ACME Bulk Access Request",
     "public": false
+  },
+  "approvals": {
+    "enabled": true,
+    "concurrency": 4,
+    "useBulkEndpoint": "auto",
+    "maxRows": 5000,
+    "showOther": false,
+    "denyCommentRequired": true,
+    "_comment": "The plugin's Approvals tab: item approvers (access profile owners, managers, ...) approve or deny everything one bulk request (one INC) created for them in one action, as their own decision. concurrency: 1..8 decisions at a time. useBulkEndpoint: auto, always or never (SailPoint's 50-at-a-time bulk endpoint). maxRows: 250..20000 pending approvals loaded. showOther: also list approvals that aren't from a bulk request. Approvers who aren't ORG_ADMIN need to see the plugin (plugin.public, or the plugin's restrictToUsers)."
   }
 }

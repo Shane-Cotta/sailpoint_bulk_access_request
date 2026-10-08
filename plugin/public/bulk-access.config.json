@@ -30,5 +30,13 @@
       "MONTHS"
     ],
     "maxDays": null
+  },
+  "approvals": {
+    "enabled": true,
+    "concurrency": 4,
+    "useBulkEndpoint": "auto",
+    "maxRows": 5000,
+    "showOther": false,
+    "denyCommentRequired": true
   }
 }

@@ -32,6 +32,24 @@ it to the orchestrator instead of changing it alone.
 | `deploy_launcher`, `deploy_plugin`, `deployments` | `deployments.*` | at least one must be true |
 | `plugin_public` | `plugin.public` | default false; the installer pushes `--private` unless this or `--public` is set |
 | `launcher_access_approval` | `access.launcherApproval` | the old `launcher.accessApproval` still works (it adds a note to `cfg.deprecations`) |
+| `approvals_enabled` | `approvals.enabled` | bool, default true: the plugin's Approvals tab (see `docs/dev/BULK_APPROVALS_DESIGN.md`) |
+| `approvals_concurrency` | `approvals.concurrency` | 1..8, default 4: decisions sent at a time |
+| `approvals_use_bulk_endpoint` | `approvals.useBulkEndpoint` | `"auto"` (default), `"always"` or `"never"` (`config.BULK_ENDPOINT_MODES`): SailPoint's generic bulk-approve/reject |
+| `approvals_max_rows` | `approvals.maxRows` | 250..20000, default 5000: the most pending approvals the tab loads |
+| `approvals_show_other` | `approvals.showOther` | bool, default false: also list approvals that aren't from a bulk request |
+| `approvals_deny_comment_required` | `approvals.denyCommentRequired` | bool, default true |
+| `plugin_approvals_enabled` | derived | `deploy_plugin and approvals_enabled` (the tab lives in the plugin) |
+
+The `approvals` block may be missing (older configs): every key takes its default. Problems (exact text, mirrored in
+`runtime-config.ts`):
+- not an object: `` `approvals` must be an object. ``
+- a flag that isn't a boolean: `` `approvals.{enabled|showOther|denyCommentRequired}` must be true or false. ``
+- `` `approvals.concurrency` must be a whole number between 1 and 8. ``
+- `` `approvals.useBulkEndpoint` must be "auto", "always" or "never". ``
+- `` `approvals.maxRows` must be a whole number between 250 and 20000. ``
+
+`show-config` prints one `Approvals:` line and, when `plugin_approvals_enabled` and the plugin is private, the warning
+`non-admin approvers can't open a private plugin unless they are listed in the plugin's restrictToUsers`.
 
 Constants in `config.py`: `FORM_SELECT_MAX = 30`, `LOOP_MAX = 250`, `DURATION_UNITS = {"HOURS":"h","DAYS":"d","WEEKS":"w","MONTHS":"M"}`,
 `UNIT_MAX_DAYS = {"HOURS":1/24,"DAYS":1,"WEEKS":7,"MONTHS":31}`.
@@ -53,6 +71,15 @@ Messages must match **exactly** in both languages.
   - Unit not in `temporary_units`: `Choose a unit for the duration.`
   - End date not after today: `Choose an end date after today.`
   - Over the cap (n × UNIT_MAX_DAYS[unit], or hours / 24, greater than maxDays): `Temporary access can last at most {maxDays} days.`
+- **Bulk item comment:** `COMMENT_SEPARATOR = " | "`. `parse_bulk_comment(cfg, text)` / `parseBulkComment(cfg, text)` reads back
+  the item comment of §4 and returns `{inc, requester, approver, accessLabel, justification}`, or `None` / `null` for anything else:
+  - exactly the shape `<INC> | Bulk access request by <requester> | Approved by <approver> | <access label> | <justification>`;
+  - the INC must match the configured INC pattern (`inc_is_valid` / `incIsValid`);
+  - requester, approver and access label must not be empty; the justification may be empty;
+  - the justification is everything after the 4th separator, so it may itself contain ` | ` (and newlines);
+  - extra whitespace around the separators, between the label words and at both ends is tolerated (fields are trimmed);
+  - not a string, plain comments, the INC alone, 4 fields, wrong or reordered labels → `None` / `null`.
+  `definitions.py` builds the comment from `COMMENT_SEPARATOR`, and a test checks that the rendered comment parses back to its inputs.
 
 ## 3. Plugin workflow input (one workflow-test run **per part**)
 Every field is **always** present (no missing paths in templates):
@@ -83,6 +110,12 @@ All parts of one submission share the same INC, approver, items, justification a
 New fields (the rest are unchanged): `"peopleMax": null | number`, `"partSize": number`,
 `"temporary": {"enabled": bool, "allow": ["duration","endDate"], "units": ["HOURS",...], "maxDays": null | number}`.
 `runtime-config.ts` validates: peopleMax null or ≥ 1; partSize 1..250; allow/units from the fixed lists.
+
+`"approvals": {"enabled": bool, "concurrency": 1..8, "useBulkEndpoint": "auto"|"always"|"never", "maxRows": 250..20000,
+"showOther": bool, "denyCommentRequired": bool}`. `enabled` carries the derived `plugin_approvals_enabled`. `runtime-config.ts`
+(`ApprovalsConfig`) applies the same ranges with the same messages as §1. A file **without** the block comes from an older
+install, so the tab is off (`enabled: false`, other keys at their defaults); a block with missing keys gets the Python defaults
+(`enabled: true`).
 
 ## 6. One CLI (`bulkaccess.py` at the repo root)
 ```

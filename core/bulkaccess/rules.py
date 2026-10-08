@@ -86,6 +86,42 @@ def catalog_options(cfg: Config, requestable: Iterable[dict[str, Any]]) -> list[
     return sorted(options, key=lambda o: (o["label"].lower(), o["value"]["type"]))
 
 
+# ── the item comment (CONTRACTS §4) ───────────────────────────────────────────
+# Every access request the workflow submits carries one comment, built by definitions.py:
+#   "<INC> | Bulk access request by <requester> | Approved by <approver> | <access label> | <justification>"
+COMMENT_SEPARATOR = " | "
+REQUESTER_LABEL = "Bulk access request by"
+APPROVER_LABEL = "Approved by"
+
+# Four fields without "|", then the justification (everything after the 4th separator, "|" allowed).
+# Written to behave the same in Python and JavaScript (rules.ts uses the same patterns).
+_BULK_COMMENT = re.compile(r"^\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([\s\S]*?)\s*$")
+_REQUESTER = re.compile(r"^Bulk\s+access\s+request\s+by\s+(\S[\s\S]*)$")
+_APPROVER = re.compile(r"^Approved\s+by\s+(\S[\s\S]*)$")
+
+
+def parse_bulk_comment(cfg: Config, text: Any) -> dict[str, str] | None:
+    """The parts of a bulk request's item comment, or None for any other comment.
+
+    Returns {inc, requester, approver, accessLabel, justification}. The INC must match the
+    configured pattern; requester, approver and access label must not be empty; the
+    justification may be empty and may itself contain " | ". Extra whitespace around the
+    separators and between the label words is tolerated.
+    """
+    if not isinstance(text, str):
+        return None
+    m = _BULK_COMMENT.match(text)
+    if not m:
+        return None
+    inc, by, approved, label, justification = m.groups()
+    requester = _REQUESTER.match(by)
+    approver = _APPROVER.match(approved)
+    if not (inc_is_valid(cfg, inc) and requester and approver and label):
+        return None
+    return {"inc": inc, "requester": requester.group(1), "approver": approver.group(1),
+            "accessLabel": label, "justification": justification}
+
+
 # ── people in parts ───────────────────────────────────────────────────────────
 def split_into_parts(people: Iterable[str], part_size: int = LOOP_MAX) -> list[list[str]]:
     """The people, deduplicated in order, in chunks of `part_size` (one workflow run and

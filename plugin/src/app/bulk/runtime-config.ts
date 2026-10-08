@@ -31,6 +31,26 @@ export interface TemporaryConfig {
   maxDays: number | null;
 }
 
+/** How the Approvals tab sends decisions (config.BULK_ENDPOINT_MODES). */
+export type BulkEndpointMode = 'auto' | 'always' | 'never';
+export const BULK_ENDPOINT_MODES: readonly BulkEndpointMode[] = ['auto', 'always', 'never'];
+export const APPROVALS_CONCURRENCY_MAX = 8;
+export const APPROVALS_MAX_ROWS_RANGE = [250, 20000] as const;
+
+/** The Approvals tab: item approvers decide one bulk request's approvals at once (config `approvals`). */
+export interface ApprovalsConfig {
+  /** config.plugin_approvals_enabled (false when the file comes from an older install). */
+  enabled: boolean;
+  /** Decisions sent at a time, 1..8. */
+  concurrency: number;
+  useBulkEndpoint: BulkEndpointMode;
+  /** Most pending approvals loaded, 250..20000. */
+  maxRows: number;
+  /** Also list approvals that aren't from a bulk request. */
+  showOther: boolean;
+  denyCommentRequired: boolean;
+}
+
 export interface RuntimeConfig {
   /** Names every object install.py created, e.g. "ACME". */
   prefix: string;
@@ -52,6 +72,7 @@ export interface RuntimeConfig {
   /** Shown in the banner: where people without ORG_ADMIN should go instead. */
   launcherName: string;
   temporary: TemporaryConfig;
+  approvals: ApprovalsConfig;
 }
 
 export const DEFAULT_CONFIG: RuntimeConfig = {
@@ -71,7 +92,19 @@ export const DEFAULT_CONFIG: RuntimeConfig = {
   // Off when the file has no `temporary` block: that file comes from an older install,
   // whose workflow would ignore the duration and grant the access permanently.
   temporary: { enabled: false, allow: [...TEMPORARY_MODES], units: [...DURATION_UNIT_NAMES], maxDays: null },
+  // Off when the file has no `approvals` block: it comes from an install that predates the Approvals tab.
+  approvals: { enabled: false, concurrency: 4, useBulkEndpoint: 'auto', maxRows: 5000, showOther: false, denyCommentRequired: true },
 };
+
+/** Problem messages for the `approvals` block: the same text as core/bulkaccess/config.py. */
+export const MSG_APPROVALS_OBJECT = '`approvals` must be an object.';
+export const MSG_APPROVALS_CONCURRENCY = `\`approvals.concurrency\` must be a whole number between 1 and ${APPROVALS_CONCURRENCY_MAX}.`;
+export const MSG_APPROVALS_BULK_ENDPOINT = '`approvals.useBulkEndpoint` must be "auto", "always" or "never".';
+export const MSG_APPROVALS_MAX_ROWS =
+  `\`approvals.maxRows\` must be a whole number between ${APPROVALS_MAX_ROWS_RANGE[0]} and ${APPROVALS_MAX_ROWS_RANGE[1]}.`;
+export function msgApprovalsFlag(key: string): string {
+  return `\`approvals.${key}\` must be true or false.`;
+}
 
 export class RuntimeConfigError extends Error {}
 
@@ -105,6 +138,7 @@ export function parseRuntimeConfig(raw: unknown): RuntimeConfig {
   }
   cfg.itemsMax = num('itemsMax') ?? cfg.itemsMax;
   cfg.temporary = parseTemporary(data['temporary']);
+  cfg.approvals = parseApprovals(data['approvals']);
   cfg.nameStartsWith = str('nameStartsWith') || null;
   cfg.launcherName = str('launcherName') || cfg.launcherName;
   const types = Array.isArray(data['catalogTypes']) ? (data['catalogTypes'] as unknown[]) : null;
@@ -165,6 +199,32 @@ function parseTemporary(raw: unknown): TemporaryConfig {
     units: list('units', DURATION_UNIT_NAMES),
     maxDays: t['maxDays'] === undefined ? null : optionalWhole(t['maxDays'], 'temporary.maxDays'),
   };
+}
+
+/** The `approvals` block (config._approvals): missing → off; missing keys → the Python defaults. */
+function parseApprovals(raw: unknown): ApprovalsConfig {
+  if (raw === undefined || raw === null) return { ...DEFAULT_CONFIG.approvals };
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new RuntimeConfigError(MSG_APPROVALS_OBJECT);
+  const a = raw as Record<string, unknown>;
+  const flag = (key: string, fallback: boolean): boolean => {
+    const v = a[key] === undefined ? fallback : a[key];
+    if (typeof v !== 'boolean') throw new RuntimeConfigError(msgApprovalsFlag(key));
+    return v;
+  };
+  // Python's flags are checked first, in this order, so a file with several problems reports the same one.
+  const enabled = flag('enabled', true);
+  const showOther = flag('showOther', false);
+  const denyCommentRequired = flag('denyCommentRequired', true);
+  const concurrency = a['concurrency'] === undefined ? DEFAULT_CONFIG.approvals.concurrency : a['concurrency'];
+  if (!isWhole(concurrency) || concurrency < 1 || concurrency > APPROVALS_CONCURRENCY_MAX) {
+    throw new RuntimeConfigError(MSG_APPROVALS_CONCURRENCY);
+  }
+  const endpoint = a['useBulkEndpoint'] === undefined ? DEFAULT_CONFIG.approvals.useBulkEndpoint : a['useBulkEndpoint'];
+  if (!BULK_ENDPOINT_MODES.includes(endpoint as BulkEndpointMode)) throw new RuntimeConfigError(MSG_APPROVALS_BULK_ENDPOINT);
+  const maxRows = a['maxRows'] === undefined ? DEFAULT_CONFIG.approvals.maxRows : a['maxRows'];
+  const [low, high] = APPROVALS_MAX_ROWS_RANGE;
+  if (!isWhole(maxRows) || maxRows < low || maxRows > high) throw new RuntimeConfigError(MSG_APPROVALS_MAX_ROWS);
+  return { enabled, concurrency, useBulkEndpoint: endpoint as BulkEndpointMode, maxRows, showOther, denyCommentRequired };
 }
 
 /** Fetch the config shipped next to index.html (relative URL: the bundle is served from a CDN path). */

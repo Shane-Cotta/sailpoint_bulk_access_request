@@ -40,6 +40,23 @@ DURATION_UNITS = {"HOURS": "h", "DAYS": "d", "WEEKS": "w", "MONTHS": "M"}
 # Upper bound in days of one unit, for checking `temporaryAccess.maxDays`.
 UNIT_MAX_DAYS = {"HOURS": 1 / 24, "DAYS": 1, "WEEKS": 7, "MONTHS": 31}
 
+# The plugin's Approvals tab (item approvers decide one bulk request's approvals at once).
+# `useBulkEndpoint`: "auto" uses generic-approvals/bulk-approve|reject only when the caller
+# may; "always" / "never" force it on or off. Messages are mirrored in the plugin's
+# runtime-config.ts, so they must match exactly.
+BULK_ENDPOINT_MODES = ("auto", "always", "never")
+APPROVALS_CONCURRENCY_MAX = 8
+APPROVALS_MAX_ROWS_RANGE = (250, 20000)
+MSG_APPROVALS_OBJECT = "`approvals` must be an object."
+MSG_APPROVALS_CONCURRENCY = f"`approvals.concurrency` must be a whole number between 1 and {APPROVALS_CONCURRENCY_MAX}."
+MSG_APPROVALS_BULK_ENDPOINT = '`approvals.useBulkEndpoint` must be "auto", "always" or "never".'
+MSG_APPROVALS_MAX_ROWS = ("`approvals.maxRows` must be a whole number between "
+                          f"{APPROVALS_MAX_ROWS_RANGE[0]} and {APPROVALS_MAX_ROWS_RANGE[1]}.")
+
+
+def msg_approvals_flag(key: str) -> str:
+    return f"`approvals.{key}` must be true or false."
+
 
 class ConfigError(ValueError):
     """The config file is missing or invalid; the message says what to fix."""
@@ -74,6 +91,12 @@ class Config:
     deploy_launcher: bool = True
     deploy_plugin: bool = True
     plugin_public: bool = False
+    approvals_enabled: bool = True
+    approvals_concurrency: int = 4
+    approvals_use_bulk_endpoint: str = "auto"
+    approvals_max_rows: int = 5000
+    approvals_show_other: bool = False
+    approvals_deny_comment_required: bool = True
     source_path: str | None = field(default=None, compare=False)
     # Old key names that were mapped to new ones; shown by `bulkaccess.py show-config`.
     deprecations: tuple[str, ...] = field(default=(), compare=False)
@@ -128,6 +151,11 @@ class Config:
     def plugin_temporary_modes(self) -> tuple[str, ...]:
         return self.temporary_allow if self.temporary_enabled else ()
 
+    @property
+    def plugin_approvals_enabled(self) -> bool:
+        """The Approvals tab lives in the plugin, so it needs the plugin deployment too."""
+        return self.deploy_plugin and self.approvals_enabled
+
 
 def _require(cond: bool, message: str) -> None:
     if not cond:
@@ -140,6 +168,31 @@ def _optional_int(value: Any, name: str, minimum: int) -> int | None:
     _require(isinstance(value, int) and not isinstance(value, bool) and value >= minimum,
              f"`{name}` must be null (no limit) or a whole number of at least {minimum}.")
     return value
+
+
+def _whole(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _approvals(raw: Any) -> dict[str, Any]:
+    """The `approvals` block, validated, with defaults for missing keys."""
+    if raw is None:
+        raw = {}
+    _require(isinstance(raw, dict), MSG_APPROVALS_OBJECT)
+    out: dict[str, Any] = {}
+    for key, default in (("enabled", True), ("showOther", False), ("denyCommentRequired", True)):
+        value = raw.get(key, default)
+        _require(isinstance(value, bool), msg_approvals_flag(key))
+        out[key] = value
+    concurrency = raw.get("concurrency", 4)
+    _require(_whole(concurrency) and 1 <= concurrency <= APPROVALS_CONCURRENCY_MAX, MSG_APPROVALS_CONCURRENCY)
+    endpoint = raw.get("useBulkEndpoint", "auto")
+    _require(endpoint in BULK_ENDPOINT_MODES, MSG_APPROVALS_BULK_ENDPOINT)
+    max_rows = raw.get("maxRows", 5000)
+    low, high = APPROVALS_MAX_ROWS_RANGE
+    _require(_whole(max_rows) and low <= max_rows <= high, MSG_APPROVALS_MAX_ROWS)
+    out.update(concurrency=concurrency, useBulkEndpoint=endpoint, maxRows=max_rows)
+    return out
 
 
 def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
@@ -213,6 +266,8 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
     access_approval = access_approval or "MANAGER"
     _require(access_approval in ("MANAGER", "NONE"), "`access.launcherApproval` must be \"MANAGER\" or \"NONE\".")
 
+    approvals = _approvals(data.get("approvals"))
+
     alias = plugin.get("alias") or f"{prefix.lower()}-bulk-access"
     _require(re.fullmatch(r"[a-z0-9][a-z0-9-]{1,48}", alias) is not None,
              "`plugin.alias` must be lowercase letters, digits and dashes.")
@@ -245,6 +300,12 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
         deploy_launcher=deploy_launcher,
         deploy_plugin=deploy_plugin,
         plugin_public=bool(plugin.get("public", False)),
+        approvals_enabled=approvals["enabled"],
+        approvals_concurrency=approvals["concurrency"],
+        approvals_use_bulk_endpoint=approvals["useBulkEndpoint"],
+        approvals_max_rows=approvals["maxRows"],
+        approvals_show_other=approvals["showOther"],
+        approvals_deny_comment_required=approvals["denyCommentRequired"],
         source_path=source_path,
         deprecations=tuple(deprecations),
     )

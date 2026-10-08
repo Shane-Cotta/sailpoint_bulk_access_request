@@ -153,6 +153,21 @@ def test_runtime_config_carries_the_limits_and_temporary_access_settings():
     json.dumps(runtime)                                          # plain JSON (no tuples)
 
 
+def test_runtime_config_carries_the_approvals_settings():
+    runtime = lib.runtime_config(config.load(EXAMPLE))
+    assert runtime["approvals"] == {"enabled": True, "concurrency": 4, "useBulkEndpoint": "auto", "maxRows": 5000,
+                                    "showOther": False, "denyCommentRequired": True}
+    cfg = config.from_dict({**json.loads(EXAMPLE.read_text()),
+                            "approvals": {"enabled": False, "concurrency": 2, "useBulkEndpoint": "never",
+                                          "maxRows": 1000, "showOther": True, "denyCommentRequired": False}})
+    assert lib.runtime_config(cfg)["approvals"] == {"enabled": False, "concurrency": 2, "useBulkEndpoint": "never",
+                                                    "maxRows": 1000, "showOther": True, "denyCommentRequired": False}
+    # The page reads `enabled` as the derived value: no plugin deployment, no Approvals tab.
+    cfg = config.from_dict({**json.loads(EXAMPLE.read_text()), "deployments": {"launcher": True, "plugin": False}})
+    assert lib.runtime_config(cfg)["approvals"]["enabled"] is False
+    json.dumps(runtime)
+
+
 def test_committed_manifest_matches_the_example_config():
     assert json.loads((PLUGIN / lib.MANIFEST).read_text()) == lib.manifest(config.load(EXAMPLE))
 

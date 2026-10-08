@@ -654,3 +654,138 @@ def test_export_offline_builds_every_object_with_placeholders(tmp_path):
     assert wf["trigger"]["attributes"]["filter.$"] == "$[?(@.workflowId == '<WORKFLOW_ID>')]"
     cli.main(["export", "--offline", "--only", "plugin", "--config", str(EXAMPLE), "--out", str(tmp_path / "p")])
     assert [p.name for p in (tmp_path / "p").rglob("*.json")] == ["workflow.json"]
+
+
+# ── bulk approvals: the item comment read back, and the `approvals` config ────
+BULK = "INC0012345 | Bulk access request by Ada Lovelace | Approved by Grace Hopper | Temporary: 30 days | Quarterly audit"
+PARSED = {"inc": "INC0012345", "requester": "Ada Lovelace", "approver": "Grace Hopper",
+          "accessLabel": "Temporary: 30 days", "justification": "Quarterly audit"}
+
+
+def _bulk(justification, label="Permanent"):
+    return {"inc": "INC0012345", "requester": "Ada", "approver": "Grace", "accessLabel": label,
+            "justification": justification}
+
+
+def test_comment_separator_is_what_definitions_writes():
+    assert rules.COMMENT_SEPARATOR == " | "
+
+
+@pytest.mark.parametrize("text,expected", [
+    (BULK, PARSED),
+    # the justification is everything after the 4th separator, " | " included
+    ("INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent | move | to | finance",
+     _bulk("move | to | finance")),
+    # extra whitespace around the separators and inside the labels
+    ("  INC0012345   |  Bulk  access request   by  Ada Lovelace |Approved   by Grace Hopper|  Temporary: 30 days  |"
+     "  Quarterly audit  ", PARSED),
+    # an empty justification (a trailing separator, with or without its space)
+    ("INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent | ", _bulk("")),
+    ("INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent |", _bulk("")),
+    # a multi-line justification is kept as written
+    ("INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent | line one\nline two",
+     _bulk("line one\nline two")),
+])
+def test_parse_bulk_comment_reads_the_bulk_item_comment(text, expected):
+    assert rules.parse_bulk_comment(config.load(EXAMPLE), text) == expected
+
+
+@pytest.mark.parametrize("text", [
+    None, "", 42, "INC0012345", "INC0012345: Quarterly audit",          # plain comments, the INC alone
+    "Please approve, thanks",
+    "INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent",          # only 4 fields
+    "INC12345 | Bulk access request by Ada | Approved by Grace | Permanent | why",       # INC fails the pattern
+    "CHG0012345 | Bulk access request by Ada | Approved by Grace | Permanent | why",
+    "INC0012345 | Access request by Ada | Approved by Grace | Permanent | why",          # wrong labels
+    "INC0012345 | Bulk access request by Ada | Rejected by Grace | Permanent | why",
+    "INC0012345 | Approved by Grace | Bulk access request by Ada | Permanent | why",     # wrong order
+    "INC0012345 | Bulk access request by | Approved by Grace | Permanent | why",          # empty names or label
+    "INC0012345 | Bulk access request by Ada | Approved by  | Permanent | why",
+    "INC0012345 | Bulk access request by Ada | Approved by Grace |  | why",
+    "INC0012345 | Bulk access request byAda | Approved by Grace | Permanent | why",
+])
+def test_parse_bulk_comment_ignores_everything_else(text):
+    assert rules.parse_bulk_comment(config.load(EXAMPLE), text) is None
+
+
+def test_parse_bulk_comment_uses_the_configured_inc_pattern():
+    cfg = cfg_with(inc__pattern=r"^(INC|RITM)\d{7}$", inc__example="RITM0000001")
+    text = BULK.replace("INC0012345", "RITM0000001", 1)
+    assert rules.parse_bulk_comment(cfg, text)["inc"] == "RITM0000001"
+    assert rules.parse_bulk_comment(config.load(EXAMPLE), text) is None
+
+
+def _render(template, values):
+    """Fill the workflow's {{$.path}} templates as SailPoint would, choosing each value by a part of its path."""
+    def value(m):
+        path = m.group(1)
+        for key, val in values.items():
+            if key in path:
+                return val
+        raise AssertionError(f"unexpected template {path}")
+    return re.sub(r"\{\{(\$[^}]*)\}\}", value, template)
+
+
+@pytest.mark.parametrize("variant", ["plugin", "launcher"])
+def test_the_comment_definitions_writes_parses_back_to_its_inputs(variant):
+    cfg = cfg_with(**LIVE)
+    template = _manage(definitions.bulk_workflow(cfg, variant=variant, owner_id="o", form_id="f"))["attributes"]["comments"]
+    expected = {"inc": "INC0012345", "requester": "Ada Lovelace", "approver": "Grace Hopper",
+                "accessLabel": "Temporary: until 2026-11-07", "justification": "Audit | see INC0099999: finance | Q4"}
+    rendered = _render(template, {"getRequester": expected["requester"], "getApprover": expected["approver"],
+                                  "accessLabel": expected["accessLabel"], "justification": expected["justification"],
+                                  "inc": expected["inc"]})
+    assert rendered.startswith("INC0012345 | Bulk access request by Ada Lovelace | ")
+    assert rules.parse_bulk_comment(cfg, rendered) == expected
+
+
+def test_approvals_defaults_and_derived_values():
+    cfg = config.load(EXAMPLE)
+    assert (cfg.approvals_enabled, cfg.approvals_concurrency, cfg.approvals_use_bulk_endpoint, cfg.approvals_max_rows,
+            cfg.approvals_show_other, cfg.approvals_deny_comment_required) == (True, 4, "auto", 5000, False, True)
+    assert cfg.plugin_approvals_enabled
+    data = json.loads(EXAMPLE.read_text())
+    del data["approvals"]                                                    # a config from before the block
+    assert config.from_dict(data) == cfg
+    assert not cfg_with(deployments__plugin=False).plugin_approvals_enabled   # the tab lives in the plugin
+    assert not cfg_with(approvals__enabled=False).plugin_approvals_enabled
+    custom = cfg_with(approvals={"concurrency": 8, "useBulkEndpoint": "never", "maxRows": 250, "showOther": True,
+                                 "denyCommentRequired": False})
+    assert (custom.approvals_enabled, custom.approvals_concurrency, custom.approvals_use_bulk_endpoint,
+            custom.approvals_max_rows, custom.approvals_show_other, custom.approvals_deny_comment_required) == \
+        (True, 8, "never", 250, True, False)
+    assert cfg_with(approvals__concurrency=1, approvals__maxRows=20000).approvals_max_rows == 20000
+
+
+@pytest.mark.parametrize("key,value,message", [
+    ("approvals", "on", "`approvals` must be an object."),
+    ("approvals__enabled", "yes", "`approvals.enabled` must be true or false."),
+    ("approvals__showOther", 1, "`approvals.showOther` must be true or false."),
+    ("approvals__denyCommentRequired", None, "`approvals.denyCommentRequired` must be true or false."),
+    ("approvals__concurrency", 0, "`approvals.concurrency` must be a whole number between 1 and 8."),
+    ("approvals__concurrency", 9, "`approvals.concurrency` must be a whole number between 1 and 8."),
+    ("approvals__concurrency", 2.5, "`approvals.concurrency` must be a whole number between 1 and 8."),
+    ("approvals__concurrency", True, "`approvals.concurrency` must be a whole number between 1 and 8."),
+    ("approvals__useBulkEndpoint", "sometimes", '`approvals.useBulkEndpoint` must be "auto", "always" or "never".'),
+    ("approvals__maxRows", 249, "`approvals.maxRows` must be a whole number between 250 and 20000."),
+    ("approvals__maxRows", 20001, "`approvals.maxRows` must be a whole number between 250 and 20000."),
+    ("approvals__maxRows", "5000", "`approvals.maxRows` must be a whole number between 250 and 20000."),
+])
+def test_bad_approvals_config_is_rejected_with_the_exact_message(key, value, message):
+    with pytest.raises(config.ConfigError) as err:
+        cfg_with(**{key: value})
+    assert str(err.value) == message
+
+
+def test_show_config_describes_approvals_and_warns_about_a_private_plugin(tmp_path, capsys):
+    warning = ("Warning:     non-admin approvers can't open a private plugin unless they are listed in the plugin's "
+               "restrictToUsers")
+    out = _show(tmp_path, capsys)
+    assert "Approvals:   Approvals tab in the plugin: 4 at a time, bulk endpoint when allowed, up to 5000 pending rows" in out
+    assert warning in out
+    out = _show(tmp_path, capsys, plugin__public=True)
+    assert "Approvals:   Approvals tab" in out and "Warning:" not in out
+    out = _show(tmp_path, capsys, approvals__enabled=False)
+    assert "Approvals:   off (approvals.enabled is false)" in out and "Warning:" not in out
+    out = _show(tmp_path, capsys, deployments__plugin=False)
+    assert "Approvals:   off (the Approvals tab is part of the plugin, which is off)" in out and "Warning:" not in out

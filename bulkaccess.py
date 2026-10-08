@@ -95,6 +95,24 @@ def temporary_summary(cfg: Config, route: str) -> str:
     return " or ".join(out)
 
 
+APPROVALS_PRIVATE_WARNING = ("non-admin approvers can't open a private plugin unless they are listed in the plugin's "
+                             "restrictToUsers")
+
+
+def approvals_summary(cfg: Config) -> str:
+    """The plugin's Approvals tab, in one line."""
+    if not cfg.deploy_plugin:
+        return "off (the Approvals tab is part of the plugin, which is off)"
+    if not cfg.approvals_enabled:
+        return "off (approvals.enabled is false)"
+    endpoint = {"auto": "bulk endpoint when allowed", "always": "always the bulk endpoint",
+                "never": "one call per approval"}[cfg.approvals_use_bulk_endpoint]
+    return (f"Approvals tab in the plugin: {cfg.approvals_concurrency} at a time, {endpoint}, "
+            f"up to {cfg.approvals_max_rows} pending rows"
+            + (", other approvals shown" if cfg.approvals_show_other else "")
+            + ("; a denial needs a comment" if cfg.approvals_deny_comment_required else ""))
+
+
 def describe(cfg: Config) -> list[str]:
     """What will actually be used, route by route (the `show-config` output)."""
     routes = cfg.deployments
@@ -130,6 +148,9 @@ def describe(cfg: Config) -> list[str]:
         "Email:       " + (f"all mail goes to {', '.join(cfg.override_recipients)} (override)" if cfg.override_recipients
                            else "the requester" + (", cc the approver" if cfg.cc_approver else "")),
     ]
+    lines.append("Approvals:   " + approvals_summary(cfg))
+    if cfg.plugin_approvals_enabled and not cfg.plugin_public:
+        lines.append(f"Warning:     {APPROVALS_PRIVATE_WARNING}")
     for note in cfg.deprecations:
         lines.append(f"Deprecated:  {note}")
     return lines

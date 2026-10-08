@@ -26,8 +26,8 @@ import json
 from typing import Any
 
 from .config import DURATION_UNITS, Config
-from .rules import (APPROVAL_COMMENT_MAX, APPROVAL_DESCRIPTION_MAX, MSG_APPROVER_IN_PEOPLE, MSG_DURATION_NUMBER, MSG_DURATION_UNIT,
-                    duration_regex, msg_max_days, unit_max_count)
+from .rules import (APPROVAL_COMMENT_MAX, APPROVAL_DESCRIPTION_MAX, APPROVER_LABEL, COMMENT_SEPARATOR, MSG_APPROVER_IN_PEOPLE,
+                    MSG_DURATION_NUMBER, MSG_DURATION_UNIT, REQUESTER_LABEL, duration_regex, msg_max_days, unit_max_count)
 
 VARIANTS = ("launcher", "plugin")
 
@@ -336,10 +336,14 @@ def bulk_workflow(cfg: Config, *, variant: str, owner_id: str, owner_name: str |
         # the loop context and the items / comment parts are read from $.loop.context.
         def in_loop(path: str) -> str:
             return "$.loop.context" + path[1:]
-        loop_comment = (f"{_t(in_loop(p['inc']))} | Bulk access request by "
-                        f"{_t(in_loop('$.getRequester.attributes.displayName'))} | Approved by "
-                        f"{_t(in_loop('$.getApprover.attributes.displayName'))} | {_t(in_loop(p['accessLabel']))} | "
-                        f"{_t(in_loop(p['justification']))}")
+        # The plugin's Approvals tab reads this back with rules.parse_bulk_comment; keep them in step.
+        loop_comment = COMMENT_SEPARATOR.join([
+            _t(in_loop(p["inc"])),
+            f"{REQUESTER_LABEL} {_t(in_loop('$.getRequester.attributes.displayName'))}",
+            f"{APPROVER_LABEL} {_t(in_loop('$.getApprover.attributes.displayName'))}",
+            _t(in_loop(p["accessLabel"])),
+            _t(in_loop(p["justification"])),
+        ])
         steps["Request Access"] = {
             "actionId": "sp:loop:iterator", "type": "action", "versionNumber": 1, "displayName": "Request access per person",
             "attributes": {"input.$": p["people"], "context.$": "$", "start": "Manage Access",
