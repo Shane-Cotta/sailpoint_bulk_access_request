@@ -3,7 +3,9 @@ import { SailpointPluginService } from '@core';
 
 import { DEMO_CONFIG } from '../demo/fixtures';
 import { routedPlugin } from '../testing/plugin.testing';
-import { batches, BulkApiService, escapeQuery, pool, retry, splitPasted, type BulkInput } from './bulk-api.service';
+import {
+  batches, BulkApiService, escapeQuery, isTransient, pool, retry, splitPasted, Throttle, type BulkInput,
+} from './bulk-api.service';
 
 function setup(routes: Record<string, unknown>) {
   const plugin = routedPlugin(routes);
@@ -199,6 +201,143 @@ describe('BulkApiService', () => {
     expect(mine[1].approvers).toEqual([{ name: 'Aisha Bello' }]);
     expect(mine[0].name?.[0].value).toBe('Bulk access INC0000004');     // detail failed: list row kept
     expect(plugin.get).toHaveBeenCalledTimes(3);
+  });
+
+  describe('Approvals tab', () => {
+    const fail = (status: number, text = 'boom') => Object.assign(new Error(text), { status, body: { messages: [{ text }] } });
+
+    function quick(routes: Record<string, unknown>) {
+      const s = setup(routes);
+      s.api.approvalsThrottle.intervalMs = 0;
+      s.api.decideRetryWaitMs = 1;
+      return s;
+    }
+
+    it('pages through pending approvals up to maxRows, oldest first, and says when it stopped early', async () => {
+      const { api, plugin } = quick({
+        '/v2025/generic-approvals?': (path: string) => {
+          const limit = Number(new URLSearchParams(path.split('?')[1]).get('limit'));
+          return Array.from({ length: limit }, (_, i) => ({ id: `a${i}`, status: 'PENDING' }));
+        },
+      });
+      const { approvals, truncated } = await api.pendingAccessApprovals(600);
+      expect(approvals).toHaveLength(600);
+      expect(truncated).toBe(true);
+      const urls = plugin.get.mock.calls.map((c) => decodeURIComponent(c[0] as string));
+      expect(urls.map((u) => new URLSearchParams(u.split('?')[1]).get('limit'))).toEqual(['250', '250', '100']);
+      expect(urls[1]).toContain('mine=true&include-comments=true&limit=250&offset=250');
+      expect(urls[0]).toContain('filters=status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"&sorters=createdDate');
+    });
+
+    it('stops at a short page without calling it truncated', async () => {
+      const { api, plugin } = quick({ '/v2025/generic-approvals?': [{ id: 'a', status: 'PENDING' }] });
+      expect(await api.pendingAccessApprovals(5000)).toEqual({ approvals: [{ id: 'a', status: 'PENDING' }], truncated: false });
+      expect(plugin.get).toHaveBeenCalledTimes(1);
+    });
+
+    it('decides one by one with limited concurrency, retrying 429 and 5xx but not 4xx', async () => {
+      const seen = new Map<string, number>();
+      let running = 0;
+      let peak = 0;
+      const { api, plugin } = quick({
+        '/v2025/generic-approvals/': async (path: string) => {
+          const id = path.split('/')[3];
+          const n = (seen.get(id) ?? 0) + 1;
+          seen.set(id, n);
+          peak = Math.max(peak, ++running);
+          await new Promise((r) => setTimeout(r, 2));
+          running--;
+          if (id === 'throttled' && n === 1) throw fail(429);
+          if (id === 'flaky' && n < 3) throw fail(503);
+          if (id === 'bad') throw fail(400, 'The approval is not pending.');
+          if (id === 'gone') throw fail(403);
+          return id === 'rejected-200' ? { id, status: 'REJECTED' } : null;   // approve 200 with a body, reject may be empty
+        },
+      });
+      const ids = ['a', 'b', 'throttled', 'flaky', 'bad', 'gone', 'c', 'rejected-200'];
+      const progress: number[] = [];
+      const results = await api.decideApprovals('approve', ids, '  ok  ', {
+        concurrency: 3, useBulk: false, onProgress: (done) => progress.push(done),
+      });
+      expect(peak).toBeLessThanOrEqual(3);
+      expect([...results.entries()].filter(([, r]) => r.ok).map(([id]) => id).sort())
+        .toEqual(['a', 'b', 'c', 'flaky', 'rejected-200', 'throttled']);
+      expect(results.get('bad')).toEqual({ ok: false, status: 400, message: 'The approval is not pending.' });
+      expect(results.get('gone')).toMatchObject({ ok: false, status: 403 });
+      expect((results.get('gone') as { message: string }).message).toContain('assigned to you');
+      expect(seen.get('bad')).toBe(1);
+      expect(seen.get('flaky')).toBe(3);
+      expect(plugin.post).toHaveBeenCalledWith('/v2025/generic-approvals/a/approve', { comment: 'ok' });
+      expect(progress[0]).toBe(0);
+      expect(progress.at(-1)).toBe(8);
+    });
+
+    it('sends no comment field when the comment is empty', async () => {
+      const { api, plugin } = quick({ '/v2025/generic-approvals/': null });
+      await api.decideApprovals('reject', ['x'], '', { concurrency: 1, useBulk: false });
+      expect(plugin.post).toHaveBeenCalledWith('/v2025/generic-approvals/x/reject', {});
+    });
+
+    it('uses the bulk endpoint in batches of 50, and falls back to one by one after a 403', async () => {
+      const ids = Array.from({ length: 120 }, (_, i) => `id${i}`);
+      const ok = quick({ '/v2025/generic-approvals/bulk-reject': {} });
+      const results = await ok.api.decideApprovals('reject', ids, 'no', { concurrency: 4, useBulk: true });
+      expect(ok.plugin.post.mock.calls.map((c) => (c[1] as { approvalIds: string[] }).approvalIds.length)).toEqual([50, 50, 20]);
+      expect(ok.plugin.post.mock.calls[0][1]).toMatchObject({ comment: 'no' });
+      expect([...results.values()].every((r) => r.ok)).toBe(true);
+
+      TestBed.resetTestingModule();
+      const refused = quick({
+        '/v2025/generic-approvals/bulk-': () => Promise.reject(fail(403, 'Forbidden')),
+        '/v2025/generic-approvals/': {},
+      });
+      const after = await refused.api.decideApprovals('approve', ids, '', { concurrency: 4, useBulk: true });
+      const paths = refused.plugin.post.mock.calls.map((c) => c[0] as string);
+      expect(paths.filter((p) => p.includes('bulk-'))).toHaveLength(1);    // the first refusal switches the rest over
+      expect(paths.filter((p) => /\/id\d+\/approve$/.test(p))).toHaveLength(120);
+      expect([...after.values()].every((r) => r.ok)).toBe(true);
+    });
+
+    it('re-reads states 50 IDs per call (any assignee)', async () => {
+      const ids = Array.from({ length: 120 }, (_, i) => `id${i}`);
+      const { api, plugin } = quick({
+        '/v2025/generic-approvals?': (path: string) => [...decodeURIComponent(path).matchAll(/"([^"]+)"/g)]
+          .map((m) => ({ id: m[1], status: m[1] === 'id7' ? 'APPROVED' : 'PENDING' }))
+          .filter((r) => r.id !== 'id9'),
+      });
+      const states = await api.approvalStatuses(ids);
+      expect(plugin.get).toHaveBeenCalledTimes(3);
+      const url = decodeURIComponent(plugin.get.mock.calls[0][0] as string);
+      expect(url).toContain('filters=approvalId in ("id0","id1",');
+      expect(url).not.toContain('mine=true');
+      expect(states.get('id7')?.status).toBe('APPROVED');
+      expect(states.has('id9')).toBe(false);
+      expect(states.size).toBe(119);
+    });
+
+    it('spaces calls out with the throttle and retries what isTransient allows', async () => {
+      vi.useFakeTimers();
+      try {
+        const throttle = new Throttle(125);
+        const at: number[] = [];
+        const start = Date.now();
+        const all = Promise.all([1, 2, 3, 4].map(() => throttle.wait().then(() => at.push(Date.now() - start))));
+        await vi.advanceTimersByTimeAsync(1000);
+        await all;
+        expect(at).toEqual([0, 125, 250, 375]);
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(isTransient(fail(502))).toBe(true);
+      expect(isTransient(fail(429))).toBe(true);
+      expect(isTransient(fail(409))).toBe(false);
+      expect(isTransient(new Error('network'))).toBe(false);
+      let n = 0;
+      await expect(retry(async () => {
+        if (++n < 2) throw fail(500);
+        return 'ok';
+      }, 3, 1, isTransient)).resolves.toBe('ok');
+    });
   });
 
   it('splits pasted lists and escapes search terms', () => {

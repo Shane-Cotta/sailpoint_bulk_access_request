@@ -1,6 +1,7 @@
 import { inject, Injectable } from '@angular/core';
 import { SailpointPluginService } from '@core';
 
+import { describeError } from './errors';
 import type { RuntimeConfig } from './runtime-config';
 import { APPROVAL_NAME_PREFIX, catalogOptions, type AccessItem, type CatalogOption } from './rules';
 
@@ -88,11 +89,53 @@ export interface GenericApproval {
   reassignmentHistory?: { reassignedFrom?: { name?: string } }[] | null;
   /** Who acted on it. An admin deciding on someone's behalf shows up here, not the assignee. */
   approvers?: { identityID?: string; name?: string }[];
-  approvedBy?: { name?: string }[] | null;
-  rejectedBy?: { name?: string }[] | null;
+  /** Who decided. Only the single GET has these; the list leaves them empty. */
+  approvedBy?: { identityID?: string; name?: string }[] | null;
+  rejectedBy?: { identityID?: string; name?: string }[] | null;
   referenceData?: { id: string; type: string }[];
+  /** Only with include-comments=true (and then `assignedTo` is left out). */
   comments?: { comment?: string; author?: { name?: string } }[];
+  // Access-request approvals (type ACCESS_REQUEST_APPROVAL), read by the Approvals tab:
+  type?: string;
+  /** The person who would get the access. */
+  requestee?: { identityID?: string; name?: string } | null;
+  /** The item; `removalDate` is set for temporary access. */
+  requestedTarget?: {
+    id?: string; name?: string; targetType?: string; requestType?: string; removalDate?: string | null;
+  } | null;
+  /** The item's approval scheme(s), e.g. ACCESS_PROFILE_OWNER or MANAGER. */
+  approvalConfig?: { serialChain?: { tier?: number; identityType?: string }[] | null } | null;
+  dueDate?: string | null;
+  priority?: string | null;
 }
+
+/** Approve or deny (the generic-approvals verbs are approve and reject). */
+export type DecideAction = 'approve' | 'reject';
+
+/** What happened to one decision call: sent (2xx) or failed, with the reason. */
+export type DecideResult = { ok: true } | { ok: false; status?: number; message: string };
+
+export interface DecideOptions {
+  /** Calls in flight at once (approvals.concurrency). */
+  concurrency: number;
+  /** Try SailPoint's bulk endpoint first (verified live: ORG_ADMIN only); a 401/403 falls back to one call per approval. */
+  useBulk: boolean;
+  /** Approvals done so far, out of all of them. */
+  onProgress?: (done: number, total: number) => void;
+  /** Called once per approval as soon as its call finishes. */
+  onResult?: (id: string, result: DecideResult) => void;
+}
+
+/** The pending access-request approvals assigned to the caller, and whether the cap cut the list short. */
+export interface PendingApprovals {
+  approvals: GenericApproval[];
+  truncated: boolean;
+}
+
+/** IDs per call for the bulk endpoints (at most 50) and for `approvalId in (…)` re-reads. */
+export const DECIDE_BATCH = 50;
+const PAGE = 250;
+const PENDING_FILTER = 'status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"';
 
 /** The fields of a /v3/access-request-status row the page reads. */
 export interface AccessRequestStatus {
@@ -177,15 +220,51 @@ export async function pool(jobs: (() => Promise<unknown>)[], concurrency: number
   await Promise.all(Array.from({ length: Math.min(concurrency, jobs.length) }, worker));
 }
 
-/** Retry a call SailPoint throttled (HTTP 429), with a short back-off. */
-export async function retry<T>(call: () => Promise<T>, attempts = 3, waitMs = 1500): Promise<T> {
+/** HTTP status of an API error (the SDK's ApiError carries `status`), or undefined. */
+export function statusOf(err: unknown): number | undefined {
+  return (err as { status?: number })?.status;
+}
+
+/** Throttled (HTTP 429): always worth another try. */
+export const isThrottled = (err: unknown) => statusOf(err) === 429;
+
+/** Throttled, or a server-side failure (5xx) that may pass on a second try. */
+export const isTransient = (err: unknown) => {
+  const status = statusOf(err);
+  return status === 429 || (status !== undefined && status >= 500);
+};
+
+/**
+ * Retry a call SailPoint throttled (HTTP 429), with a growing back-off (waitMs, 2 × waitMs, …).
+ * The plugin SDK doesn't expose response headers, so Retry-After can't be read; the back-off
+ * stands in for it. `retryable` widens what is retried (e.g. isTransient).
+ */
+export async function retry<T>(call: () => Promise<T>, attempts = 3, waitMs = 1500,
+                               retryable: (err: unknown) => boolean = isThrottled): Promise<T> {
   for (let i = 1; ; i++) {
     try {
       return await call();
     } catch (err) {
-      if ((err as { status?: number })?.status !== 429 || i >= attempts) throw err;
+      if (!retryable(err) || i >= attempts) throw err;
       await new Promise((resolve) => setTimeout(resolve, waitMs * i));
     }
+  }
+}
+
+/**
+ * Spaces calls out to at most one per `intervalMs` (shared by every caller of `wait()`), so
+ * parallel workers together stay under SailPoint's 100 requests per 10 s per API version.
+ */
+export class Throttle {
+  private next = 0;
+
+  constructor(public intervalMs: number) {}
+
+  async wait(): Promise<void> {
+    const now = Date.now();
+    const at = Math.max(now, this.next);
+    this.next = at + this.intervalMs;
+    if (at > now) await new Promise((resolve) => setTimeout(resolve, at - now));
   }
 }
 
@@ -506,6 +585,123 @@ export class BulkApiService {
 
   approval(id: string): Promise<GenericApproval> {
     return this.plugin.get<GenericApproval>(`/v2025/generic-approvals/${encodeURIComponent(id)}`);
+  }
+
+  // ── Approvals tab: the caller's own access-request approvals ─────────────
+  /**
+   * Keeps every /v2025/generic-approvals call of the Approvals tab (list, decide, confirm) to about
+   * 8 a second, under SailPoint's 100 requests per 10 s per client and API version.
+   */
+  readonly approvalsThrottle = new Throttle(125);
+  /** Back-off before retrying a throttled or failed decision (× the attempt number). */
+  decideRetryWaitMs = 2000;
+
+  /**
+   * The caller's pending access-request approvals, oldest first, in pages of 250 up to `maxRows`.
+   * `mine=true` keeps an admin to their own (for a non-admin the list is theirs anyway).
+   * `include-comments=true` brings the item comment (with the INC) but drops `assignedTo`, so
+   * nothing here relies on `assignedTo`.
+   */
+  async pendingAccessApprovals(maxRows: number): Promise<PendingApprovals> {
+    const filters = encodeURIComponent(PENDING_FILTER);
+    const approvals: GenericApproval[] = [];
+    let truncated = false;
+    for (let offset = 0; offset < maxRows; offset += PAGE) {
+      const limit = Math.min(PAGE, maxRows - offset);
+      const page = (await retry(async () => {
+        await this.approvalsThrottle.wait();
+        return this.plugin.get<GenericApproval[]>(
+          `/v2025/generic-approvals?mine=true&include-comments=true&limit=${limit}&offset=${offset}`
+          + `&filters=${filters}&sorters=createdDate`,
+        );
+      })) ?? [];
+      approvals.push(...page);
+      if (page.length < limit) break;
+      if (offset + limit >= maxRows) truncated = true;
+    }
+    return { approvals, truncated };
+  }
+
+  /**
+   * Approve or deny every ID with one comment. A sent call is not proof (the bulk endpoint even
+   * accepts unknown IDs), so callers confirm with approvalStatuses() afterwards.
+   *  - Bulk path (`opts.useBulk`): bulk-approve / bulk-reject, 50 IDs per call. A 401/403 (a
+   *    non-admin gets 403 even for their own approvals) switches the rest to the per-item path.
+   *  - Per-item path: POST /v2025/generic-approvals/{id}/approve|reject (200, with or without a
+   *    body), `concurrency` at a time, throttled, with 429 and 5xx retried.
+   */
+  async decideApprovals(action: DecideAction, ids: string[], comment: string,
+                        opts: DecideOptions): Promise<Map<string, DecideResult>> {
+    const results = new Map<string, DecideResult>();
+    const total = ids.length;
+    const text = comment.trim();
+    const body = text ? { comment: text } : {};
+    const settle = (id: string, result: DecideResult) => {
+      results.set(id, result);
+      opts.onResult?.(id, result);
+      opts.onProgress?.(results.size, total);
+    };
+    const failure = (err: unknown): DecideResult => ({
+      ok: false, status: statusOf(err), message: describeError(err, 'approvals'),
+    });
+    const send = (path: string, data: unknown) => retry(async () => {
+      await this.approvalsThrottle.wait();
+      return this.plugin.post<unknown>(path, data);
+    }, 4, this.decideRetryWaitMs, isTransient);
+
+    opts.onProgress?.(0, total);
+    let bulk = opts.useBulk;
+    const perItem: string[] = [];
+    if (bulk) {
+      await pool(chunk(ids, DECIDE_BATCH).map((batch) => async () => {
+        if (!bulk) {
+          perItem.push(...batch);
+          return;
+        }
+        try {
+          await send(`/v2025/generic-approvals/bulk-${action}`, { approvalIds: batch, ...body });
+          batch.forEach((id) => settle(id, { ok: true }));
+        } catch (err) {
+          const status = statusOf(err);
+          if (status === 401 || status === 403) {
+            bulk = false;
+            perItem.push(...batch);
+          } else {
+            const result = failure(err);
+            batch.forEach((id) => settle(id, result));
+          }
+        }
+      }), 1);
+    } else {
+      perItem.push(...ids);
+    }
+    await pool(perItem.map((id) => async () => {
+      try {
+        await send(`/v2025/generic-approvals/${encodeURIComponent(id)}/${action}`, body);
+        settle(id, { ok: true });
+      } catch (err) {
+        settle(id, failure(err));
+      }
+    }), Math.max(1, opts.concurrency));
+    return results;
+  }
+
+  /**
+   * The current state of these approvals (any assignee), 50 IDs per call. The list leaves
+   * approvedBy/rejectedBy empty: call approval(id) where the decider matters. An ID missing from
+   * the answer is no longer visible to the caller.
+   */
+  async approvalStatuses(ids: string[], concurrency = 2): Promise<Map<string, GenericApproval>> {
+    const out = new Map<string, GenericApproval>();
+    await pool(chunk(ids, DECIDE_BATCH).map((batch) => async () => {
+      const filters = encodeURIComponent(`approvalId in (${batch.map(quoted).join(',')})`);
+      const rows = await retry(async () => {
+        await this.approvalsThrottle.wait();
+        return this.plugin.get<GenericApproval[]>(`/v2025/generic-approvals?limit=${PAGE}&filters=${filters}`);
+      });
+      for (const row of rows ?? []) out.set(row.id, row);
+    }), concurrency);
+    return out;
   }
 
   /** The user's access requests, newest first: up to `max` (pages of 250, so a 600-person request fits). */

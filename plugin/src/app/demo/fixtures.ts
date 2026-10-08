@@ -22,6 +22,8 @@ export const DEMO_CONFIG: RuntimeConfig = parseRuntimeConfig({
   nameStartsWith: null,
   launcherName: 'ACME Bulk Access Request',
   temporary: { enabled: true, allow: ['duration', 'endDate'], units: ['HOURS', 'DAYS', 'WEEKS', 'MONTHS'], maxDays: null },
+  // The other keys take the Python defaults (concurrency 4, useBulkEndpoint auto, maxRows 5000, deny needs a comment).
+  approvals: { enabled: true, showOther: true },
 });
 
 const people: [string, string, string][] = [
@@ -168,6 +170,59 @@ export function demoNewApproval(inc: string, approver: string, k = 0, part = '',
   const id = k === 0 ? 'a0000000-0000-4000-8000-000000000099' : `a0000000-0000-4000-8000-1${String(k).padStart(11, '0')}`;
   return approval(id, inc, 'PENDING', approver, new Date().toISOString(), null, demoExecutionId(k), part, access);
 }
+
+// ── The Approvals tab: item approvals waiting for the demo user ─────────────────
+/** The workflow owner: SailPoint files every request of a bulk run in its name. */
+export const DEMO_SERVICE = { id: 'd0000000000000000000000000000002', name: 'ACME Bulk Service' };
+/** A colleague in the same governance group, who sometimes decides first (approvals-partial). */
+export const DEMO_COLLEAGUE = { id: 'd0000000000000000000000000000003', name: 'Elliot Reid' };
+
+/** Two bulk requests and a few ordinary approvals (the "Other" group). */
+export const DEMO_PENDING_INCS = { big: 'INC0048502', small: 'INC0048466' } as const;
+
+function pending(n: number, person: { id: string; name: string }, item: string, created: string, due: string,
+                 scheme: string, comment: string | null, removalDate: string | null = null): GenericApproval {
+  const it = demoItem(item);
+  return {
+    id: `b0000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
+    type: 'ACCESS_REQUEST_APPROVAL',
+    status: 'PENDING',
+    name: [{ value: item, locale: 'en-US' }],
+    description: [{ value: it.description }],
+    createdDate: created,
+    dueDate: due,
+    priority: 'MEDIUM',
+    requester: { identityID: DEMO_SERVICE.id, name: DEMO_SERVICE.name },
+    requestee: { identityID: person.id, name: person.name },
+    requestedTarget: { id: it.value.id, name: item, targetType: it.value.type, requestType: 'GRANT_ACCESS', removalDate },
+    approvalConfig: { serialChain: [{ tier: 1, identityType: scheme }] },
+    // The real list leaves assignedTo out when it includes comments.
+    comments: comment ? [{ comment, author: { name: DEMO_SERVICE.name } }] : [],
+    referenceData: [{ id: `r${String(n).padStart(31, '0')}`, type: 'accessRequestId' }],
+  };
+}
+
+const bulkComment = (inc: string, requester: string, approver: string, access: string, why: string) =>
+  `${inc} | Bulk access request by ${requester} | Approved by ${approver} | ${access} | ${why}`;
+
+export const DEMO_PENDING: GenericApproval[] = [
+  // INC0048502: 150 people × 2 access profiles the demo user owns = 300 approvals.
+  ...crowdPeople(150).flatMap((p, i) => ['PACS Radiologist Workstation', 'Epic - Clinician Read Only'].map((item, j) =>
+    pending(1 + i * 2 + j, p, item, `2026-10-07T13:15:${String(i % 60).padStart(2, '0')}Z`, '2026-10-14T13:15:00Z',
+      'ACCESS_PROFILE_OWNER', bulkComment(DEMO_PENDING_INCS.big, 'Carmen Ruiz', 'Aisha Bello', 'Permanent',
+        'Hospital-wide move to the new PACS on 14 Oct | cutover weekend')))),
+  // INC0048466: 40 people the demo user manages, VPN for 30 days.
+  ...crowdPeople(190).slice(150).map((p, i) => pending(301 + i, p, 'VPN - Remote Access', '2026-10-06T09:40:00Z',
+    '2026-10-13T09:40:00Z', 'MANAGER', bulkComment(DEMO_PENDING_INCS.small, 'Diego Alvarez', 'Carmen Ruiz',
+      'Temporary: 30 days', 'Remote reading during the ward refurbishment'), '2026-11-05T09:40:00Z')),
+  // Ordinary requests, not from a bulk request: the "Other" group.
+  pending(401, demoPerson('Brenda Cooper'), 'Zoom - Licensed User', '2026-10-05T08:00:00Z', '2026-10-12T08:00:00Z',
+    'ENTITLEMENT_OWNER', 'Need longer meetings for the nursing huddle'),
+  pending(402, demoPerson('Anouk De Vries'), 'Box - Imaging Research Share', '2026-10-05T10:30:00Z', '2026-10-12T10:30:00Z',
+    'SOURCE_OWNER', null),
+  pending(403, demoPerson('Diego Alvarez'), 'ServiceNow - ITIL User', '2026-10-04T16:00:00Z', '2026-10-11T16:00:00Z',
+    'ROLE_OWNER', 'INC0047001 please'),
+];
 
 function request(person: { id: string; name: string }, item: string, state: string, created: string, inc: string,
                  approver: string, access = 'Permanent', removeDate: string | null = null): AccessRequestStatus {

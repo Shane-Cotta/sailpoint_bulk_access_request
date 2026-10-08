@@ -10,10 +10,14 @@ Request access for **many people at once**, approved by **one person you choose*
 3. **Choose how long:** permanent, or temporary access that SailPoint removes automatically.
 4. **Pick one approver** for the whole request. It can't be you, or one of the people getting the access.
 5. **Enter the INC number** (checked for the right format) and a justification.
-6. **Submit.** The approver gets **one** approval task. If they approve, everyone gets every item as a normal SailPoint
-   access request, and each request's comment reads
+6. **Submit.** The approver gets **one** approval task (one per 250 people in the plugin). If they approve, everyone is
+   requested every item as a normal SailPoint access request, and each request's comment reads
    `INC… | Bulk access request by … | Approved by … | <Permanent or Temporary: …> | <justification>`.
    If they deny, nothing is requested. Either way, the requester gets an email.
+
+**Item approvals still apply.** Items with their own approval scheme (owner, manager, …) then need one approval per
+person. The UI plugin's **Approvals** tab lets those approvers, admin or not, see their pending approvals grouped by INC
+and approve or deny a whole bulk request at once, each recorded as their own decision (see [plugin/README.md](plugin/README.md)).
 
 ## Two ways to deploy it (one config, one command)
 
@@ -24,6 +28,7 @@ Request access for **many people at once**, approved by **one person you choose*
 | People | Form picker, **up to 30** (SailPoint's form limit) | Search or paste a list, **no limit**. Above 250 people, the request is sent as several approvals with the same INC (SailPoint's workflow loop limit). Warns about access people already have. |
 | Temporary access | By **duration**: hours, days, weeks or months | By **duration** or **end date** |
 | Status tracking | Approval email, plus the requests in Request Center → *Track My Requests* | **My bulk requests** tab, grouped by INC |
+| Item approvers | SailPoint's Approvals page, one card at a time | **Approvals** tab: a whole INC at once, for any approver who can see the plugin |
 | Docs | [INSTALL.md](INSTALL.md), [USAGE.md](USAGE.md) | [plugin/README.md](plugin/README.md) |
 
 **One settings file drives both.** You copy `config/bulk-access.example.json` to `config/<tenant>.json`, choose which
@@ -104,4 +109,4 @@ test access profile:
   - 5 people sent in parts of 2: three approvals `(1/3)`–`(3/3)` with one INC. The denied part requested nothing.
   - Temporary by end date and by duration, with `removeDate` on every request. An invalid duration is stopped before the approval.
   - 15 people in one live run.
-- **Unit tests:** core 215, plugin installer 12, plugin UI 84 (`pytest`, `ng test`), none of them needing a tenant.
+- **Unit tests:** core 215, plugin installer 12, plugin UI 156 (`pytest`, `ng test`), none of them needing a tenant.

@@ -2,7 +2,10 @@
   <header class="page__header">
     <div>
       <h1 class="page__title">{{ title() }}</h1>
-      <p class="page__subtitle">Request access for several people at once. One approver decides; the ServiceNow INC number goes on every item.</p>
+      <p class="page__subtitle">
+        Request access for several people at once. One approver decides; the ServiceNow INC number goes on every item.
+        @if (approvalsOn()) { Item approvers decide a whole bulk request at once on the Approvals tab. }
+      </p>
     </div>
     <div class="page__meta">
       @if (cfg().mode === 'dry-run') {
@@ -25,22 +28,24 @@
     <p-message severity="error" [text]="'Configuration problem: ' + configError()" />
   }
 
-  <p-message [severity]="isAdmin() ? 'info' : 'warn'" styleClass="banner">
-    <div class="banner__text">
-      <strong>{{ isAdmin() ? 'For administrators.' : 'You need ORG_ADMIN to submit from this page.' }}</strong>
-      This page starts the bulk request workflow through SailPoint's workflow test endpoint, which only users who may
-      test workflows (ORG_ADMIN) can call. Everyone else: open the Launchpad and use the
-      <strong>{{ cfg().launcherName }}</strong> Launcher. It does the same thing for any user.
-    </div>
-  </p-message>
-
   <p-tabs [value]="tab()" (valueChange)="onTab($event)">
     <p-tablist>
       <p-tab value="new">New request</p-tab>
       <p-tab value="mine">My bulk requests</p-tab>
+      @if (approvalsOn()) {
+        <p-tab value="approvals">Approvals</p-tab>
+      }
     </p-tablist>
     <p-tabpanels>
       <p-tabpanel value="new">
+        <p-message [severity]="isAdmin() ? 'info' : 'warn'" class="banner">
+          <div class="banner__text">
+            <strong>{{ isAdmin() ? 'For administrators.' : 'You need ORG_ADMIN to submit from this page.' }}</strong>
+            This page starts the bulk request workflow through SailPoint's workflow test endpoint, which only users who may
+            test workflows (ORG_ADMIN) can call. Everyone else: open the Launchpad and use the
+            <strong>{{ cfg().launcherName }}</strong> Launcher. It does the same thing for any user.
+          </div>
+        </p-message>
         <app-new-request (showHistory)="tab.set('mine')" />
       </p-tabpanel>
       <p-tabpanel value="mine">
@@ -48,6 +53,13 @@
           <app-my-requests />
         }
       </p-tabpanel>
+      @if (approvalsOn()) {
+        <p-tabpanel value="approvals">
+          @if (tab() === 'approvals') {
+            <app-approvals />
+          }
+        </p-tabpanel>
+      }
     </p-tabpanels>
   </p-tabs>
 </main>

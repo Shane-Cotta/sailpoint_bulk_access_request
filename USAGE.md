@@ -57,24 +57,48 @@ steps: people → items → approver and INC → review. Details are in [plugin/
 the approval. The plugin turns an end date into a number of hours when you submit, so a slow approval moves the end
 later by about the same time.
 
-## Approvers
-- You get **one** approval task per bulk request, named **"Bulk access INC…"**, showing the requester, the
-  justification and the access type. It arrives in your **SailPoint approvals** (and by email, if notifications are on).
+## Bulk approvers
+- As the **bulk approver** you get one approval task per bulk request (or per part of a large one, see below), named
+  **"Bulk access INC…"**, showing the requester, the justification and the access type. It arrives in your **SailPoint
+  approvals** (and by email, if notifications are on).
+- Approving it doesn't skip the items' own approvals: each access request it files still goes to the item's approvers
+  (owner, manager, …), one approval per person and item. See *Item approvers* below.
 - **The access type** is in the task's description: `Permanent`, `Temporary: 30 days` or `Temporary: until 2026-11-07`
   (the Launcher may write durations short, for example `Temporary: 30d`).
 - **Parts.** A large plugin request arrives as several tasks with the same INC, named for example
   `Bulk access INC0012345 (1/3)`, `(2/3)` and `(3/3)`. Each covers different people and is decided on its own: approving
   one part doesn't approve the others.
-- **Approve:** everyone on the request (or part) gets every item, as normal access requests.
+- **Approve:** everyone on the request (or part) is requested every item, as normal access requests. Items that need
+  their own approval wait for it.
 - **Deny:** nothing is requested for those people, and the requester is told.
 - The task expires after the configured number of days (7 by default).
+
+## Item approvers (owners, managers): the Approvals tab
+When a bulk request for 300 people includes an item you own, you get 300 approvals, one per person. Instead of deciding
+them one card at a time in SailPoint, open the **<prefix> Bulk Access Request** plugin and its **Approvals** tab (it opens
+first if you aren't an admin; your admin must have made the plugin visible to you).
+
+1. Each card is one bulk request: the **INC**, how many approvals, people and items, the access (permanent or temporary),
+   who asked for it and who approved the bulk request.
+2. Open a card to check the list. Untick anyone you don't want to decide now; they stay pending.
+3. Write one comment (needed to deny), then **Approve N** or **Deny N**, and confirm. The dialog repeats the INC and the
+   counts. You can only act on one INC at a time.
+4. A progress bar shows the decisions going out (about 8 a second), then the results: approved or denied by you,
+   **decided by someone else** (a colleague in the same approval group, or an admin, got there first; nothing to do),
+   **still pending** or **failed** (with the reason). **Retry** sends the last two again.
+
+Every decision is recorded as **yours**, exactly as if you had used SailPoint's Approvals page. Approvals that didn't come
+from a bulk request may be listed under *Other* (if your admin turned that on); decide those in SailPoint as usual.
 
 ## Admins
 - **Install, update, uninstall:** see [INSTALL.md](INSTALL.md). Everything is set in one file, `config/<tenant>.json`.
   - Check health: `python bulkaccess.py status --config …`.
   - After any config change, or when the catalog changes: `python bulkaccess.py apply --config …`.
 - **Who can use it:** whoever holds the *Launcher Access* profile. It's an ordinary access profile, so it shows up in
-  certifications too. The plugin needs ORG_ADMIN-level users.
+  certifications too. Submitting from the plugin needs ORG_ADMIN-level users; its Approvals tab works for any item
+  approver who can see the plugin (make it public, or add them to its `restrictToUsers`).
+- **Approvals tab** (`approvals` in the config): on by default. `concurrency`, `useBulkEndpoint` (`auto` = SailPoint's bulk
+  endpoint for ORG_ADMIN only; it refuses everyone else), `maxRows`, `showOther` and `denyCommentRequired`.
 - **Temporary access** (`temporaryAccess` in the config): turn it on or off, choose the units, allow end dates (plugin
   only), and cap the length with `maxDays`. It ends automatically on the remove date, and SailPoint removes it with no
   further action. The remove date is visible in **Track My Requests**.
