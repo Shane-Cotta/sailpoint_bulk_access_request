@@ -1,7 +1,8 @@
 # Design: bulk approvals for item approvers
 
-**Status:** 2026-10-08. Phase 0 (live checks as a non-admin) done; Phase 1 (core rules and config) and Phase 2 (the
-plugin's Approvals tab) built on `feature/bulk-approvals-core` / `feature/bulk-approvals-ui`. Phase 3 open.
+**Status:** 2026-10-08. Phases 0–3 done (Phase 0 live checks as a non-admin; Phases 1–3 on `feature/bulk-approvals-core`
+and `feature/bulk-approvals-ui`). Remaining: the optional `approval.bulkApprover: "skip"`, the admin view-only switch, and a
+live governance-group check. The decide/confirm contract is `docs/dev/CONTRACTS.md` §7.
 
 ## The problem
 A bulk request has one *bulk approver*. Once they approve, the workflow submits a normal access request for every person.
@@ -133,9 +134,14 @@ required to deny.
   4. A governance-group approval: how `assignedTo` looks, and approval by one member.
   5. Throttling at concurrency 4.
   6. `restrictToUsers` makes the plugin visible to that user.
-- **Phase 1:** core rules and config, runtime config, manifest and installer, Python tests.
-- **Phase 2:** plugin API, store, component, demo mode, specs.
-- **Phase 3:** docs, email wording, the workflow-owner warning, and optionally `approval.bulkApprover`.
+- **Phase 1 (done):** core rules and config, runtime config, manifest and installer, Python tests.
+- **Phase 2 (done):** plugin API, store, component, demo mode, specs.
+- **Phase 3 (done):** docs (README, USAGE, plugin/README, INSTALL `owner`, CONTRACTS §7); "Email Approved" says item
+  approvals still apply and points to the Approvals tab (live mode only; left out of the bulk approval's description,
+  which could pass 150 characters with the templated name and label); `show-config` and the installers print a note
+  recommending a service identity when `owner` is null.
+- **Remaining (optional):** `approval.bulkApprover: "skip"`; the admin "show everyone's pending (view only)" switch; an
+  installer helper to fill `restrictToUsers` from item owners; a live governance-group test.
 
 ## Test fixtures in the demo tenant (clean up afterwards)
 - **Access profile:** "UCSF Bulk Owner-Approval Test" `5c9fc6cd83114a1c957a75928cd7159e` (owner Elliot.Reid, OWNER approval).

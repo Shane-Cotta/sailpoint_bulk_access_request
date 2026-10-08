@@ -100,7 +100,9 @@ All parts of one submission share the same INC, approver, items, justification a
   `removeDuration.$: "$.loop.context.trigger.removeDuration"`; the Launcher builds it from its form fields).
 - **Item comment:** `{inc} | Bulk access request by {requester} | Approved by {approver} | {accessLabel} | {justification}`. The
   INC stays first, because the plugin's My bulk requests reads it from there.
-- **Emails** (approved and denied) say which part (when parts > 1) and the access label.
+- **Emails** (approved and denied) say which part (when parts > 1) and the access label. In live mode, "Email Approved"
+  also says that items with their own approval still need it for each person (`definitions.item_approvals_note`), and,
+  when `plugin_approvals_enabled`, that those approvers can use the Approvals tab of `plugin.displayName`.
 - **Launcher form, new fields** (keys): `accessType` (Permanent or Temporary, default Permanent), `duration` (a whole number, only used
   when Temporary), `durationUnit` (from `temporary_units`). Only offered when `launcher_temporary_modes` contains `duration`. The
   Launcher's access label can be `Temporary: {n}{suffix}` (e.g. `Temporary: 30d`) if the unit word can't be templated.
@@ -127,6 +129,37 @@ python bulkaccess.py uninstall   --config … [--only …] [--yes]
 It runs each enabled deployment by calling the existing `launcher/*.py` and `plugin/*.py` `main(argv)` functions. They're loaded
 by file path, because both folders have an `install.py`. Those scripts keep working on their own. `plugin/install.py` keeps its flags
 and takes its `--public` default from `cfg.plugin_public`.
+
+## 7. The plugin's Approvals tab: list, decide, confirm
+Item approvers decide the per-person approvals a bulk request created, one INC at a time. Built in `bulk-api.service.ts`
+(`pendingAccessApprovals`, `decideApprovals`, `approvalStatuses`), `approvals.ts` and `approvals-store.ts`; settings from §5
+`approvals`. Facts verified live as a non-admin (2026-10-08) are marked ✔.
+- **List:** `GET /v2025/generic-approvals?mine=true&include-comments=true&limit=250&offset=N&sorters=createdDate`
+  `&filters=status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"` (URL-encoded), paged up to `maxRows`; "more" is shown
+  when the cap is hit. `mine=true` keeps admins to their own (a non-admin only ever gets their own ✔).
+- **Quirk ✔:** with `include-comments=true` rows carry `comments[]` but **no `assignedTo`**. Never rely on `assignedTo`.
+- **Grouping:** by `parse_bulk_comment` / `parseBulkComment` (§2) over each row's `comments[]`; rows without a bulk comment
+  form one *Other* group, shown only with `showOther`, and **view-only**. An action never spans INCs.
+- **Default path (everyone):** `POST /v2025/generic-approvals/{id}/approve|reject`, body `{comment}` (or `{}` with no comment).
+  Approve ✔ and reject ✔ both answer 200 with the approval (the spec says 204 for reject; accept either). `concurrency`
+  (1..8) calls in flight, all generic-approvals calls of the tab spaced to **≤ 8 per second** (limit: 100 per 10 s per
+  client and API version). 429 and 5xx are retried (4 attempts, growing back-off; the plugin SDK hides `Retry-After`).
+  A non-admin deciding someone else's approval gets 403 ✔.
+- **Bulk path:** `POST /v2025/generic-approvals/bulk-approve|bulk-reject` `{approvalIds (≤ 50), comment?}` → `202 {}` even for
+  unknown IDs. Non-admins get **403 even for their own approvals ✔**, so it is used only when `useBulkEndpoint` is
+  `always`, or `auto` and the user is ORG_ADMIN. A 401/403 switches that batch and the rest to the default path.
+- **Deny** needs a non-empty comment when `denyCommentRequired`.
+- **Confirm:** a 2xx or 202 proves nothing. Re-read with `GET /v2025/generic-approvals?limit=250&filters=approvalId in ("a",…)`
+  (50 IDs per call, no `mine`), after 0, 1, 2, 4 and 8 s. The list has `status` but **empty `approvedBy`/`rejectedBy` ✔**;
+  only `GET /v2025/generic-approvals/{id}` names the decider, so it is called only for IDs whose status changed although
+  our call failed. Outcome per ID:
+  | Outcome | When |
+  |---|---|
+  | `confirmed` (decided by me) | status = APPROVED/REJECTED as sent and our call succeeded, or the detail names the caller |
+  | `elsewhere` (decided by someone else) | any other decided status, or the ID is no longer returned. A governance-group colleague or an admin decided first: **not an error** |
+  | `pending` (still pending) | our call succeeded but the last re-read still says PENDING; can be retried |
+  | `failed` | our call failed and it's still PENDING; can be retried, with the reason |
+- After a run, `confirmed` and `elsewhere` rows leave the list; a later approval step of a serial scheme appears on refresh.
 
 ## Test data and safety (live tests in a test or shared tenant)
 - Only touch objects named with the config's prefix. Use a harmless test access profile as the only catalog item

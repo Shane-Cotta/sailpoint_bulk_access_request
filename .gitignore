@@ -2,6 +2,8 @@
 config/*.json
 !config/bulk-access.example.json
 .env
+# Credentials for test users, e.g. .env.elliot
+.env.*
 __pycache__/
 .venv*/
 .pytest_cache/

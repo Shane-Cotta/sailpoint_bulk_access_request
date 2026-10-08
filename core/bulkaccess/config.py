@@ -25,6 +25,11 @@ TIMEOUT_ACTIONS = ("EXPIRED", "APPROVED")
 PRIORITIES = ("LOW", "MEDIUM", "HIGH")
 DEPLOYMENTS = ("launcher", "plugin")
 
+# Printed by show-config and the installers when `owner` is null (a note, not an error: whether the PAT user is a
+# person or a service identity can't be told offline).
+OWNER_NOTE = ("Workflows are owned by the PAT user; requests show that identity as requester, and approvals it would get "
+              "as an item owner/manager are escalated to an admin. Consider a dedicated service identity in `owner`.")
+
 # A form SELECT accepts at most 30 selections (hard UI limit in SailPoint forms).
 FORM_SELECT_MAX = 30
 # The workflow Loop operator (sp:loop:iterator) rejects inputs over 250 items

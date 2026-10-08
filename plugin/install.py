@@ -51,6 +51,8 @@ def main(argv: list[str] | None = None) -> int:
     owner_id = cfg.owner_id or me["id"]
     owner_name = me.get("name") if owner_id == me["id"] else None
     print(f"Tenant {tenant.tenant_name} · prefix {cfg.prefix!r} · mode {cfg.mode} · owner {owner_name or owner_id}")
+    if not cfg.owner_id:
+        print(f"note: {config_mod.OWNER_NOTE}")
 
     body = lib.plugin_workflow(cfg, owner_id, owner_name)
     existing = lib.find_workflow(tenant, cfg.plugin_workflow_name)

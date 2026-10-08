@@ -124,6 +124,39 @@ def test_form_enforces_inc_regex_and_required_fields():
     assert els["items"]["config"]["dataSource"]["dataSourceType"] == "STATIC"
 
 
+def test_show_config_recommends_a_service_identity_when_owner_is_null(tmp_path, capsys):
+    out = _show(tmp_path, capsys)
+    assert f"Note:        {config.OWNER_NOTE}" in out
+    assert "Consider a dedicated service identity in `owner`." in config.OWNER_NOTE
+    out = _show(tmp_path, capsys, owner="2c9180835d2e5168015d32f890ca1581")
+    assert "Owner:       2c9180835d2e5168015d32f890ca1581" in out and config.OWNER_NOTE not in out
+
+
+def _approved_body(cfg, variant="plugin"):
+    return _steps(definitions.bulk_workflow(cfg, variant=variant, owner_id="o", form_id="f"))["Email Approved"]["attributes"]["body"]
+
+
+def test_approved_email_says_item_approvals_still_apply_and_points_to_the_approvals_tab():
+    for variant in ("launcher", "plugin"):
+        body = _approved_body(cfg_with(mode="live"), variant)
+        assert "still need that approval in SailPoint for each person" in body
+        assert "on the Approvals tab of 'ACME Bulk Access Request'" in body
+    # No Approvals tab: the sentence stays, the pointer goes.
+    for overrides in ({"approvals__enabled": False}, {"deployments__plugin": False}):
+        body = _approved_body(cfg_with(mode="live", **overrides), "launcher")
+        assert "still need that approval" in body and "Approvals tab" not in body
+    # Dry run requests nothing, so there is nothing for item approvers to decide.
+    assert "still need that approval" not in _approved_body(cfg_with())
+    assert "still need" not in json.dumps(_steps(definitions.bulk_workflow(cfg_with(mode="live"), variant="plugin",
+                                                                           owner_id="o"))["Email Denied"])
+
+
+def test_bulk_approval_description_stays_short_enough():
+    # The item-approval hint is left out of the description: it must leave room for the templated name and label.
+    desc = _steps(definitions.bulk_workflow(cfg_with(mode="live"), variant="plugin", owner_id="o"))["Bulk Approval"]["attributes"]["description"]
+    assert "Approvals tab" not in desc
+
+
 def _steps(wf):
     return wf["definition"]["steps"]
 

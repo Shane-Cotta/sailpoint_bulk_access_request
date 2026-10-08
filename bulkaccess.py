@@ -151,6 +151,7 @@ def describe(cfg: Config) -> list[str]:
     lines.append("Approvals:   " + approvals_summary(cfg))
     if cfg.plugin_approvals_enabled and not cfg.plugin_public:
         lines.append(f"Warning:     {APPROVALS_PRIVATE_WARNING}")
+    lines.append(f"Owner:       {cfg.owner_id}" if cfg.owner_id else f"Note:        {config_mod.OWNER_NOTE}")
     for note in cfg.deprecations:
         lines.append(f"Deprecated:  {note}")
     return lines
