@@ -20,7 +20,8 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
 ## Conventions
 - **One config.** Every setting for both deployments lives in `config/<tenant>.json`, grouped by concern, not by deployment.
   `core/bulkaccess/config.py` is the only loader. Route-specific values are **derived there** (`launcher_people_cap`,
-  `plugin_people_max`, `launcher_temporary_modes`, `plugin_temporary_modes`, …); never re-implement them in an installer.
+  `plugin_people_max`, `launcher_temporary_modes`, `plugin_temporary_modes`, `plugin_submits_via_launcher`, …); never
+  re-implement them in an installer. `apply` installs the Launcher before the plugin (launcher submit mode needs its ID).
   Renamed keys stay readable and add a note to `cfg.deprecations` (e.g. `launcher.accessApproval` → `access.launcherApproval`).
 - **Generated files are never edited by hand:** `plugin/public/bulk-access.config.json`, `plugin/sp-ui-plugin.json`, and the
   workflows and form in the tenant all come from the config.
@@ -93,9 +94,23 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
 - **Launchers:**
   - Visible and launchable only for holders of the auto-created `assignedLaunchers` entitlement (on the IdentityNow source). The installer wraps it in a requestable "Launcher Access" profile.
   - Disabling the workflow disables its Launcher a moment later.
-- **Plugins:** a browser plugin can't hold a workflow's external-trigger secret, so the plugin uses the workflow **test** endpoint
-  (`POST /v2025/workflows/{id}/test`, then `GET /v2025/workflow-executions/{id}`). That requires a disabled workflow and an ORG_ADMIN user.
-  The `/v3/workflows…` and `/v3/workflow-executions…` paths answer the same but send `Deprecation: 31 Mar 2027`; v2025 sends none.
+- **Plugins:** a browser plugin can't hold a workflow's external-trigger secret. Two ways to submit (`plugin.submit`):
+  - **`launcher`** (default with the Launcher deployment; `docs/dev/CONTRACTS.md` §9): the plugin drives the Launcher **as the
+    signed-in user**, so any holder of the Launcher Access profile can submit (verified as a real non-admin):
+    `POST /v2025/launchers/{id}/launch` `{}` → `{interactiveProcessId}`; poll `GET /beta/interactive-processes/{ipid}/blocks`
+    until the `FORM` block (`config.formInstanceId`); `PATCH /v2025/form-instances/{id}` (JSON Patch: `/formData`, then
+    `/state` `SUBMITTED`; one PATCH went ASSIGNED → COMPLETED). The approval's `requester` is the signed-in user (server-derived).
+  - A non-admin **can't list** launchers (`GET /v2025/launchers` → 500 "insufficient authorization") or form instances (403),
+    but can GET one by ID; so the installer writes `launcherId` into the runtime config. The admin PAT (client credentials) gets
+    401 on `/beta/interactive-processes`: it needs a user session.
+  - Through the API the form takes what its pickers don't: 250 people, items and SELECT values outside its STATIC options, and
+    unknown formData keys. Its REGEX rules still apply. A `HIDDEN` element is accepted; the Launchpad leaves it out of formData,
+    and `StringMatches` on that missing path simply takes the default branch.
+  - The SDK only has `get`/`post`, so `SailpointPluginService.patch` calls `fetch` with the SDK's token and `tenant.apiUrl.idn`.
+  - **`test-endpoint`**: `POST /v2025/workflows/{id}/test`, then `GET /v2025/workflow-executions/{id}`. That requires a disabled
+    workflow and an ORG_ADMIN user. The `/v3/workflows…` and `/v3/workflow-executions…` paths answer the same but send
+    `Deprecation: 31 Mar 2027`; v2025 sends none.
+  - `GET /v2025/generic-approvals?filters=requesterId eq "<id>"&sorters=-createdDate` works (`requester.id` is a 400).
 - **APIs:**
   - `/v3/requestable-objects` only lists **access profiles and roles** (its `types` enum). `types=ENTITLEMENT` alone returns 400,
     and next to another type (repeated `types=`) it is silently dropped. Never call it without `types` (that means every type).

@@ -485,8 +485,11 @@ def test_approval_name_and_description_carry_the_part_and_access_labels():
     assert plugin["description"] == ("ACME bulk access request {{$.trigger.inc}}{{$.trigger.partLabel}} from "
                                      "{{$.getRequester.attributes.displayName}} · {{$.trigger.accessLabel}}")
     launcher = _steps(definitions.bulk_workflow(cfg, variant="launcher", owner_id="o", form_id="f"))["Bulk Approval"]["attributes"]
-    assert launcher["name"] == "Bulk access {{$.interactiveForm.formData.inc}}"           # always one part
-    assert launcher["description"].endswith(" · {{$.defineVariableAccess.accessLabel}}")
+    # "" from the Launchpad; " (k/n)" when the plugin submits a part through the Launcher (hidden form field).
+    assert launcher["name"] == "Bulk access {{$.interactiveForm.formData.inc}}{{$.defineVariableAccess.partLabel}}"
+    assert launcher["description"] == ("ACME bulk access request {{$.interactiveForm.formData.inc}}"
+                                       "{{$.defineVariableAccess.partLabel}} from {{$.getRequester.attributes.displayName}}"
+                                       " · {{$.defineVariableAccess.accessLabel}}")
     # Fixed text stays within SailPoint's 50-character name limit for the default INC format.
     assert len("Bulk access INC0012345 (10/10)") <= rules.APPROVAL_NAME_MAX
 
@@ -534,7 +537,7 @@ def test_launcher_form_offers_temporary_access_only_when_configured():
 
     for off in (cfg_with(temporaryAccess__enabled=False), cfg_with(temporaryAccess__allow=["endDate"])):
         form = definitions.bulk_form(off, "o", [])
-        assert set(_form_elements(form)) == {"people", "items", "approver", "inc", "justification"}
+        assert set(_form_elements(form)) == {"people", "items", "approver", "inc", "justification", "partLabel"}
         assert form["formConditions"] == []
 
     # A unit that can never fit maxDays isn't offered.
@@ -570,7 +573,8 @@ def test_launcher_without_max_days_or_temporary_access_has_no_extra_checks():
     steps = _steps(definitions.bulk_workflow(config.load(EXAMPLE), variant="launcher", owner_id="o", form_id="f"))
     assert "Within Limit?" not in steps and steps["Set Temporary Access"]["nextStep"] == "Notify Pending"
     off = _steps(definitions.bulk_workflow(cfg_with(temporaryAccess__enabled=False), variant="launcher", owner_id="o", form_id="f"))
-    assert "Temporary?" not in off and off["Define Variable Access"]["nextStep"] == "Notify Pending"
+    assert "Temporary?" not in off and off["Define Variable Access"]["nextStep"] == "Part Given?"
+    assert off["Part Given?"]["defaultStep"] == off["Set Part"]["nextStep"] == "Notify Pending"
 
 
 @pytest.mark.parametrize("overrides", [
@@ -715,12 +719,16 @@ def test_export_offline_builds_every_object_with_placeholders(tmp_path):
     spec.loader.exec_module(cli)
     assert cli.main(["export", "--offline", "--config", str(EXAMPLE), "--out", str(tmp_path)]) == 0
     files = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*.json"))
+    # plugin.submit "launcher" (the default with both deployments): the plugin has no workflow of its own.
     assert files == ["launcher/access-profile.json", "launcher/form.json", "launcher/launcher.json",
-                     "launcher/workflow.json", "plugin/workflow.json"]
+                     "launcher/workflow.json"]
     wf = json.loads((tmp_path / "launcher/workflow.json").read_text())
     assert wf["definition"]["steps"]["Interactive Form"]["attributes"]["formDefinitionId"] == "<FORM_DEFINITION_ID>"
     assert wf["trigger"]["attributes"]["filter.$"] == "$[?(@.workflowId == '<WORKFLOW_ID>')]"
-    cli.main(["export", "--offline", "--only", "plugin", "--config", str(EXAMPLE), "--out", str(tmp_path / "p")])
+    data = json.loads(EXAMPLE.read_text())
+    test_endpoint = tmp_path / "te.json"
+    test_endpoint.write_text(json.dumps({**data, "plugin": {**data["plugin"], "submit": "test-endpoint"}}))
+    cli.main(["export", "--offline", "--only", "plugin", "--config", str(test_endpoint), "--out", str(tmp_path / "p")])
     assert [p.name for p in (tmp_path / "p").rglob("*.json")] == ["workflow.json"]
 
 
@@ -857,3 +865,117 @@ def test_show_config_describes_approvals_and_warns_about_a_private_plugin(tmp_pa
     assert "Approvals:   off (approvals.enabled is false)" in out and "Warning:" not in out
     out = _show(tmp_path, capsys, deployments__plugin=False)
     assert "Approvals:   off (the Approvals tab is part of the plugin, which is off)" in out and "Warning:" not in out
+
+
+# ── plugin.submit: the plugin submits through the Launcher (CONTRACTS §9) ─────────
+def test_plugin_submit_defaults_to_the_launcher_when_it_is_deployed():
+    cfg = config.load(EXAMPLE)
+    assert cfg.plugin_submit == "launcher" and cfg.plugin_submits_via_launcher and not cfg.plugin_needs_workflow
+    assert cfg.launcher_access_profile_name == "ACME Bulk Access Request - Launcher Access"
+    plugin_only = cfg_with(deployments={"launcher": False, "plugin": True})
+    assert plugin_only.plugin_submit == "test-endpoint" and plugin_only.plugin_needs_workflow
+    explicit = cfg_with(plugin__submit="test-endpoint")
+    assert not explicit.plugin_submits_via_launcher and explicit.plugin_needs_workflow
+    launcher_only = cfg_with(deployments={"launcher": True, "plugin": False})
+    assert not launcher_only.plugin_submits_via_launcher and not launcher_only.plugin_needs_workflow
+
+
+@pytest.mark.parametrize("overrides,message", [
+    ({"plugin__submit": "backend"}, config.MSG_PLUGIN_SUBMIT),
+    ({"plugin__submit": None, "deployments": {"launcher": False, "plugin": True}}, None),
+    ({"plugin__submit": "launcher", "deployments": {"launcher": False, "plugin": True}}, config.MSG_PLUGIN_SUBMIT_LAUNCHER),
+])
+def test_plugin_submit_is_validated(overrides, message):
+    if message is None:
+        assert cfg_with(**overrides).plugin_submit == "test-endpoint"
+        return
+    with pytest.raises(config.ConfigError) as err:
+        cfg_with(**overrides)
+    assert str(err.value) == message
+
+
+def test_through_the_launcher_the_plugin_offers_only_what_the_launcher_form_carries():
+    # Durations on the Launcher: the plugin keeps its end date (sent as hours in the same fields).
+    assert cfg_with().plugin_temporary_modes == ("duration", "endDate")
+    # No duration fields on the Launcher form: through it, the plugin can only ask for permanent access.
+    assert cfg_with(temporaryAccess__allow=["endDate"]).plugin_temporary_modes == ()
+    assert cfg_with(temporaryAccess__units=["WEEKS"], temporaryAccess__maxDays=5).plugin_temporary_modes == ()
+    # Through the test endpoint it is unchanged.
+    assert cfg_with(temporaryAccess__allow=["endDate"], plugin__submit="test-endpoint").plugin_temporary_modes == ("endDate",)
+    assert cfg_with(temporaryAccess__enabled=False).launcher_temporary_modes == ()
+
+
+def test_launcher_workflow_takes_hours_from_the_plugin_for_end_dates():
+    cfg = cfg_with(temporaryAccess__units=["DAYS", "WEEKS"])
+    assert definitions.launcher_duration_units(cfg) == ("DAYS", "WEEKS")          # what the Launchpad offers
+    assert definitions.launcher_workflow_units(cfg) == ("HOURS", "DAYS", "WEEKS")  # what the workflow accepts
+    steps = _steps(definitions.bulk_workflow(cfg, variant="launcher", owner_id="o", form_id="f"))
+    assert steps["Unit Valid?"]["choiceList"][0]["variableB"] == "^(?:h|d|w)$"
+    options = _form_elements(definitions.bulk_form(cfg, "o", []))["durationUnit"]["config"]["dataSource"]["config"]["options"]
+    assert [o["value"] for o in options] == ["d", "w"]                            # the Launchpad sees no change
+    for same in (cfg_with(temporaryAccess__units=["DAYS"], plugin__submit="test-endpoint"),
+                 cfg_with(temporaryAccess__units=["DAYS"], temporaryAccess__allow=["duration"])):
+        assert definitions.launcher_workflow_units(same) == ("DAYS",)
+
+
+def test_launcher_form_has_a_hidden_part_label_the_workflow_checks():
+    el = _form_elements(definitions.bulk_form(config.load(EXAMPLE), "o", []))["partLabel"]
+    assert el["elementType"] == "HIDDEN" and el["config"]["default"] == "" and el["validations"] == []
+    steps = _steps(definitions.bulk_workflow(config.load(EXAMPLE), variant="launcher", owner_id="o", form_id="f"))
+    define = {v["name"]: v for v in steps["Define Variable Access"]["attributes"]["variables"]}
+    # Defined as a placeholder emptied by a replace transform (a literal "" can't be defined).
+    assert define["partLabel"]["variableA"] == "single"
+    assert define["partLabel"]["transforms"] == [{"id": "sp:transform:replace:string",
+                                                   "input": {"pattern": "single", "replacement": ""}}]
+    check = steps["Part Given?"]
+    assert check["choiceList"][0]["variableA.$"] == "$.interactiveForm.formData.partLabel"
+    assert check["choiceList"][0]["nextStep"] == "Set Part" and check["defaultStep"] == "Temporary?"
+    assert steps["Set Part"]["nextStep"] == "Temporary?"
+    assert steps["Set Part"]["attributes"]["variables"][0]["name"] == "$.defineVariableAccess.partLabel"
+    regex = re.compile(check["choiceList"][0]["variableB"])
+    for label in (rules.part_label(1, 3), rules.part_label(12, 12)):
+        assert regex.match(label)
+    for bad in ("", " (0/3)", "(1/3)", " (1/3) x", " (a/b)", " (1/3)" * 2):
+        assert not regex.match(bad)
+    for name in ("Email Approved", "Email Denied"):
+        assert "{{$.defineVariableAccess.partLabel}}" in steps[name]["attributes"]["subject"]
+    assert "{{$.defineVariableAccess.partLabel}}" in steps["Notify Pending"]["attributes"]["message"]
+
+
+@pytest.mark.parametrize("remove_duration,fields", [
+    ("", {"accessType": False, "duration": "", "durationUnit": []}),
+    ("30d", {"accessType": True, "duration": "30", "durationUnit": ["d"]}),
+    ("720h", {"accessType": True, "duration": "720", "durationUnit": ["h"]}),
+    ("2w", {"accessType": True, "duration": "2", "durationUnit": ["w"]}),
+    ("3M", {"accessType": True, "duration": "3", "durationUnit": ["M"]}),
+])
+def test_launcher_form_access_fields(remove_duration, fields):
+    assert rules.launcher_form_access(remove_duration) == fields
+    if remove_duration:   # the unit options of the form are the duration suffixes
+        assert fields["durationUnit"][0] in config.DURATION_UNITS.values()
+
+
+@pytest.mark.parametrize("bad", ["abc", "0d", "30", "30x", "-1d", None])
+def test_launcher_form_access_refuses_anything_else(bad):
+    with pytest.raises(ValueError):
+        rules.launcher_form_access(bad)
+
+
+def test_end_date_choice_maps_onto_the_launcher_form():
+    now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+    choice = rules.access_choice(cfg_with(), "endDate", end_date="2026-10-10", now=now, tz=timezone.utc)
+    assert rules.launcher_form_access(choice.remove_duration) == {
+        "accessType": True, "duration": str(rules.end_date_hours("2026-10-10", now=now, tz=timezone.utc)), "durationUnit": ["h"]}
+
+
+def test_show_config_says_who_can_submit_from_the_plugin(tmp_path, capsys):
+    cli = _cli()
+    assert cli.main(["show-config", "--config", str(EXAMPLE)]) == 0
+    out = capsys.readouterr().out
+    assert "plugin.submit \"launcher\"" in out and "anyone holding 'ACME Bulk Access Request - Launcher Access'" in out
+    path = tmp_path / "te.json"
+    data = json.loads(EXAMPLE.read_text())
+    path.write_text(json.dumps({**data, "plugin": {**data["plugin"], "submit": "test-endpoint"}}))
+    assert cli.main(["show-config", "--config", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "plugin.submit \"test-endpoint\"" in out and "only ORG_ADMIN users can submit" in out

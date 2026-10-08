@@ -4,6 +4,7 @@ import { SailpointPluginService } from '@core';
 import { applyScenario } from '../demo/demo';
 import { crowdPeople, DEMO_ME, DEMO_NEW_EXECUTION, demoExecutionId, demoPerson } from '../demo/fixtures';
 import { providePluginTesting } from '../testing/plugin.testing';
+import { BulkApiService } from './bulk-api.service';
 import { BulkConfigService } from './bulk-config.service';
 import { describeError } from './errors';
 import { NavService } from './nav';
@@ -47,7 +48,11 @@ describe('RequestStore', () => {
     expect(store.people()).toHaveLength(2);
   });
 
-  it('submits, then reports "Waiting for <approver>" once the approval exists', async () => {
+  /** The workflow test endpoint (ORG_ADMIN) instead of the Launcher (the demo config's default). */
+  const testEndpoint = () => TestBed.inject(BulkConfigService).config.update((c) => ({ ...c, submit: 'test-endpoint' as const }));
+
+  it('test-endpoint mode: submits, then reports "Waiting for <approver>" once the approval exists', async () => {
+    testEndpoint();
     applyScenario('review', store, TestBed.inject(NavService));
     const plugin = TestBed.inject(SailpointPluginService);
     const post = vi.spyOn(plugin, 'post');
@@ -77,7 +82,8 @@ describe('RequestStore', () => {
     expect(store.submission()?.parts[0].approvalId).toBeTruthy();
   });
 
-  it('sends 600 people as 3 workflow runs, one after another, with the same INC and access choice', async () => {
+  it('test-endpoint mode: sends 600 people as 3 workflow runs, one after another, with the same INC and access choice', async () => {
+    testEndpoint();
     applyScenario('parts-review', store, TestBed.inject(NavService));
     const post = vi.spyOn(TestBed.inject(SailpointPluginService), 'post');
     expect(store.problems()).toEqual([]);
@@ -109,7 +115,8 @@ describe('RequestStore', () => {
     expect(s.message).toBe('Sent as 3 approvals with the same INC. Waiting for Aisha Bello to decide each one.');
   });
 
-  it('says which parts failed to start, and retries just those', async () => {
+  it('test-endpoint mode: says which parts failed to start, and retries just those', async () => {
+    testEndpoint();
     applyScenario('parts-review', store, TestBed.inject(NavService));
     const plugin = TestBed.inject(SailpointPluginService);
     const real = plugin.post.bind(plugin);
@@ -134,7 +141,8 @@ describe('RequestStore', () => {
     expect(store.submission()?.parts.map((p) => p.state)).toEqual(['waiting', 'waiting', 'waiting']);
   });
 
-  it('stops after a permission error instead of trying every part', async () => {
+  it('test-endpoint mode: stops after a permission error instead of trying every part', async () => {
+    testEndpoint();
     applyScenario('parts-review', store, TestBed.inject(NavService));
     const post = vi.spyOn(TestBed.inject(SailpointPluginService), 'post')
       .mockImplementation(() => Promise.reject(Object.assign(new Error('no'), { status: 403 })));
@@ -145,8 +153,9 @@ describe('RequestStore', () => {
     expect(store.submission()?.message).toContain('ORG_ADMIN');
   });
 
-  it('converts an end date to hours when it submits', async () => {
+  it('test-endpoint mode: converts an end date to hours when it submits', async () => {
     vi.setSystemTime(new Date(2026, 9, 8, 10, 0, 0));
+    testEndpoint();
     applyScenario('review', store, TestBed.inject(NavService));
     store.accessMode.set('endDate');
     store.endDate.set('2026-10-08');
@@ -159,6 +168,139 @@ describe('RequestStore', () => {
     await done;
     expect((post.mock.calls[0][1] as { input: unknown }).input).toMatchObject({
       removeDuration: '38h', accessLabel: 'Temporary: until 2026-10-09', part: 1, parts: 1, partLabel: '',
+    });
+  });
+
+  describe('through the Launcher (submit: "launcher", CONTRACTS §9)', () => {
+    type Ops = { op: string; path: string; value: unknown }[];
+    const formData = (patch: ReturnType<typeof vi.spyOn>, call = 0) =>
+      ((patch.mock.calls[call][1] as Ops).find((o) => o.path === '/formData')!.value) as Record<string, unknown>;
+
+    it('launches the Launcher, waits for its form, submits it as the user, then waits for the approval', async () => {
+      applyScenario('review', store, TestBed.inject(NavService));
+      const plugin = TestBed.inject(SailpointPluginService);
+      const post = vi.spyOn(plugin, 'post');
+      const get = vi.spyOn(plugin, 'get');
+      const patch = vi.spyOn(plugin as unknown as { patch: (p: string, d: unknown) => Promise<unknown> }, 'patch');
+
+      const done = store.submit();
+      await vi.advanceTimersByTimeAsync(3000);
+      await done;
+      expect(post.mock.calls.map((c) => c[0])).toEqual(['/v2025/launchers/demo-launcher/launch']);
+      expect(post).toHaveBeenCalledWith('/v2025/launchers/demo-launcher/launch', {});
+      expect(get.mock.calls.filter((c) => String(c[0]).includes('/blocks')).length).toBe(2);   // polled until the FORM block
+      expect(patch).toHaveBeenCalledTimes(1);                                                  // ASSIGNED -> COMPLETED at once
+      expect(patch.mock.calls[0][0]).toBe('/v2025/form-instances/f-0');
+      expect((patch.mock.calls[0][1] as Ops).map((o) => [o.op, o.path])).toEqual([['replace', '/formData'], ['replace', '/state']]);
+      expect((patch.mock.calls[0][1] as Ops)[1].value).toBe('SUBMITTED');
+      expect(formData(patch)).toEqual({
+        people: store.people().map((x) => x.id),
+        items: store.items().map((o) => o.value),
+        approver: [demoPerson('Aisha Bello').id],
+        inc: 'INC0048391',
+        justification: store.justification(),
+        accessType: false, duration: '', durationUnit: [],
+        partLabel: '',
+      });
+      expect(store.submission()?.parts[0]).toMatchObject({ state: 'waiting', executionId: DEMO_NEW_EXECUTION });
+      expect(store.submission()?.parts[0].processId).toBeTruthy();
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(store.submission()).toMatchObject({ state: 'waiting', message: 'Waiting for Aisha Bello to approve or deny.' });
+      expect(store.submission()?.parts[0].approvalId).toBeTruthy();
+      // Nothing a non-admin can't read: no workflow lookups, executions or test runs.
+      expect(get.mock.calls.some((c) => /workflow-executions|\/v2025\/workflows/.test(String(c[0])))).toBe(false);
+    });
+
+    it('sends 600 people as 3 Launcher runs with the part label and the duration in the form fields', async () => {
+      applyScenario('parts-review', store, TestBed.inject(NavService));
+      const plugin = TestBed.inject(SailpointPluginService);
+      const patch = vi.spyOn(plugin as unknown as { patch: (p: string, d: unknown) => Promise<unknown> }, 'patch');
+      const done = store.submit();
+      await vi.advanceTimersByTimeAsync(10000);
+      await done;
+      const sent = [0, 1, 2].map((i) => formData(patch, i));
+      expect(sent.map((d) => [d['partLabel'], (d['people'] as string[]).length])).toEqual([
+        [' (1/3)', 250], [' (2/3)', 250], [' (3/3)', 100],
+      ]);
+      expect(new Set(sent.flatMap((d) => d['people'] as string[])).size).toBe(600);
+      for (const d of sent) {
+        expect(d).toMatchObject({ inc: 'INC0048391', accessType: true, duration: '30', durationUnit: ['d'] });
+      }
+      await vi.advanceTimersByTimeAsync(5000);
+      const s = store.submission()!;
+      expect(s.parts.map((p) => p.executionId)).toEqual([0, 1, 2].map(demoExecutionId));
+      expect(s.parts.every((p) => p.state === 'waiting' && p.approvalId)).toBe(true);
+      expect(s.message).toBe('Sent as 3 approvals with the same INC. Waiting for Aisha Bello to decide each one.');
+    });
+
+    it('sends an end date as hours', async () => {
+      vi.setSystemTime(new Date(2026, 9, 8, 10, 0, 0));
+      applyScenario('review', store, TestBed.inject(NavService));
+      store.accessMode.set('endDate');
+      store.endDate.set('2026-10-09');
+      const patch = vi.spyOn(TestBed.inject(SailpointPluginService) as unknown as { patch: (p: string, d: unknown) => Promise<unknown> }, 'patch');
+      const done = store.submit();
+      await vi.advanceTimersByTimeAsync(3000);
+      await done;
+      expect(formData(patch)).toMatchObject({ accessType: true, duration: '38', durationUnit: ['h'], partLabel: '' });
+    });
+
+    it.each([
+      ['403', Object.assign(new Error('Forbidden'), { status: 403 })],
+      ['500 insufficient authorization', Object.assign(new Error('API request failed with status 500.'),
+        { status: 500, body: { messages: [{ text: 'insufficient authorization' }] } })],
+    ])('tells a user without the Launcher access what to request (%s), and stops', async (_name, error) => {
+      applyScenario('parts-review', store, TestBed.inject(NavService));
+      const post = vi.spyOn(TestBed.inject(SailpointPluginService), 'post').mockImplementation(() => Promise.reject(error));
+      await store.submit();
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(store.submission()?.state).toBe('error');
+      expect(store.startFailed()).toHaveLength(3);
+      const message = 'You need the ACME Bulk Access Request - Launcher Access access to submit; request it in the Request Center.';
+      expect(store.startFailed().map((p) => p.message)).toEqual([message, message, message]);
+      expect(store.submission()?.message).toContain(message);
+    });
+
+    it('shows the form\'s own errors when it refuses the request', async () => {
+      applyScenario('review', store, TestBed.inject(NavService));
+      vi.spyOn(TestBed.inject(BulkApiService), 'submitLauncherForm').mockResolvedValue({
+        state: 'IN_PROGRESS', errors: [{ key: 'inc', messages: ['Enter a ServiceNow incident number.'] }], executionId: null,
+      });
+      const done = store.submit();
+      await vi.advanceTimersByTimeAsync(3000);
+      await done;
+      expect(store.submission()?.state).toBe('error');
+      expect(store.startFailed()[0].message).toBe(
+        'The Launcher form refused the request (inc: Enter a ServiceNow incident number.). Nothing was sent for approval.');
+    });
+
+    it('says when the Launcher\'s form never appears', async () => {
+      applyScenario('review', store, TestBed.inject(NavService));
+      vi.spyOn(TestBed.inject(BulkApiService), 'launcherBlocks').mockResolvedValue([]);
+      const done = store.submit();
+      await vi.advanceTimersByTimeAsync(40000);
+      await done;
+      expect(store.startFailed()[0].message).toContain("its form didn't appear within 30 seconds");
+    });
+
+    it('reports a run the workflow stopped before the approval (an ERROR message block)', async () => {
+      applyScenario('review', store, TestBed.inject(NavService));
+      const api = TestBed.inject(BulkApiService);
+      const real = api.launcherBlocks.bind(api);
+      let stopped = false;
+      vi.spyOn(api, 'launcherBlocks').mockImplementation(async (id) => [
+        ...await real(id),
+        ...(stopped ? [{ type: 'MESSAGE', config: { category: 'ERROR' }, data: { title: 'Invalid INC number', message: '<p>Use INC + 7 digits.</p>' } }] : []),
+      ]);
+      vi.spyOn(api, 'approvals').mockResolvedValue([]);
+      const done = store.submit();
+      await vi.advanceTimersByTimeAsync(3000);
+      await done;
+      stopped = true;
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(store.submission()?.parts[0]).toMatchObject({ state: 'failed', done: true,
+        message: 'The workflow stopped before the approval: Invalid INC number: Use INC + 7 digits.' });
     });
   });
 

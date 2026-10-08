@@ -5,7 +5,9 @@
  *
  * Scenarios: new (empty), people (600 chosen: no limit, 3 parts), items, approver,
  * approver-error, temporary (approver step with temporary access), review,
- * parts-review (600 people, 3 parts, temporary), submitted, parts-submitted, history,
+ * parts-review (600 people, 3 parts, temporary), submitted, parts-submitted (both through the Launcher, the
+ * default), submitted-test-endpoint (the same through the workflow test endpoint), launcher-denied (a user without
+ * the Launcher Access profile submits), history,
  * approvals (a non-admin item approver: 300 + 40 approvals from two bulk requests, and 3 others),
  * approvals-partial (the same, with throttling, failures and colleagues deciding first).
  */
@@ -81,6 +83,11 @@ export class DemoPluginService {
   /** IDs whose one-off 429/503 has been served. */
   private hiccups = new Set<string>();
   faults: DemoApprovalFaults | null = null;
+  /** Launcher mode: each launch's interactive process (run k) and the form it assigns. */
+  private processes = new Map<string, { k: number; polls: number }>();
+  private forms = new Map<string, { k: number; state: string; formData?: Record<string, unknown> }>();
+  /** false: play a user without the Launcher Access profile (the launch is refused). */
+  launcherAccess = true;
 
   whenReady(): Promise<PluginContext> {
     return Promise.resolve(this._context()!);
@@ -160,6 +167,23 @@ export class DemoPluginService {
           attributes: { displayName: d.displayName, department: d.attributes.department } })) as T);
     }
     if (route === '/v3/accounts') return delay([] as T);
+    const blocks = /^\/beta\/interactive-processes\/([^/]+)\/blocks$/.exec(route);
+    if (blocks) {
+      // Like the real Launcher: the form shows up a moment after the launch.
+      const process = this.processes.get(decodeURIComponent(blocks[1]));
+      if (!process) return Promise.reject(apiError(404, 'Not found'));
+      return delay({ items: process.polls++ < 1 ? [] : [{ id: `b-${process.k}`, type: 'FORM', created: new Date().toISOString(),
+        config: { formInstanceId: `f-${process.k}` }, data: { title: DEMO_CONFIG.launcherName } }] } as T);
+    }
+    if (route.startsWith('/v2025/form-instances/')) {
+      const id = decodeURIComponent(route.split('/').pop()!);
+      const form = this.forms.get(id);
+      if (!form) return Promise.reject(apiError(404, 'Not found'));
+      const errors = form.state === 'IN_PROGRESS'
+        ? [{ key: 'inc', messages: [{ text: DEMO_CONFIG.incMessage }] }] : [];
+      return delay({ id, state: form.state, formData: form.formData ?? null, formErrors: errors,
+        createdBy: { type: 'WORKFLOW_EXECUTION', id: demoExecutionId(form.k) } } as T);
+    }
     if (route === '/v2025/workflows') return delay([{ id: 'demo-workflow', name: DEMO_CONFIG.workflowName }] as T);
     if (route.startsWith('/v2025/workflow-executions/')) return delay({ id: route.split('/').pop(), status: 'Running' } as T);
     const approvals = [...this.submitted, ...DEMO_APPROVALS];
@@ -230,6 +254,15 @@ export class DemoPluginService {
       }
       return delay({} as T, 300);
     }
+    if (/^\/v2025\/launchers\/[^/]+\/launch$/.test(path)) {
+      // A user without the Launcher Access profile can't start it.
+      if (!this.launcherAccess) return Promise.reject(apiError(403, 'Forbidden'));
+      const k = this.runs++;
+      const processId = `01DEMOPROCESS${String(k).padStart(13, '0')}`;
+      this.processes.set(processId, { k, polls: 0 });
+      this.forms.set(`f-${k}`, { k, state: 'ASSIGNED' });
+      return delay({ interactiveProcessId: processId } as T, 400);
+    }
     if (/^\/v2025\/workflows\/[^/]+\/test$/.test(path)) {
       const input = body['input'] as { inc: string; approverId: string; partLabel?: string; accessLabel?: string };
       const approver = DEMO_IDENTITIES.find((d) => d.id === input.approverId)?.displayName ?? 'the approver';
@@ -238,6 +271,31 @@ export class DemoPluginService {
       return delay({ workflowExecutionId: demoExecutionId(k) } as T, 600);
     }
     return Promise.reject(new Error(`demo: no fixture for POST ${path}`));
+  }
+
+  /** PATCH /v2025/form-instances/{id}: the Launcher form, submitted (the INC must pass the form's REGEX). */
+  patch<T>(path: string, ops: unknown): Promise<T> {
+    const m = /^\/v2025\/form-instances\/([^/]+)$/.exec(path);
+    const form = m && this.forms.get(decodeURIComponent(m[1]));
+    if (!form) return Promise.reject(new Error(`demo: no fixture for PATCH ${path}`));
+    for (const op of (ops as { path: string; value: unknown }[]) ?? []) {
+      if (op.path === '/formData') form.formData = op.value as Record<string, unknown>;
+    }
+    const data = form.formData ?? {};
+    if (!new RegExp(DEMO_CONFIG.incPattern).test(String(data['inc'] ?? ''))) {
+      form.state = 'IN_PROGRESS';
+      return delay({} as T);
+    }
+    if (form.state !== 'COMPLETED') {
+      form.state = 'COMPLETED';   // verified live: one PATCH can go ASSIGNED -> COMPLETED (the workflow took it)
+      const approverId = (data['approver'] as string[] | undefined)?.[0];
+      const approver = DEMO_IDENTITIES.find((d) => d.id === approverId)?.displayName ?? 'the approver';
+      // The Launcher workflow's own access label: "Temporary: " + duration + unit suffix.
+      const label = data['accessType'] ? `Temporary: ${data['duration']}${(data['durationUnit'] as string[])[0]}` : 'Permanent';
+      setTimeout(() => this.submitted.unshift(
+        demoNewApproval(String(data['inc']), approver, form.k, String(data['partLabel'] ?? ''), label)), 1500);
+    }
+    return delay({} as T);
   }
 
   setRoute(): Promise<void> {
@@ -258,7 +316,12 @@ export class DemoConfigService extends BulkConfigService {
  * scenarios also need the demo plugin service (to play a non-admin) and the approvals store.
  */
 export function applyScenario(scenario: DemoScenario, store: RequestStore, nav: NavService,
-                              more: { plugin?: unknown; approvals?: ApprovalsStore } = {}): void {
+                              more: { plugin?: unknown; approvals?: ApprovalsStore; config?: BulkConfigService } = {}): void {
+  if (scenario === 'submitted-test-endpoint') more.config?.config.update((c) => ({ ...c, submit: 'test-endpoint' }));
+  if (scenario === 'launcher-denied' && more.plugin instanceof DemoPluginService) {
+    more.plugin.setOrgAdmin(false);
+    more.plugin.launcherAccess = false;
+  }
   if (scenario === 'history') {
     nav.tab.set('mine');
     nav.chosen = true;
@@ -312,7 +375,7 @@ export function applyScenario(scenario: DemoScenario, store: RequestStore, nav: 
     return;
   }
   store.step.set(4);
-  if (scenario === 'submitted' || scenario === 'parts-submitted') void store.submit();
+  if (['submitted', 'parts-submitted', 'submitted-test-endpoint', 'launcher-denied'].includes(scenario)) void store.submit();
 }
 
 export function demoProviders(scenario: DemoScenario): (Provider | EnvironmentProviders)[] {
@@ -322,7 +385,7 @@ export function demoProviders(scenario: DemoScenario): (Provider | EnvironmentPr
     provideAppInitializer(() => {
       // inject() only works before the first await.
       const [config, store, nav] = [inject(BulkConfigService), inject(RequestStore), inject(NavService)];
-      const more = { plugin: inject(SailpointPluginService), approvals: inject(ApprovalsStore) };
+      const more = { plugin: inject(SailpointPluginService), approvals: inject(ApprovalsStore), config };
       return config.load().then(() => applyScenario(scenario, store, nav, more));
     }),
   ];

@@ -10,6 +10,10 @@ export const DEMO_ME = { id: 'd0000000000000000000000000000001', name: 'Jordan L
 export const DEMO_CONFIG: RuntimeConfig = parseRuntimeConfig({
   prefix: 'ACME',
   mode: 'live',
+  // The default: submit through the Launcher as the signed-in user (the submitted-test-endpoint scenario switches).
+  submit: 'launcher',
+  launcherId: 'demo-launcher',
+  launcherAccessName: 'ACME Bulk Access Request - Launcher Access',
   workflowName: 'ACME Bulk Access Request (Plugin)',
   workflowId: 'demo-workflow',
   incPattern: '^INC\\d{7}$',

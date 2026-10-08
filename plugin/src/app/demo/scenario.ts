@@ -5,7 +5,7 @@
  */
 export const DEMO_SCENARIOS = [
   'new', 'people', 'items', 'approver', 'approver-error', 'temporary', 'review', 'parts-review', 'submitted',
-  'parts-submitted', 'history', 'approvals', 'approvals-partial',
+  'parts-submitted', 'submitted-test-endpoint', 'launcher-denied', 'history', 'approvals', 'approvals-partial',
 ] as const;
 
 export type DemoScenario = (typeof DEMO_SCENARIOS)[number];

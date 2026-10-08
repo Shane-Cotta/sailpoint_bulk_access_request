@@ -1,8 +1,11 @@
 // Mirrors core/tests/test_core.py (the rules and config sections), so the
 // plugin and the Python core refuse exactly the same requests.
-import { DEFAULT_CONFIG, parseRuntimeConfig, RuntimeConfigError, type DurationUnit, type RuntimeConfig } from './runtime-config';
+import {
+  DEFAULT_CONFIG, MSG_LAUNCHER_ID, MSG_SUBMIT, parseRuntimeConfig, RuntimeConfigError, type DurationUnit, type RuntimeConfig,
+} from './runtime-config';
 import {
   accessLabel, catalogOptions, clip, COMMENT_SEPARATOR, endDateHours, entitlementFilter, extractInc, incIsValid, justificationMax,
+  launcherFormAccess,
   parseBulkComment, partLabel, requestableObjectTypes, partOf, removeDuration, splitIntoParts, temporaryModes, validateAccess, validateRequest, type AccessChoice,
 } from './rules';
 
@@ -14,6 +17,9 @@ import {
 const committed = {
   prefix: 'ACME',
   mode: 'dry-run',
+  submit: 'launcher',
+  launcherId: 'ln-1',            // null in the committed file; install.py writes the tenant's Launcher ID
+  launcherAccessName: 'ACME Bulk Access Request - Launcher Access',
   workflowName: 'ACME Bulk Access Request (Plugin)',
   workflowId: null,
   incPattern: '^INC\\d{7}$',
@@ -78,6 +84,18 @@ describe('runtime config', () => {
     const cfg = cfgWith({ peopleMax: 600, partSize: 100, temporary: { enabled: true, allow: ['duration'], units: ['DAYS'], maxDays: 90 } });
     expect([cfg.peopleMax, cfg.partSize]).toEqual([600, 100]);
     expect(cfg.temporary).toEqual({ enabled: true, allow: ['duration'], units: ['DAYS'], maxDays: 90 });
+  });
+
+  it('submits through the Launcher it names, or through the test endpoint (plugin.submit)', () => {
+    expect([EXAMPLE.submit, EXAMPLE.launcherId, EXAMPLE.launcherAccessName])
+      .toEqual(['launcher', 'ln-1', 'ACME Bulk Access Request - Launcher Access']);
+    // A file from an older install has no `submit`: it used the test endpoint.
+    const { submit: _s, launcherId: _l, ...old } = committed;
+    expect(parseRuntimeConfig(old).submit).toBe('test-endpoint');
+    expect(cfgWith({ submit: 'test-endpoint', launcherId: null }).submit).toBe('test-endpoint');
+    expect(() => cfgWith({ submit: 'backend' })).toThrow(MSG_SUBMIT);
+    // The committed neutral file (launcherId null) refuses to submit until install.py fills it in.
+    expect(() => cfgWith({ launcherId: null })).toThrow(MSG_LAUNCHER_ID);
   });
 
   it('leaves temporary access off for a config file from an older install (no `temporary` block)', () => {
@@ -368,6 +386,28 @@ describe('temporary access (CONTRACTS §2)', () => {
     expect(validateAccess(cfg, d(721, 'HOURS'), NOW)).toEqual([cap]);
     expect(validateAccess(cfg, until('2026-11-06'), NOW)).toEqual([]);         // 29 days 14 h
     expect(validateAccess(cfg, until('2026-11-07'), NOW)).toEqual([cap]);      // 30 days 14 h
+  });
+});
+
+describe('the Launcher form fields (rules.launcher_form_access)', () => {
+  it.each([
+    ['', { accessType: false, duration: '', durationUnit: [] }],
+    ['30d', { accessType: true, duration: '30', durationUnit: ['d'] }],
+    ['720h', { accessType: true, duration: '720', durationUnit: ['h'] }],
+    ['2w', { accessType: true, duration: '2', durationUnit: ['w'] }],
+    ['3M', { accessType: true, duration: '3', durationUnit: ['M'] }],
+  ])('maps removeDuration %j onto the form', (duration, fields) => {
+    expect(launcherFormAccess(duration)).toEqual(fields);
+  });
+
+  it.each(['abc', '0d', '30', '30x', '-1d', null])('refuses %j', (bad) => {
+    expect(() => launcherFormAccess(bad as string)).toThrow(RangeError);
+  });
+
+  it('sends an end date as hours', () => {
+    const now = new Date(2026, 9, 8, 10, 0, 0);
+    const choice: AccessChoice = { mode: 'endDate', date: '2026-10-09' };
+    expect(launcherFormAccess(removeDuration(choice, now))).toEqual({ accessType: true, duration: '38', durationUnit: ['h'] });
   });
 });
 

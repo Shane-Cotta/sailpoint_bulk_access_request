@@ -1,5 +1,6 @@
 import { computed, Injectable, signal } from '@angular/core';
 import {
+  ApiError,
   createSDK,
   type PluginContext,
   type SailPointPluginSDK,
@@ -144,6 +145,37 @@ export class SailpointPluginService {
       return Promise.reject(new Error(SDK_UNAVAILABLE));
     }
     return this.singleton.sdk.api.post<T>(path, data);
+  }
+
+  /**
+   * Authenticated PATCH (the SDK only wraps GET and POST). Same token, base URL and error shape as
+   * `get` / `post`: the SDK's token and the tenant's `apiUrl.idn`, one retry with a fresh token on 401,
+   * and an `ApiError` (status, body) on failure. Used to submit a Launcher's form
+   * (`PATCH /v2025/form-instances/{id}`, `application/json-patch+json`).
+   */
+  async patch<T>(path: string, data: unknown, contentType = 'application/json-patch+json'): Promise<T> {
+    const sdk = this.singleton.sdk;
+    if (!sdk) throw new Error(SDK_UNAVAILABLE);
+    const context = await this.singleton.context;
+    const url = `${context.tenant.apiUrl.idn.replace(/\/+$/, '')}/${path.trim().replace(/^\/+/, '')}`;
+    const send = async (forceRefresh: boolean) => fetch(url, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${await sdk.api.getToken(forceRefresh)}`, 'Content-Type': contentType, Accept: 'application/json' },
+      body: JSON.stringify(data),
+    });
+    let response = await send(false);
+    if (response.status === 401) response = await send(true);
+    const text = await response.text();
+    let body: unknown = null;
+    try {
+      body = text.trim() ? JSON.parse(text) : null;
+    } catch {
+      body = text;
+    }
+    if (!response.ok) {
+      throw new ApiError({ status: response.status, statusText: response.statusText || '', path: path.trim(), body });
+    }
+    return body as T;
   }
 
   /**

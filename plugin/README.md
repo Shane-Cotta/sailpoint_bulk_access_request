@@ -80,7 +80,8 @@ signed-in user's pending access-request approvals **grouped by the INC** in thei
 - Approving a step of a multi-step scheme may create the next step's approval. If it's yours, it appears after **Refresh**.
 
 **Who sees it.** The tab appears when `approvals.enabled` is true (the default) and the runtime config comes from an install
-that knows about it. People without ORG_ADMIN open on this tab, and the ORG_ADMIN banner only shows on *New request*. But an
+that knows about it. In test-endpoint mode, people without ORG_ADMIN open on this tab, and the ORG_ADMIN banner only shows on
+*New request*. But an
 approver can only open the plugin if they can see it: make it public (`plugin.public: true`), or keep it private and add the
 approvers to the plugin's `restrictToUsers`. `show-config` warns when the tab is on and the plugin is private.
 
@@ -98,27 +99,42 @@ from a config file, and nothing is hard-coded.
 | ![Approvals tab: decisions going out](../docs/screenshots/plugin-12a-approvals-progress.png) | ![Approvals tab: all confirmed](../docs/screenshots/plugin-12-approvals-progress-result.png) |
 | ![Approvals tab: partly done, with Retry](../docs/screenshots/plugin-13-approvals-partial-retry.png) | *(Screenshots use made-up demo data. To retake them, see [tools/demo-capture](../tools/demo-capture/README.md).)* |
 
-## Who can use it: ORG_ADMIN to submit, any approver for the Approvals tab
+## Who can use it: Launcher Access to submit, any approver for the Approvals tab
 
-**Only users who can test workflows (in practice, ORG_ADMIN) can submit from this page.** (The Approvals tab works for any
-user who can see the plugin; see above.) The reason is how the page
-starts the workflow:
+How the page submits is set by `plugin.submit` in the config (`show-config` says which applies):
+
+**`"launcher"` (the default when the Launcher deployment is installed): anyone holding the *Launcher Access* profile.**
+The page drives the Launcher deployment (`../launcher/`) for the signed-in user, with their own ISC session: no ORG_ADMIN,
+no plugin workflow, no backend. For each part it
+
+1. starts the Launcher: `POST /v2025/launchers/{id}/launch` (the installer writes the Launcher's ID into the runtime config,
+   because people who aren't admins can't list launchers);
+2. waits for its form: `GET /beta/interactive-processes/{id}/blocks` until the FORM block names the form instance (up to 30 s);
+3. fills in and submits that form: `PATCH /v2025/form-instances/{id}` with the people, items, approver, INC, justification,
+   access fields and the hidden part label (`" (2/3)"`). The page checks everything first with the same rules as the form.
+
+The Launcher's workflow then runs exactly as from the Launchpad, and the approval's requester is the signed-in user (SailPoint
+takes it from the session, so it can't be faked). The 30-person and catalog limits of the Launchpad's form are its pickers'
+only: through the API a part carries up to 250 people (verified live). An end date is sent as a number of hours in the form's
+duration fields, so the approver sees `Temporary: 720h` rather than `Temporary: until …`. Following a part uses only what the
+user may read: their generic approvals (`requesterId eq <me>`) and the process's messages; no workflow executions.
+
+Someone without the profile gets **"You need the *<prefix> Bulk Access Request - Launcher Access* access to submit; request
+it in the Request Center."** (SailPoint answers the launch with 401/403, or 500 "insufficient authorization").
+This was verified live on 2026-10-08 as a real non-admin user with Launcher Access (see `docs/dev/CONTRACTS.md` §9).
+
+**`"test-endpoint"` (the default without the Launcher deployment): ORG_ADMIN only.**
 
 - A browser plugin can't safely hold the OAuth client secret that a workflow's external trigger needs.
-- So the page starts the workflow through SailPoint's **workflow test endpoint** (`POST /v2025/workflows/{id}/test`), using
-  the signed-in user's own session. Only users with the right to test workflows can call that endpoint.
+- So the page starts its own workflow through SailPoint's **workflow test endpoint** (`POST /v2025/workflows/{id}/test`), using
+  the signed-in user's own session. Only users with the right to test workflows (in practice, ORG_ADMIN) can call that endpoint.
 - The test endpoint only runs **disabled** workflows. The installer creates the plugin's workflow disabled, so leave it
   that way.
+- The *New request* tab shows a banner that explains this. For people who aren't ORG_ADMIN, it also says so, turns the Submit
+  button off, and opens the Approvals tab first. Everyone else uses the Launcher from the Launchpad.
 
-The *New request* tab shows a banner that explains this. For people who aren't ORG_ADMIN, it also says so and turns the Submit button off.
-
-**Everyone else uses the Launcher.** The Launcher deployment (`../launcher/`) does the same job for any user,
-from the Launchpad, with SailPoint's own form.
-
-**Production alternative.** To let non-admins use this richer page, put a small backend between the page and
-SailPoint. The backend holds the workflow's external-trigger OAuth client, checks the caller, and calls the external
-trigger URL. The page would then call that backend (add its origin to the manifest's `contentSecurityPolicies`) instead
-of the test endpoint, and the workflow can be enabled. That backend is not part of this repository.
+Either way, people can only open the plugin if they can see it: make it public (`plugin.public: true`), or keep it private
+and add them to the plugin's `restrictToUsers`.
 
 ## What gets installed
 
@@ -127,10 +143,11 @@ tell them apart:
 
 | Object | Name | Notes |
 |---|---|---|
-| Workflow | `<prefix> Bulk Access Request (Plugin)` | **Disabled**, external trigger, owned by the installer's identity (or `owner`). |
+| Workflow (only with `plugin.submit: "test-endpoint"`) | `<prefix> Bulk Access Request (Plugin)` | **Disabled**, external trigger, owned by the installer's identity (or `owner`). In launcher mode it isn't created; `uninstall` still removes one left from an earlier install. |
 | UI plugin | alias `plugin.alias` (default `<prefix>-bulk-access`), name `plugin.displayName` | Created **private** (only you can see it) unless `plugin.public` is true or you pass `--public`. |
 
-The workflow: looks up the requester and approver → refuses self-approval and a bad INC (as a second check after the page) →
+In launcher mode the page uses the Launcher's workflow and form instead (see [INSTALL.md](../INSTALL.md)). The plugin
+workflow: looks up the requester and approver → refuses self-approval and a bad INC (as a second check after the page) →
 **one generic approval** named `Bulk access <INC>` (plus ` (k/n)` when the request is split into parts), assigned to the approver →
 if approved and `mode` is `live`, **Manage Access once per person** with all items, the chosen `removeDuration`, and the comment
 `<INC> | Bulk access request by … | Approved by … | <access> | <justification>` → an email to the requester (or to
@@ -163,10 +180,13 @@ In `dry-run` mode everything runs, including the approval and the emails, except
    | `approvals.*` | The Approvals tab: `enabled` (default true), `concurrency` (1 to 8, default 4), `useBulkEndpoint` (`auto`, `always`, `never`), `maxRows` (250 to 20,000, default 5,000), `showOther` (default false), `denyCommentRequired` (default true). |
    | `notifications.overrideRecipients` | For test tenants: send every email here instead of to real people. |
    | `plugin.alias`, `plugin.displayName`, `plugin.public` | The plugin's alias (lowercase, digits, dashes), the name shown in ISC, and whether everyone can see it (default false: only you). |
+   | `plugin.submit` | `"launcher"` (default with the Launcher deployment): submit through the Launcher as the signed-in user. `"test-endpoint"` (default without it): through the plugin workflow, ORG_ADMIN only. See *Who can use it*. |
 
 2. The installer turns this into two files the page reads. Don't edit them by hand:
-   - `public/bulk-access.config.json`: the runtime config (workflow name and ID, INC rule, `peopleMax`, `partSize`, `itemsMax`,
-     catalog filter, `temporary`). The committed copy holds neutral defaults. A runtime config without a `temporary` block
+   - `public/bulk-access.config.json`: the runtime config (`submit`, the Launcher's ID and access profile name, or the workflow
+     name and ID, INC rule, `peopleMax`, `partSize`, `itemsMax`, catalog filter, `temporary`). The committed copy holds neutral
+     defaults (and no Launcher ID, so a build that skipped `install.py` refuses to submit). One without `submit` comes from an
+     older install and uses the test endpoint. A runtime config without a `temporary` block
      (from an older install) turns temporary access off, because an older workflow would grant the access permanently.
      One without an `approvals` block hides the Approvals tab.
    - `sp-ui-plugin.json`: the plugin manifest (alias, name, `apiScopes: ["sp:scopes:all"]`, slot `full-page`).
@@ -182,7 +202,8 @@ Run these from `bulk-access-request/`:
 # 1. See exactly what would be sent. This changes nothing.
 python plugin/install.py --config config/<tenant>.json --dry-run
 
-# 2. Create or update the workflow, write the runtime config and manifest,
+# 2. Look up the Launcher (launcher mode; install the Launcher deployment first) or create or update the
+#    workflow (test-endpoint mode), write the runtime config and manifest,
 #    build the page and upload it (first time: `sail ui-plugins create --private`)
 python plugin/install.py --config config/<tenant>.json --deploy
 
@@ -270,13 +291,17 @@ catalog filter, `splitIntoParts` / `partLabel`, temporary-access checks and the 
 
 | Symptom | Cause and fix |
 |---|---|
-| "SailPoint refused the call (HTTP 403)" on submit | You aren't allowed to test workflows. Use the Launcher, or see *Production alternative*. |
-| "The workflow … is not installed" | Run `install.py` against this tenant. The page finds the workflow by ID (from the runtime config) or by name. |
+| "SailPoint refused the call (HTTP 403)" on submit (test-endpoint mode) | You aren't allowed to test workflows. Use the Launcher, or switch to `plugin.submit: "launcher"`. |
+| "The workflow … is not installed" (test-endpoint mode) | Run `install.py` against this tenant. The page finds the workflow by ID (from the runtime config) or by name. |
 | Someone can't be found by search | New identities can take a while to reach the search index. The page also looks people up through their accounts. If that fails too, paste their identity ID. |
 | An access request shows **Cancelled: "Already has a pending request for this item"** | That person already had an open request for the item. SailPoint skips duplicates. |
-| The workflow run **Failed** and no approval appeared | The workflow's own checks stopped it: the INC was invalid or the approver was the requester. The requester gets an email. |
+| The workflow run **Failed** and no approval appeared | The workflow's own checks stopped it: the INC was invalid or the approver was the requester. The requester gets an email (test-endpoint mode); through the Launcher, the page shows the Launcher's message. |
 | `sail` prints "Secrets storage is not currently functional" | This is harmless. The scripts pass the PAT through environment variables. |
-| "Part 2 didn't start" after submitting a big request | That part's test-endpoint call failed (the message says why). The other parts are unaffected; press **Retry part 2**. |
+| "Part 2 didn't start" after submitting a big request | That part's launch or form submission (or test-endpoint call) failed; the message says why. The other parts are unaffected; press **Retry part 2**. |
+| "You need the … Launcher Access access to submit" | The user doesn't hold the Launcher Access profile (yet). They request it in the Request Center; once it's provisioned (about a minute), submit again. |
+| "The Launcher form refused the request (…)" | The Launcher form's own checks refused a value (e.g. the INC). Nothing was sent for approval; fix it and submit again. |
+| "…its form didn't appear within 30 seconds" | The Launcher started but its workflow didn't show the form. Check that the Launcher's workflow is enabled (`bulkaccess.py status`). |
+| "Configuration problem: launcherId is missing" | The runtime config was not written by `plugin/install.py` (the committed copy has no Launcher ID). Run `bulkaccess.py apply`. |
 | An approver can't open the plugin | It's private. Make it public (`plugin.public`) or add them to the plugin's `restrictToUsers`. |
 | No Approvals tab | `approvals.enabled` is false, or the runtime config predates the tab: re-run `install.py`. |
 | Approvals tab: "decided by someone else" | A colleague in the same governance group, or an admin, decided first. Nothing to do. |

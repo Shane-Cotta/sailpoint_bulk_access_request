@@ -9,7 +9,7 @@ import { demoScenario } from './demo/scenario';
 import { providePluginTesting } from './testing/plugin.testing';
 
 describe('App', () => {
-  async function render(isOrgAdmin = true, approvalsEnabled = true) {
+  async function render(isOrgAdmin = true, approvalsEnabled = true, submit: 'launcher' | 'test-endpoint' = 'launcher') {
     TestBed.configureTestingModule({ imports: [App], providers: providePluginTesting() });
     await TestBed.compileComponents();   // the tabs are @defer blocks (lazy chunks)
     if (!isOrgAdmin) {
@@ -20,6 +20,7 @@ describe('App', () => {
     const config = TestBed.inject(BulkConfigService);
     await config.load();
     if (!approvalsEnabled) config.config.update((c) => ({ ...c, approvals: { ...c.approvals, enabled: false } }));
+    config.config.update((c) => ({ ...c, submit }));
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await fixture.whenStable();
@@ -41,15 +42,21 @@ describe('App', () => {
     expect(TestBed.inject(NavService).tab()).toBe('new');
   });
 
-  it('explains the ORG_ADMIN requirement on the New request tab and points to the Launcher', async () => {
-    const { el } = await render();
+  it('submitting through the Launcher: no ORG_ADMIN banner, and people who are not ORG_ADMIN start on New request', async () => {
+    const { el } = await render(false);
+    expect(TestBed.inject(NavService).tab()).toBe('new');
+    expect(el.textContent).not.toContain('ORG_ADMIN');
+  });
+
+  it('test-endpoint mode: explains the ORG_ADMIN requirement on the New request tab and points to the Launcher', async () => {
+    const { el } = await render(true, true, 'test-endpoint');
     const panel = el.querySelector('p-tabpanel[value="new"]') ?? el;
     expect(panel.textContent).toContain('ORG_ADMIN');
     expect(panel.textContent).toContain('ACME Bulk Access Request Launcher');
   });
 
-  it('opens the Approvals tab first for people who are not ORG_ADMIN, without the submit banner', async () => {
-    const { el, fixture } = await render(false);
+  it('test-endpoint mode: opens the Approvals tab first for people who are not ORG_ADMIN, without the submit banner', async () => {
+    const { el, fixture } = await render(false, true, 'test-endpoint');
     const nav = TestBed.inject(NavService);
     expect(nav.tab()).toBe('approvals');
     expect(el.querySelector('app-approvals')).not.toBeNull();

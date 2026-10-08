@@ -59,6 +59,16 @@ MSG_APPROVALS_MAX_ROWS = ("`approvals.maxRows` must be a whole number between "
                           f"{APPROVALS_MAX_ROWS_RANGE[0]} and {APPROVALS_MAX_ROWS_RANGE[1]}.")
 
 
+# How the plugin submits a request (`plugin.submit`):
+#  "launcher"      -- it starts the Launcher deployment's Launcher and submits its form as the signed-in user,
+#                     so anyone with the Launcher Access profile can submit (verified live as a non-admin);
+#  "test-endpoint" -- it starts its own disabled workflow through the workflow test endpoint (ORG_ADMIN only).
+PLUGIN_SUBMIT_MODES = ("launcher", "test-endpoint")
+MSG_PLUGIN_SUBMIT = '`plugin.submit` must be "launcher" or "test-endpoint".'
+MSG_PLUGIN_SUBMIT_LAUNCHER = ('`plugin.submit` "launcher" needs the Launcher deployment: set `deployments.launcher` '
+                              'to true, or use "test-endpoint".')
+
+
 def msg_approvals_flag(key: str) -> str:
     return f"`approvals.{key}` must be true or false."
 
@@ -96,6 +106,7 @@ class Config:
     deploy_launcher: bool = True
     deploy_plugin: bool = True
     plugin_public: bool = False
+    plugin_submit: str = "test-endpoint"
     approvals_enabled: bool = True
     approvals_concurrency: int = 4
     approvals_use_bulk_endpoint: str = "auto"
@@ -129,6 +140,12 @@ class Config:
         return self.base_name
 
     @property
+    def launcher_access_profile_name(self) -> str:
+        """The requestable access profile that lets its holders use the Launcher (and, in launcher
+        submit mode, submit from the plugin)."""
+        return f"{self.base_name} - Launcher Access"
+
+    @property
     def live(self) -> bool:
         return self.mode == "live"
 
@@ -150,16 +167,44 @@ class Config:
     @property
     def launcher_temporary_modes(self) -> tuple[str, ...]:
         """The Launcher offers durations only: a workflow can't turn a form date into a duration."""
-        return tuple(m for m in self.plugin_temporary_modes if m == "duration")
+        return ("duration",) if self.temporary_enabled and "duration" in self.temporary_allow else ()
+
+    @property
+    def launcher_form_has_duration(self) -> bool:
+        """Whether the Launcher form gets its duration fields: durations are offered and at least
+        one configured unit fits `maxDays` once (definitions.launcher_duration_units)."""
+        return "duration" in self.launcher_temporary_modes and any(
+            _unit_fits(u, self.temporary_max_days) for u in self.temporary_units)
 
     @property
     def plugin_temporary_modes(self) -> tuple[str, ...]:
-        return self.temporary_allow if self.temporary_enabled else ()
+        """What the plugin offers. In launcher submit mode the request travels in the Launcher form,
+        which carries temporary access only in its duration fields (an end date goes as hours), so
+        without those fields the plugin offers permanent access only."""
+        modes = self.temporary_allow if self.temporary_enabled else ()
+        if self.plugin_submits_via_launcher and not self.launcher_form_has_duration:
+            return ()
+        return modes
+
+    @property
+    def plugin_submits_via_launcher(self) -> bool:
+        """The plugin submits through the Launcher (as the signed-in user; no ORG_ADMIN needed)."""
+        return self.deploy_plugin and self.plugin_submit == "launcher"
+
+    @property
+    def plugin_needs_workflow(self) -> bool:
+        """The plugin's own (disabled) workflow is only installed for the test-endpoint mode."""
+        return self.deploy_plugin and self.plugin_submit == "test-endpoint"
 
     @property
     def plugin_approvals_enabled(self) -> bool:
         """The Approvals tab lives in the plugin, so it needs the plugin deployment too."""
         return self.deploy_plugin and self.approvals_enabled
+
+
+def _unit_fits(unit: str, max_days: int | None) -> bool:
+    """At least one `unit` fits in `max_days` (rules.unit_max_count != 0)."""
+    return max_days is None or max_days / UNIT_MAX_DAYS[unit] + 1e-9 >= 1
 
 
 def _require(cond: bool, message: str) -> None:
@@ -273,6 +318,12 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
 
     approvals = _approvals(data.get("approvals"))
 
+    submit = plugin.get("submit")
+    if submit is None:
+        submit = "launcher" if deploy_launcher else "test-endpoint"
+    _require(submit in PLUGIN_SUBMIT_MODES, MSG_PLUGIN_SUBMIT)
+    _require(submit != "launcher" or deploy_launcher, MSG_PLUGIN_SUBMIT_LAUNCHER)
+
     alias = plugin.get("alias") or f"{prefix.lower()}-bulk-access"
     _require(re.fullmatch(r"[a-z0-9][a-z0-9-]{1,48}", alias) is not None,
              "`plugin.alias` must be lowercase letters, digits and dashes.")
@@ -305,6 +356,7 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
         deploy_launcher=deploy_launcher,
         deploy_plugin=deploy_plugin,
         plugin_public=bool(plugin.get("public", False)),
+        plugin_submit=submit,
         approvals_enabled=approvals["enabled"],
         approvals_concurrency=approvals["concurrency"],
         approvals_use_bulk_endpoint=approvals["useBulkEndpoint"],

@@ -28,9 +28,13 @@ it to the orchestrator instead of changing it alone.
 | `launcher_people_cap` | derived | `min(people_max or 30, 30)` |
 | `plugin_people_max` | derived | = `people_max` |
 | `temporary_enabled`, `temporary_allow`, `temporary_units`, `temporary_max_days` | `temporaryAccess.*` | `allow` ⊆ `("duration","endDate")`, `units` ⊆ `HOURS/DAYS/WEEKS/MONTHS`, `maxDays` null or ≥ 1 |
-| `plugin_temporary_modes` / `launcher_temporary_modes` | derived | the Launcher drops `endDate` |
+| `plugin_temporary_modes` / `launcher_temporary_modes` | derived | the Launcher drops `endDate`. In launcher submit mode the plugin offers nothing temporary unless `launcher_form_has_duration` (its end date travels as hours in the form's duration fields) |
 | `deploy_launcher`, `deploy_plugin`, `deployments` | `deployments.*` | at least one must be true |
 | `plugin_public` | `plugin.public` | default false; the installer pushes `--private` unless this or `--public` is set |
+| `plugin_submit` | `plugin.submit` | `"launcher"` (default when `deployments.launcher` is true) or `"test-endpoint"` (default otherwise), `config.PLUGIN_SUBMIT_MODES`; see §9 |
+| `plugin_submits_via_launcher` / `plugin_needs_workflow` | derived | `deploy_plugin` and the mode; the plugin workflow is only installed for `"test-endpoint"` |
+| `launcher_access_profile_name` | derived | `"{base_name} - Launcher Access"`: the profile that grants the Launcher (and so, in launcher mode, submitting from the plugin) |
+| `launcher_form_has_duration` | derived | the Launcher form gets its duration fields (durations allowed and a unit fits `maxDays`) |
 | `launcher_access_approval` | `access.launcherApproval` | the old `launcher.accessApproval` still works (it adds a note to `cfg.deprecations`) |
 | `approvals_enabled` | `approvals.enabled` | bool, default true: the plugin's Approvals tab (see `docs/dev/BULK_APPROVALS_DESIGN.md`) |
 | `approvals_concurrency` | `approvals.concurrency` | 1..8, default 4: decisions sent at a time |
@@ -47,6 +51,10 @@ The `approvals` block may be missing (older configs): every key takes its defaul
 - `` `approvals.concurrency` must be a whole number between 1 and 8. ``
 - `` `approvals.useBulkEndpoint` must be "auto", "always" or "never". ``
 - `` `approvals.maxRows` must be a whole number between 250 and 20000. ``
+
+`plugin.submit` problems (exact text): `` `plugin.submit` must be "launcher" or "test-endpoint". `` and, for `"launcher"`
+without the Launcher deployment, `` `plugin.submit` "launcher" needs the Launcher deployment: set `deployments.launcher` to true, or use "test-endpoint". ``
+`show-config` prints a `Submit:` line saying who can submit from the plugin (holders of the Launcher Access profile, or ORG_ADMIN).
 
 `show-config` prints one `Approvals:` line and, when `plugin_approvals_enabled` and the plugin is private, the warning
 `non-admin approvers can't open a private plugin unless they are listed in the plugin's restrictToUsers`.
@@ -71,6 +79,8 @@ Messages must match **exactly** in both languages.
   - Unit not in `temporary_units`: `Choose a unit for the duration.`
   - End date not after today: `Choose an end date after today.`
   - Over the cap (n × UNIT_MAX_DAYS[unit], or hours / 24, greater than maxDays): `Temporary access can last at most {maxDays} days.`
+- **Launcher form fields:** `launcher_form_access(remove_duration)` / `launcherFormAccess(removeDuration)` turn a validated
+  `removeDuration` into the Launcher form's `{accessType, duration, durationUnit}` (§9); anything else raises `ValueError` / `RangeError`.
 - **Bulk item comment:** `COMMENT_SEPARATOR = " | "`. `parse_bulk_comment(cfg, text)` / `parseBulkComment(cfg, text)` reads back
   the item comment of §4 and returns `{inc, requester, approver, accessLabel, justification}`, or `None` / `null` for anything else:
   - exactly the shape `<INC> | Bulk access request by <requester> | Approved by <approver> | <access label> | <justification>`;
@@ -81,7 +91,8 @@ Messages must match **exactly** in both languages.
   - not a string, plain comments, the INC alone, 4 fields, wrong or reordered labels → `None` / `null`.
   `definitions.py` builds the comment from `COMMENT_SEPARATOR`, and a test checks that the rendered comment parses back to its inputs.
 
-## 3. Plugin workflow input (one workflow-test run **per part**)
+## 3. Plugin workflow input (`plugin.submit: "test-endpoint"`; one workflow-test run **per part**)
+In launcher mode the same request goes into the Launcher form instead (§9).
 Sent as `{input}` to `POST /v2025/workflows/{id}/test`; each run is followed with `GET /v2025/workflow-executions/{id}` (§8).
 Every field is **always** present (no missing paths in templates):
 ```json
@@ -95,7 +106,8 @@ Every field is **always** present (no missing paths in templates):
 All parts of one submission share the same INC, approver, items, justification and access choice.
 
 ## 4. Workflow output (both variants, built by `core/bulkaccess/definitions.py`)
-- **Approval name:** `Bulk access {inc}{partLabel}` (≤ 50 characters). The Launcher is always one part, so `partLabel` is empty there.
+- **Approval name:** `Bulk access {inc}{partLabel}` (≤ 50 characters). On the Launcher, `partLabel` is the hidden form field
+  of §9 when it matches `^ \([1-9][0-9]*/[1-9][0-9]*\)$` (`definitions.PART_LABEL_REGEX`), else `""` (the Launchpad leaves it out).
 - **Approval description:** `{prefix} bulk access request {inc}{partLabel} from {requester} · {accessLabel}`.
 - **Manage Access:** `versionNumber: 2`, inside the existing loop, `removeDuration` from the input (plugin:
   `removeDuration.$: "$.loop.context.trigger.removeDuration"`; the Launcher builds it from its form fields).
@@ -110,6 +122,12 @@ All parts of one submission share the same INC, approver, items, justification a
   The Launcher must enforce the same rules (whole number ≥ 1, `maxDays`) before the approval, with a clear Launchpad message.
 
 ## 5. Plugin runtime config (`public/bulk-access.config.json`, written by `plugin/pluginlib.py`)
+`"submit": "launcher" | "test-endpoint"`, `"launcherId": string | null` (launcher mode: the Launcher's ID, looked up by name at
+install, since a non-admin can't list launchers), `"launcherAccessName": string`, and `"workflowId"` (test-endpoint mode only).
+`runtime-config.ts`: a file without `submit` comes from an older install → `"test-endpoint"`; other values → `submit must be
+"launcher" or "test-endpoint".`; `"launcher"` without `launcherId` → `launcherId is missing: …` (the committed neutral file has
+`launcherId: null`, so a build that skipped install.py refuses to submit). `temporary.enabled`/`allow` carry `plugin_temporary_modes`.
+
 New fields (the rest are unchanged): `"peopleMax": null | number`, `"partSize": number`,
 `"temporary": {"enabled": bool, "allow": ["duration","endDate"], "units": ["HOURS",...], "maxDays": null | number}`.
 `runtime-config.ts` validates: peopleMax null or ≥ 1; partSize 1..250; allow/units from the fixed lists.
@@ -127,7 +145,8 @@ python bulkaccess.py apply       --config … [--dry-run] [--only launcher|plugi
 python bulkaccess.py status      --config … [--only …]
 python bulkaccess.py uninstall   --config … [--only …] [--yes]
 ```
-It runs each enabled deployment by calling the existing `launcher/*.py` and `plugin/*.py` `main(argv)` functions. They're loaded
+`apply` runs the Launcher before the plugin: in launcher submit mode `plugin/install.py` looks the Launcher up by name and stops
+with a clear error when it's missing. It runs each enabled deployment by calling the existing `launcher/*.py` and `plugin/*.py` `main(argv)` functions. They're loaded
 by file path, because both folders have an `install.py`. Those scripts keep working on their own. `plugin/install.py` keeps its flags
 and takes its `--public` default from `cfg.plugin_public`.
 
@@ -188,6 +207,56 @@ Verified live with read-only calls on the test tenant (2026-10-08); the test end
   - one entry per person and item; `ASSIGNED` wins.
 - The Launcher form's `items` SELECT keeps `maximum: catalog.maxItems` (≤ 25, under the 30-selection limit); entitlements only
   add options, not selections.
+
+## 9. Submitting through the Launcher (`plugin.submit: "launcher"`, the default)
+The plugin drives the Launcher deployment as the **signed-in user**, so anyone holding the Launcher Access profile can submit:
+no ORG_ADMIN, no plugin workflow, no backend. Verified live on 2026-10-08 as a real **non-admin** with Launcher Access, using
+their own ISC UI session token (✔), and with the admin PAT (✔ PAT).
+
+**Per part** (`bulk-api.service.ts` `launch`, `launcherFormInstance`, `submitLauncherForm`; `request-store.ts` `startViaLauncher`):
+1. `POST /v2025/launchers/{launcherId}/launch` body `{}` → `200 {"interactiveProcessId": "<ULID>"}` ✔ (ISC's Launchpad calls
+   `/beta/launchers/{id}/launch`; v2025 works the same). A non-admin **can't list** launchers (`GET /v2025/launchers` → 500
+   "insufficient authorization") but can `GET /v2025/launchers/{id}` ✔, so `plugin/install.py` writes `launcherId` (§5).
+2. `GET /beta/interactive-processes/{ipid}/blocks` → `{"items": [{"type": "FORM", "config": {"formInstanceId": "<uuid>"},
+   "data": {"title", "message"}, "id", "created"}]}` ✔, polled every second until the FORM block appears, for at most 30 s
+   (`LAUNCHER_FORM_TIMEOUT_MS`; then "…its form didn't appear within 30 seconds…"). `GET /beta/interactive-processes/{ipid}` ✔
+   (owner = the user). **Beta**, with no v1/v2025 equivalent today; the admin PAT (client credentials) gets **401** on it ✔ PAT,
+   so it only works with a user session. A non-admin can't list `/v2025/form-instances` (403) but can `GET /v2025/form-instances/{id}` ✔.
+3. `PATCH /v2025/form-instances/{id}` (`application/json-patch+json`)
+   `[{"op":"replace","path":"/formData","value":{…}},{"op":"replace","path":"/state","value":"SUBMITTED"}]` → 200 ✔; one PATCH
+   went ASSIGNED → COMPLETED. Repeated (up to 3) until `SUBMITTED`/`COMPLETED` or `formErrors` (then the part is "not started"
+   and shows the errors; the form stays open until it expires). The plugin SDK has no PATCH, so `SailpointPluginService.patch`
+   calls `fetch` with the SDK's token and the tenant's `apiUrl.idn`. The form instance's `createdBy` `{type: WORKFLOW_EXECUTION, id}`
+   is the run, which the approval references (`referenceData` `workflowExecutionId`).
+
+**formData** (the Launchpad's own shapes, `LauncherFormData`): `people` (identity IDs; 40 and 250 accepted ✔: the 30 cap is the
+UI picker's only), `items` (`{id,type,name}`; an item outside the form's STATIC options is accepted ✔), `approver` (one-item
+list), `inc`, `justification`, `accessType` (boolean), `duration` (string), `durationUnit` (one-item list of the suffix, or `[]`),
+`partLabel` (`""` or `" (k/n)"`). `rules.launcher_form_access` / `launcherFormAccess` map a validated `removeDuration`:
+`""` → `false, "", []`; `"30d"` → `true, "30", ["d"]`; an end date → hours, `"720h"` → `true, "720", ["h"]`. A unit outside
+the form's options (e.g. `"h"` when hours aren't offered on the Launchpad) is accepted by the form ✔ PAT; the Launcher workflow
+accepts hours whenever the plugin offers an end date (`definitions.launcher_workflow_units`). Unknown formData keys are kept ✔ PAT.
+The form's REGEX rules apply on submit, so the plugin validates first (rules.ts).
+
+**The Launcher form and workflow** (`definitions.py`): a `HIDDEN` element `partLabel` (default `""`, no validations; the API
+accepts `HIDDEN` ✔ PAT). The workflow defines `partLabel` as `"single"` emptied by a replace transform (in *Define Variable Access*),
+then *Part Given?* (`StringMatches` `PART_LABEL_REGEX` on the form field) → *Set Part*. A missing field (Launchpad) or a
+malformed one (`" (1/2) evil"`) leaves it empty ✔ PAT; `" (2/3)"` gives the approval `Bulk access INC… (2/3)` ✔ PAT. The access label
+is the Launcher's own (`Temporary: 720h` for an end date, not `Temporary: until …`).
+
+**Who submitted:** the generic approval's `requester` is the signed-in user ✔ (server-derived from the session: it can't be
+spoofed). With the admin PAT, 250 people in one form reached the workflow intact ✔ PAT (an approver placed at #250 was caught by
+*Approver In People?*).
+
+**Following a part** (only what a non-admin can read; no `workflow-executions`): `GET /v2025/generic-approvals?limit=250&sorters=-createdDate&filters=requesterId eq "<me>"`
+(filter and newest-first sort work ✔ PAT; not yet checked with a non-admin session), matched by `workflowExecutionId` or by name
+`Bulk access {inc}{partLabel}`; decided → done. Until the approval exists, the process's blocks are read again: a non-FORM block
+with category `ERROR` (the workflow's *Reject …* interactive messages; shape assumed from the FORM block) → "The workflow stopped
+before the approval: {title}: {message}". After 10 minutes, "still waiting".
+
+**Errors:** a 401/403, or a 500 whose message says "insufficient authorization", on any of these calls →
+`You need the {launcherAccessName} access to submit; request it in the Request Center.` (`errors.ts` `launcherAccessMessage`),
+and the remaining parts are not tried.
 
 ## Test data and safety (live tests in a test or shared tenant)
 - Only touch objects named with the config's prefix. Use a harmless test access profile as the only catalog item

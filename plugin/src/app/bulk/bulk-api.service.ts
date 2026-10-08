@@ -5,7 +5,7 @@ import { describeError } from './errors';
 import type { RuntimeConfig } from './runtime-config';
 import {
   APPROVAL_NAME_PREFIX, catalogOptions, entitlementFilter, filterQuote, requestableObjectTypes, type AccessItem,
-  type CatalogOption,
+  type CatalogOption, type LauncherFormAccess,
 } from './rules';
 
 /**
@@ -59,6 +59,68 @@ export interface Execution {
   status: 'Running' | 'Completed' | 'Failed' | 'Canceled' | string;
   startTime?: string;
   closeTime?: string;
+}
+
+/**
+ * What the page writes into the Launcher form when it submits through the Launcher (CONTRACTS §9): the
+ * Launchpad's own formData shapes (an approver one-item list, a TOGGLE boolean, a TEXT string, a SELECT list),
+ * plus the hidden `partLabel`. The 30-person and catalog-option limits are the Launchpad picker's only; the
+ * API takes up to 250 people and any `{id, type, name}` item (verified live).
+ */
+export interface LauncherFormData extends LauncherFormAccess {
+  people: string[];
+  items: AccessItem[];
+  approver: string[];
+  inc: string;
+  justification: string;
+  /** "" or " (2/3)"; the Launcher workflow names the approval with it. */
+  partLabel: string;
+}
+
+/** A block of a Launcher's interactive process: its FORM (config.formInstanceId), then its messages. */
+export interface LauncherBlock {
+  id?: string;
+  type?: string;
+  created?: string;
+  config?: Record<string, unknown>;
+  data?: Record<string, unknown>;
+}
+
+/** The parts of a /v2025/form-instances/{id} answer the page reads. */
+interface FormInstance {
+  state?: string;
+  formErrors?: { key?: string; messages?: { text?: string }[] }[];
+  createdBy?: { type?: string; id?: string };
+}
+
+/** How a Launcher form submission went: its state, the form's own validation errors, and the run it started. */
+export interface LauncherFormResult {
+  state: string;
+  errors: { key: string; messages: string[] }[];
+  /** The workflow run behind the form (the form instance's createdBy), which the approval references. */
+  executionId: string | null;
+}
+
+/** How long to wait for the Launcher's form to appear after the launch. */
+export const LAUNCHER_FORM_TIMEOUT_MS = 30_000;
+
+const plainText = (v: unknown) => (typeof v === 'string' ? v.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() : '');
+
+/**
+ * The error message the Launcher's workflow showed when it stopped before the approval (its "Reject …" steps
+ * post an ERROR interactive message), or null. Best effort: only the FORM block's shape is verified
+ * (`{type, config, data: {title, message}}`), so the category is looked for in `config` and `data`.
+ */
+export function launcherStopMessage(blocks: LauncherBlock[]): string | null {
+  for (const b of blocks) {
+    if (b.type === 'FORM') continue;
+    const category = String(b.config?.['category'] ?? b.data?.['category'] ?? '').toUpperCase();
+    if (category !== 'ERROR' && !/ERROR/i.test(b.type ?? '')) continue;
+    const title = plainText(b.data?.['title'] ?? b.config?.['title']);
+    const message = plainText(b.data?.['message'] ?? b.config?.['message']);
+    return [title, message].filter(Boolean).join(': ') || 'The Launcher workflow stopped with an error.';
+  }
+  return null;
 }
 
 /** The fields of a /v2025/generic-approvals row the page reads. */
@@ -614,8 +676,78 @@ export class BulkApiService {
     return this.plugin.get<Execution>(`/v2025/workflow-executions/${encodeURIComponent(id)}`);
   }
 
-  async approvals(): Promise<GenericApproval[]> {
-    return (await this.plugin.get<GenericApproval[]>('/v2025/generic-approvals?limit=250')) ?? [];
+  // ── Submitting through the Launcher (CONTRACTS §9; every call verified live as a non-admin) ──
+  /** Start the Launcher as the signed-in user; returns the interactive process ID. */
+  async launch(launcherId: string): Promise<string> {
+    const started = await this.plugin.post<{ interactiveProcessId?: string }>(
+      `/v2025/launchers/${encodeURIComponent(launcherId)}/launch`, {});
+    if (!started?.interactiveProcessId) throw new Error('The Launcher did not start (no interactive process ID returned).');
+    return started.interactiveProcessId;
+  }
+
+  /** The blocks the Launcher's run has shown so far: its form, then any messages. */
+  async launcherBlocks(processId: string): Promise<LauncherBlock[]> {
+    const res = await this.plugin.get<{ items?: LauncherBlock[] } | LauncherBlock[]>(
+      `/beta/interactive-processes/${encodeURIComponent(processId)}/blocks`);
+    return (Array.isArray(res) ? res : res?.items) ?? [];
+  }
+
+  /**
+   * The form instance the Launcher's run assigned to the user: polls the process's blocks until the FORM
+   * block appears (a second or two after the launch), or gives up after `timeoutMs`.
+   */
+  async launcherFormInstance(processId: string, timeoutMs = LAUNCHER_FORM_TIMEOUT_MS, everyMs = 1000): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const blocks = await retry(() => this.launcherBlocks(processId), 3, 1000, isTransient).catch((err) => {
+        if (statusOf(err) === 404) return [];   // the process may not be readable for a moment
+        throw err;
+      });
+      const id = blocks.find((b) => b.type === 'FORM')?.config?.['formInstanceId'];
+      if (typeof id === 'string' && id) return id;
+      if (Date.now() >= deadline) {
+        throw new Error(`The Launcher started (process ${processId}) but its form didn't appear within `
+          + `${Math.round(timeoutMs / 1000)} seconds. Try again; if it keeps happening, ask an administrator to check `
+          + 'the Launcher\'s workflow.');
+      }
+      await new Promise((resolve) => setTimeout(resolve, everyMs));
+    }
+  }
+
+  /**
+   * Fill in and submit the Launcher's form. A form may move ASSIGNED → IN_PROGRESS → SUBMITTED one step per
+   * PATCH, so this repeats (up to `attempts`) until it is SUBMITTED or COMPLETED (the workflow took it), or the
+   * form's own validations refuse a value (`formErrors`; the form then stays open).
+   */
+  async submitLauncherForm(formInstanceId: string, formData: LauncherFormData, attempts = 3): Promise<LauncherFormResult> {
+    const path = `/v2025/form-instances/${encodeURIComponent(formInstanceId)}`;
+    let current: FormInstance = {};
+    for (let i = 0; i < attempts; i++) {
+      await this.plugin.patch(path, [
+        { op: 'replace', path: '/formData', value: formData },
+        { op: 'replace', path: '/state', value: 'SUBMITTED' },
+      ]);
+      current = (await this.plugin.get<FormInstance>(path)) ?? {};
+      if (current.state === 'SUBMITTED' || current.state === 'COMPLETED' || current.formErrors?.length) break;
+    }
+    const createdBy = current.createdBy;
+    return {
+      state: current.state ?? 'UNKNOWN',
+      errors: (current.formErrors ?? []).map((e) => ({
+        key: e.key ?? '', messages: (e.messages ?? []).map((m) => m.text ?? '').filter(Boolean),
+      })),
+      executionId: createdBy?.type === 'WORKFLOW_EXECUTION' && createdBy.id ? createdBy.id : null,
+    };
+  }
+
+  /**
+   * The generic approvals `requesterId` requested (the workflow files the bulk approval in the name of whoever
+   * submitted), newest first. Filtering on `requesterId` (verified to work) keeps an admin to their own instead
+   * of the tenant's latest 250.
+   */
+  async approvals(requesterId: string): Promise<GenericApproval[]> {
+    const filters = encodeURIComponent(`requesterId eq ${quoted(requesterId)}`);
+    return (await this.plugin.get<GenericApproval[]>(`/v2025/generic-approvals?limit=250&sorters=-createdDate&filters=${filters}`)) ?? [];
   }
 
   /**
@@ -624,7 +756,7 @@ export class BulkApiService {
    * fetched one by one (the list row is kept if a detail call fails).
    */
   async myBulkApprovals(requesterId: string, max = 30, concurrency = 5): Promise<GenericApproval[]> {
-    const mine = (await this.approvals())
+    const mine = (await this.approvals(requesterId))
       .filter((a) => a.requester?.identityID === requesterId && (a.name?.[0]?.value ?? '').startsWith(APPROVAL_NAME_PREFIX))
       .sort((a, b) => (b.createdDate ?? '').localeCompare(a.createdDate ?? ''))
       .slice(0, max);

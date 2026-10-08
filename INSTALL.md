@@ -58,7 +58,7 @@ deployment, so the Launcher and the plugin behave the same way. Where SailPoint 
 | `people.max` | `null` | Most people per request. `null` = no limit. The Launcher always stops at 30 (SailPoint's form limit), so it uses the smaller of this and 30. | both |
 | `people.partSize` | `250` | People per approval, 1 to 250 (SailPoint's workflow loop limit). A bigger plugin request is sent as several approvals with the same INC. | B |
 | `temporaryAccess.enabled` | `true` | Let requesters choose access that SailPoint removes automatically. `false` = permanent only. | both |
-| `temporaryAccess.allow` | `["duration", "endDate"]` | How the end can be chosen: `duration` (a number and a unit) and/or `endDate` (a calendar date). The Launcher only offers `duration`. | both (`endDate`: B) |
+| `temporaryAccess.allow` | `["duration", "endDate"]` | How the end can be chosen: `duration` (a number and a unit) and/or `endDate` (a calendar date). The Launcher only offers `duration`. When the plugin submits through the Launcher, its end date is sent as a number of hours, so it needs `duration` allowed too. | both (`endDate`: B) |
 | `temporaryAccess.units` | `HOURS`, `DAYS`, `WEEKS`, `MONTHS` | The duration units offered. | both |
 | `temporaryAccess.maxDays` | `null` | Longest temporary access allowed, in days. `null` = no cap. A month counts as 31 days. | both |
 | `approval.timeoutDays` | `7` | Days before the approval task times out, 1 to 90. | both |
@@ -71,6 +71,7 @@ deployment, so the Launcher and the plugin behave the same way. Where SailPoint 
 | `plugin.alias` | `<prefix in lowercase>-bulk-access` | The plugin's alias: lowercase letters, digits and dashes. | B |
 | `plugin.displayName` | `<prefix> Bulk Access Request` | The plugin's name in ISC. | B |
 | `plugin.public` | `false` | `false`: the plugin is uploaded private (visible only to you). `true`: visible to everyone. | B |
+| `plugin.submit` | `null`: `launcher` when `deployments.launcher` is `true`, else `test-endpoint` | How the plugin submits. `launcher`: it starts the Launcher (deployment A) and fills in its form **as the signed-in user**, so anyone holding the *Launcher Access* profile can submit, and no plugin workflow is installed. Needs `deployments.launcher`. `test-endpoint`: it starts its own disabled workflow through SailPoint's workflow test endpoint, which only ORG_ADMIN users may call. `show-config` says which applies. | B |
 
 Keys named `_comment` are notes and are ignored.
 
@@ -99,15 +100,19 @@ name and updates them.
 **Deployment A creates:**
 1. **Form** "<prefix> Bulk Access Request Form". Its item list is the Request Center catalog filtered by your config.
    When temporary access is on, it also asks for an access type (Permanent or Temporary), a duration and a unit.
+   A hidden field, `partLabel`, stays empty in the Launchpad; the plugin sets it to " (2/3)" when it sends a big request
+   through the Launcher in parts, so each approval is named "Bulk access INC… (2/3)".
 2. **Workflow** "<prefix> Bulk Access Request". It's enabled, and it only reacts to *its own* Launcher.
 3. **Launcher** "<prefix> Bulk Access Request". Users see it in their **Launchpad**.
 4. **Access profile** "<prefix> Bulk Access Request - Launcher Access". SailPoint only shows a Launcher to people
    who hold its `assignedLaunchers` entitlement, so this profile controls who can use the tool. People request it
    in the **Request Center**, approved by their manager if `access.launcherApproval` is `MANAGER`. Or grant it with `--grant`.
 
-**Deployment B creates** the workflow "<prefix> Bulk Access Request (Plugin)" (disabled, by design) and writes the
-plugin's runtime config and manifest. With `--deploy` it builds the page and uploads the plugin, private unless
-`plugin.public` is `true`. To put it in the menu: **Admin → Global → System Settings → Customize Navbar → Custom Item →
+**Deployment B** writes the plugin's runtime config and manifest. With `plugin.submit: "launcher"` (the default when A is
+on) it creates nothing else: it looks up A's Launcher by name and writes its ID into the runtime config (people who aren't
+admins can't list launchers), so **install A first**; `apply` does, and stops with a clear message if the Launcher is
+missing. With `plugin.submit: "test-endpoint"` it also creates the workflow "<prefix> Bulk Access Request (Plugin)" (disabled,
+by design). With `--deploy` it builds the page and uploads the plugin, private unless `plugin.public` is `true`. To put it in the menu: **Admin → Global → System Settings → Customize Navbar → Custom Item →
 Destination: Plugin.** More in [plugin/README.md](plugin/README.md).
 
 **When the catalog changes**, run `apply` again. To refresh only the Launcher form's choices, there's also
@@ -120,6 +125,7 @@ python launcher/e2e.py --config config/<tenant>.json \
     --people <testIdentityId>,<testIdentityId> --approver <otherTestIdentityId> --scenario approve
 #   --scenario deny   → the approver says no, so nothing is requested
 #   --scenario self   → the requester names themselves; the run stops before any approval exists
+#   --part 2/3        → also set the hidden part field, as the plugin does for a big request ("Bulk access INC… (2/3)")
 ```
 - **Who it runs as:** the PAT user, who needs Launcher access (`--grant me`).
 - **What it does:** submits the form with a random INC, checks that **one** approval went to `--approver`,
@@ -129,7 +135,9 @@ python launcher/e2e.py --config config/<tenant>.json \
 - **The safe sequence:** dry-run approve → dry-run deny → (`"mode": "live"`, `apply` again) live approve on test
   identities → back to dry-run until you're ready.
 
-For the plugin, submit a request from the page in `dry-run` mode and approve it in **Home → Approvals**.
+For the plugin, submit a request from the page in `dry-run` mode and approve it in **Home → Approvals**. With
+`plugin.submit: "launcher"`, try it as a user who isn't an admin but holds the *Launcher Access* profile: the request and its
+approval carry their name, and someone without the profile is told to request it.
 
 ## 6. Go live
 Set `"mode": "live"` (and clear `overrideRecipients`) in your config, then run `python bulkaccess.py apply` again.
@@ -150,8 +158,8 @@ python bulkaccess.py uninstall --config config/<tenant>.json --yes    # deletes 
 python bulkaccess.py export --config config/<tenant>.json             # as installed in the tenant (read-only)
 python bulkaccess.py export --config config/<tenant>.json --offline   # as this code builds them, no tenant needed
 ```
-- It writes `launcher/form.json`, `launcher/workflow.json`, `launcher/launcher.json`, `launcher/access-profile.json` and
-  `plugin/workflow.json` (only for the deployments that are switched on, or `--only …`).
+- It writes `launcher/form.json`, `launcher/workflow.json`, `launcher/launcher.json`, `launcher/access-profile.json` and,
+  with `plugin.submit: "test-endpoint"`, `plugin/workflow.json` (only for the deployments that are switched on, or `--only …`).
 - They go to `exports/<prefix>-<tenant|offline>/`, which git ignores, or to `--out DIR`.
 - SailPoint's own fields (ids, created, modified, execution counts) are left out, so exports diff cleanly. A workflow file
   can be imported with **Admin → Workflows → Import**.

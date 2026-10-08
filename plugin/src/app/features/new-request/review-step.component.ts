@@ -27,9 +27,12 @@ export class ReviewStepComponent implements OnInit {
 
   protected readonly checking = signal(false);
   protected readonly isAdmin = computed(() => this.plugin.user()?.capabilities?.isOrgAdmin ?? false);
-  protected readonly canSubmit = computed(() => !this.store.problems().length && this.isAdmin() && !this.configError()
+  /** Through the Launcher anyone may try (SailPoint checks the Launcher access); the test endpoint is ORG_ADMIN only. */
+  protected readonly viaLauncher = computed(() => this.cfg().submit === 'launcher');
+  protected readonly mayStart = computed(() => this.viaLauncher() || this.isAdmin());
+  protected readonly canSubmit = computed(() => !this.store.problems().length && this.mayStart() && !this.configError()
     && (!this.store.submission() || this.store.submission()!.state === 'error'));
-  protected readonly canRetry = computed(() => this.isAdmin() && !this.configError() && this.store.startFailed().length > 0
+  protected readonly canRetry = computed(() => this.mayStart() && !this.configError() && this.store.startFailed().length > 0
     && !this.store.submission()?.parts.some((p) => p.state === 'queued' || p.state === 'starting'));
 
   /** People shown by name on the review card; the rest are counted. */

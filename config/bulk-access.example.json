@@ -58,7 +58,9 @@
   "plugin": {
     "alias": "acme-bulk-access",
     "displayName": "ACME Bulk Access Request",
-    "public": false
+    "public": false,
+    "submit": null,
+    "_comment": "submit: null = launcher when deployments.launcher is true, else test-endpoint. launcher = the plugin starts the Launcher and submits its form as the signed-in user, so anyone with the Launcher Access profile can submit and no plugin workflow is installed; test-endpoint (default otherwise) = the plugin starts its own disabled workflow through the workflow test endpoint, ORG_ADMIN only."
   },
   "approvals": {
     "enabled": true,

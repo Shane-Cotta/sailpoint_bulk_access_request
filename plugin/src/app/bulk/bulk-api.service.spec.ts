@@ -4,7 +4,8 @@ import { SailpointPluginService } from '@core';
 import { DEMO_CONFIG } from '../demo/fixtures';
 import { routedPlugin } from '../testing/plugin.testing';
 import {
-  batches, BulkApiService, escapeQuery, isTransient, pool, retry, splitPasted, Throttle, type BulkInput,
+  batches, BulkApiService, escapeQuery, isTransient, launcherStopMessage, pool, retry, splitPasted, Throttle, type BulkInput,
+  type LauncherFormData,
 } from './bulk-api.service';
 
 function setup(routes: Record<string, unknown>) {
@@ -221,6 +222,88 @@ describe('BulkApiService', () => {
     const search = plugin.post.mock.calls[0][1] as { indices: string[]; query: { query: string } };
     expect(search.indices).toEqual(['identities']);
     expect(search.query.query).toBe('id:(p1 OR p2 OR p3)');
+  });
+
+  describe('submitting through the Launcher (CONTRACTS §9)', () => {
+    const formData: LauncherFormData = {
+      people: [ALAN], items: [{ id: 'ap-1', type: 'ACCESS_PROFILE', name: 'ACME Bulk Test Access' }], approver: ['boss'],
+      inc: 'INC0012345', justification: 'why', accessType: true, duration: '720', durationUnit: ['h'], partLabel: ' (2/3)',
+    };
+
+    it('launches the Launcher with an empty body and returns the interactive process', async () => {
+      const answers = [{ interactiveProcessId: '01PROCESS' }, {}];
+      const { api, plugin } = setup({ '/v2025/launchers/ln-1/launch': () => answers.shift() });
+      await expect(api.launch('ln-1')).resolves.toBe('01PROCESS');
+      expect(plugin.post).toHaveBeenCalledWith('/v2025/launchers/ln-1/launch', {});
+      await expect(api.launch('ln-1')).rejects.toThrow('did not start');
+    });
+
+    it('polls the process blocks until its FORM block names the form instance', async () => {
+      vi.useFakeTimers();
+      let calls = 0;
+      const { api, plugin } = setup({
+        '/beta/interactive-processes/01P/blocks': () => (++calls < 3 ? { items: [] }
+          : { items: [{ type: 'FORM', config: { formInstanceId: 'fi-1' }, data: { title: 'ACME' } }] }),
+      });
+      const found = api.launcherFormInstance('01P');
+      await vi.advanceTimersByTimeAsync(5000);
+      await expect(found).resolves.toBe('fi-1');
+      expect(plugin.get).toHaveBeenCalledTimes(3);
+      vi.useRealTimers();
+    });
+
+    it('gives up with a clear message when the form never appears', async () => {
+      vi.useFakeTimers();
+      const { api } = setup({ '/beta/interactive-processes/': { items: [] } });
+      const found = api.launcherFormInstance('01P', 3000);
+      const check = expect(found).rejects.toThrow("its form didn't appear within 3 seconds");
+      await vi.advanceTimersByTimeAsync(5000);
+      await check;
+      vi.useRealTimers();
+    });
+
+    it('submits the form with one JSON Patch, repeating until it is SUBMITTED, and returns the run behind it', async () => {
+      const states = ['IN_PROGRESS', 'SUBMITTED'];
+      const { api, plugin } = setup({
+        'PATCH /v2025/form-instances/fi-1': {},
+        '/v2025/form-instances/fi-1': () => ({ state: states.shift(), formErrors: [],
+          createdBy: { type: 'WORKFLOW_EXECUTION', id: 'run-1' } }),
+      });
+      await expect(api.submitLauncherForm('fi-1', formData)).resolves.toEqual({ state: 'SUBMITTED', errors: [], executionId: 'run-1' });
+      expect(plugin.patch).toHaveBeenCalledTimes(2);
+      expect(plugin.patch).toHaveBeenCalledWith('/v2025/form-instances/fi-1', [
+        { op: 'replace', path: '/formData', value: formData },
+        { op: 'replace', path: '/state', value: 'SUBMITTED' },
+      ]);
+    });
+
+    it("stops at the form's own validation errors and returns them", async () => {
+      const { api, plugin } = setup({
+        'PATCH /v2025/form-instances/': {},
+        '/v2025/form-instances/fi-1': { state: 'IN_PROGRESS', createdBy: { type: 'WORKFLOW_EXECUTION', id: 'run-1' },
+          formErrors: [{ key: 'inc', messages: [{ text: 'Enter a ServiceNow incident number.' }] }] },
+      });
+      await expect(api.submitLauncherForm('fi-1', formData)).resolves.toEqual({
+        state: 'IN_PROGRESS', errors: [{ key: 'inc', messages: ['Enter a ServiceNow incident number.'] }], executionId: 'run-1',
+      });
+      expect(plugin.patch).toHaveBeenCalledTimes(1);
+    });
+
+    it('finds an ERROR message among the blocks (the workflow stopped before the approval)', () => {
+      expect(launcherStopMessage([{ type: 'FORM', config: { formInstanceId: 'x' } }])).toBeNull();
+      expect(launcherStopMessage([{ type: 'MESSAGE', config: { category: 'INFO' }, data: { title: 'Sent' } }])).toBeNull();
+      expect(launcherStopMessage([
+        { type: 'FORM', config: { formInstanceId: 'x' } },
+        { type: 'MESSAGE', data: { category: 'ERROR', title: 'Choose a different approver', message: '<p>Not <b>you</b>.</p>' } },
+      ])).toBe('Choose a different approver: Not you .');
+    });
+
+    it("lists the caller's own approvals with a requesterId filter", async () => {
+      const { api, plugin } = setup({ '/v2025/generic-approvals?': [] });
+      await api.approvals('me-1');
+      const url = String(plugin.get.mock.calls[0][0]);
+      expect(new URLSearchParams(url.split('?')[1]).get('filters')).toBe('requesterId eq "me-1"');
+    });
   });
 
   it("loads the user's own bulk approvals with approver details the list leaves out", async () => {

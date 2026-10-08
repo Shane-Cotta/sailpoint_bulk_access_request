@@ -36,6 +36,9 @@ def main(argv=None) -> int:
               f"{', '.join(names[:5])}{'…' if len(names) > 5 else ''}; temporary access {'on' if temporary else 'off'})")
         if temporary != definitions.launcher_offers_temporary(cfg):
             print("     note: the form's temporary access fields differ from the config; re-run install.py.")
+        if install.form_element(form, definitions.F_PART_LABEL) is None:
+            print("     note: the form has no hidden part field (older install), so parts the plugin sends through "
+                  "the Launcher aren't labelled (k/n); re-run install.py.")
     else:
         ok = False; print(f"[--] Form      missing: {cfg.form_name}")
 
@@ -65,8 +68,8 @@ def main(argv=None) -> int:
     else:
         ok = False; print(f"[--] Launcher  missing: {cfg.launcher_name}")
 
-    access = install.find_access_profile(t, f"{cfg.base_name} - Launcher Access")
-    print(f"[{'ok' if access else '--'}] Access    {access['id'] if access else 'missing'}  {cfg.base_name} - Launcher Access"
+    access = install.find_access_profile(t, cfg.launcher_access_profile_name)
+    print(f"[{'ok' if access else '--'}] Access    {access['id'] if access else 'missing'}  {cfg.launcher_access_profile_name}"
           + ("" if not access else f"  (requestable={access.get('requestable')})"))
     ok &= bool(access)
     print("\nAll good." if ok else "\nSomething is missing or off; run launcher/install.py.")

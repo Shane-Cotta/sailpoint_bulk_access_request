@@ -38,14 +38,16 @@
     </p-tablist>
     <p-tabpanels>
       <p-tabpanel value="new">
-        <p-message [severity]="isAdmin() ? 'info' : 'warn'" class="banner">
-          <div class="banner__text">
-            <strong>{{ isAdmin() ? 'For administrators.' : 'You need ORG_ADMIN to submit from this page.' }}</strong>
-            This page starts the bulk request workflow through SailPoint's workflow test endpoint, which only users who may
-            test workflows (ORG_ADMIN) can call. Everyone else: open the Launchpad and use the
-            <strong>{{ cfg().launcherName }}</strong> Launcher. It does the same thing for any user.
-          </div>
-        </p-message>
+        @if (adminOnly()) {
+          <p-message [severity]="isAdmin() ? 'info' : 'warn'" class="banner">
+            <div class="banner__text">
+              <strong>{{ isAdmin() ? 'For administrators.' : 'You need ORG_ADMIN to submit from this page.' }}</strong>
+              This page starts the bulk request workflow through SailPoint's workflow test endpoint, which only users who may
+              test workflows (ORG_ADMIN) can call. Everyone else: open the Launchpad and use the
+              <strong>{{ cfg().launcherName }}</strong> Launcher. It does the same thing for any user.
+            </div>
+          </p-message>
+        }
         <!-- Each tab's code is a lazy chunk (next to main-*.js), so the first paint only waits for the shell. -->
         @defer (on immediate) {
           <app-new-request (showHistory)="tab.set('mine')" />

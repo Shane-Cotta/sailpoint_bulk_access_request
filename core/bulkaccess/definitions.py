@@ -11,7 +11,10 @@ Two workflow variants share one definition (`bulk_workflow`):
   Interactive Messages and email.
 * "plugin"   -- started by the Bulk Access UI plugin through the workflow test
   endpoint (a browser plugin cannot hold external-trigger secrets). The plugin
-  passes the same fields as trigger input. Must stay DISABLED.
+  passes the same fields as trigger input. Must stay DISABLED. Only installed when
+  `plugin.submit` is "test-endpoint": by default the plugin submits through the
+  Launcher instead (it launches it and fills in the form as the signed-in user,
+  setting the hidden `partLabel` field when a request is sent in parts).
 
 Everything below was confirmed against a live tenant (see INSTALL.md
 "How it works"): REGEX validation shape, STATIC options carrying full access
@@ -38,6 +41,10 @@ F_PEOPLE, F_ITEMS, F_APPROVER, F_INC, F_JUSTIFICATION = "people", "items", "appr
 # Launcher form: temporary access (only when the config offers durations on the Launcher).
 F_ACCESS_TYPE, F_DURATION, F_DURATION_UNIT = "accessType", "duration", "durationUnit"
 UNIT_OPTION_LABELS = {"HOURS": "Hours", "DAYS": "Days", "WEEKS": "Weeks", "MONTHS": "Months"}
+# Launcher form: hidden, set only by the plugin (launcher submit mode) when a request goes out in parts.
+F_PART_LABEL = "partLabel"
+# What the Launcher workflow accepts as a part label (rules.part_label: " (2/3)"); anything else means one part.
+PART_LABEL_REGEX = r"^ \([1-9][0-9]*/[1-9][0-9]*\)$"
 
 # Plugin trigger input (CONTRACTS section 3); every field is always present.
 PLUGIN_INPUT = ("people", "items", "approverId", "requesterId", "inc", "justification",
@@ -54,6 +61,15 @@ def launcher_duration_units(cfg: Config) -> tuple[str, ...]:
 
 def launcher_offers_temporary(cfg: Config) -> bool:
     return bool(launcher_duration_units(cfg))
+
+
+def launcher_workflow_units(cfg: Config) -> tuple[str, ...]:
+    """Units the Launcher workflow accepts: the form's, plus hours when the plugin submits through
+    the Launcher and offers an end date (it sends the end date as hours in the same fields)."""
+    units = launcher_duration_units(cfg)
+    if units and "HOURS" not in units and cfg.plugin_submits_via_launcher and "endDate" in cfg.plugin_temporary_modes:
+        units = ("HOURS",) + units
+    return units
 
 
 def _owner(owner_id: str, owner_name: str | None = None) -> dict[str, Any]:
@@ -87,6 +103,10 @@ def bulk_form(cfg: Config, owner_id: str, options: list[dict[str, Any]]) -> dict
         {"id": "justification", "key": F_JUSTIFICATION, "elementType": "TEXTAREA", "validations": required,
          "config": {"label": "Business justification", "rows": 3,
                     "helpText": "Shown to the approver and stored on every access request."}},
+        # Hidden: the Launchpad never shows it and leaves it empty. The plugin (launcher submit mode) sets
+        # it to " (2/3)" when a request goes out in parts; the workflow checks it (PART_LABEL_REGEX).
+        {"id": "partLabel", "key": F_PART_LABEL, "elementType": "HIDDEN", "validations": [],
+         "config": {"label": "Part (set by the plugin)", "default": ""}},
     ]
     conditions: list[dict[str, Any]] = []
     units = launcher_duration_units(cfg)
@@ -144,7 +164,8 @@ def _paths(variant: str) -> dict[str, str]:
                 "inc": f"{base}.{F_INC}", "justification": f"{base}.{F_JUSTIFICATION}",
                 "requester": "$.trigger.launchedBy.id",
                 "accessType": f"{base}.{F_ACCESS_TYPE}", "duration": f"{base}.{F_DURATION}",
-                "durationUnit": f"{base}.{F_DURATION_UNIT}",
+                "durationUnit": f"{base}.{F_DURATION_UNIT}", "partLabelInput": f"{base}.{F_PART_LABEL}",
+                "partLabel": f"{ACCESS_VARS}.partLabel",
                 "removeDuration": f"{ACCESS_VARS}.removeDuration", "accessLabel": f"{ACCESS_VARS}.accessLabel"}
     if variant == "plugin":
         return {"people": "$.trigger.people", "items": "$.trigger.items", "approver": "$.trigger.approverId",
@@ -218,11 +239,11 @@ def bulk_workflow(cfg: Config, *, variant: str, owner_id: str, owner_name: str |
     """The bulk-request workflow. `workflow_id` (known after creation) scopes the launcher trigger."""
     p = _paths(variant)
     inc, who, appr = _t(p["inc"]), _t("$.getRequester.attributes.displayName"), _t("$.getApprover.attributes.displayName")
-    part = _t(p["partLabel"]) if "partLabel" in p else ""     # the Launcher is always one part
+    part = _t(p["partLabel"])     # "" or " (2/3)"; on the Launcher only the plugin sets it (hidden field)
     label = _t(p["accessLabel"])
     live = cfg.live
     mode_note = "" if live else " (DRY RUN: nothing was requested)"
-    temporary_units = launcher_duration_units(cfg) if variant == "launcher" else ()
+    temporary_units = launcher_workflow_units(cfg) if variant == "launcher" else ()
 
     steps: dict[str, Any] = {}
     start = "Get Requester"
@@ -278,16 +299,29 @@ def bulk_workflow(cfg: Config, *, variant: str, owner_id: str, owner_name: str |
     stop("Reject Bad INC", "Invalid INC number", cfg.inc_message)
 
     if variant == "launcher":
-        # The access choice: permanent ("" / "Permanent") unless the form asks for temporary access.
+        # The access choice: permanent ("" / "Permanent") unless the form asks for temporary access;
+        # and the part label: "" (one part) unless the plugin set the hidden field to " (k/n)".
+        after_part = "Temporary?" if temporary_units else "Notify Pending"
         steps[DEFINE_ACCESS] = {
             "attributes": {"id": "sp:define-variable", "variables": [
                 {"name": "removeDuration", "description": "Manage Access removeDuration; empty means permanent",
                  "variableA": "permanent",
                  "transforms": [{"id": "sp:transform:replace:string", "input": {"pattern": "permanent", "replacement": ""}}]},
                 {"name": "accessLabel", "description": "Shown on the approval, the access requests and the emails",
-                 "variableA": "Permanent", "transforms": []}]},
-            "type": "Mutation", "displayName": "Access: permanent unless temporary was chosen",
-            "nextStep": "Temporary?" if temporary_units else "Notify Pending"}
+                 "variableA": "Permanent", "transforms": []},
+                {"name": "partLabel", "description": "\" (2/3)\" when the plugin sent the request in parts; empty otherwise",
+                 "variableA": "single",
+                 "transforms": [{"id": "sp:transform:replace:string", "input": {"pattern": "single", "replacement": ""}}]}]},
+            "type": "Mutation", "displayName": "Access: permanent unless temporary was chosen; one part",
+            "nextStep": "Part Given?"}
+        # The Launchpad leaves the hidden field empty (or out); only a well-formed " (k/n)" is used.
+        steps["Part Given?"] = _choice("Sent in parts?", "StringMatches", p["partLabelInput"], PART_LABEL_REGEX,
+                                       "Set Part", after_part)
+        steps["Set Part"] = {
+            "attributes": {"id": "sp:update-variable", "variables": [
+                {"name": f"{ACCESS_VARS}.partLabel", "description": "", "variableA.$": p["partLabelInput"],
+                 "transforms": []}]},
+            "type": "Mutation", "displayName": "Part of a bigger request", "nextStep": after_part}
         if temporary_units:
             suffixes = "|".join(DURATION_UNITS[u] for u in temporary_units)
             steps["Temporary?"] = _choice("Temporary access?", "BooleanEquals", p["accessType"], True,
@@ -324,7 +358,7 @@ def bulk_workflow(cfg: Config, *, variant: str, owner_id: str, owner_name: str |
             "actionId": "sp:interactive-message", "type": "action", "versionNumber": 1, "displayName": "Submitted",
             "attributes": {"category": "INFO", "interactiveProcessId.$": "$.trigger.interactiveProcessId",
                            "ownerId.$": "$.trigger.launchedBy.id", "title": f"Sent to {appr} for approval",
-                           "message": f"<p>Your bulk request <b>{inc}</b> ({label}) is waiting for {appr}. "
+                           "message": f"<p>Your bulk request <b>{inc}</b>{part} ({label}) is waiting for {appr}. "
                                       f"You'll get an email when it's decided{mode_note}.</p>"},
             "nextStep": "Bulk Approval"}
 
@@ -432,7 +466,7 @@ def launcher_access_profile(cfg: Config, owner_id: str, entitlement: dict[str, A
     Request Center (or admins grant it) like any other access."""
     source = entitlement.get("source") or {}
     return {
-        "name": f"{cfg.base_name} - Launcher Access",
+        "name": cfg.launcher_access_profile_name,
         "description": f"Lets the holder use the '{cfg.launcher_name}' Launcher in the Launchpad "
                        f"(bulk access requests with one approver and a ServiceNow INC number).",
         "owner": _owner(owner_id),
@@ -450,4 +484,5 @@ def pretty(obj: Any) -> str:
 
 
 __all__ = ["bulk_form", "bulk_workflow", "bulk_launcher", "VARIANTS", "APPROVAL_COMMENT_MAX", "PLUGIN_INPUT",
-           "launcher_duration_units", "launcher_offers_temporary", "plugin_duration_regex"]
+           "launcher_duration_units", "launcher_offers_temporary", "launcher_workflow_units", "plugin_duration_regex",
+           "F_PART_LABEL", "PART_LABEL_REGEX"]
