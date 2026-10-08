@@ -7,9 +7,13 @@ Guides for requesters, approvers and admins. Screenshots live in [docs/screensho
    Access"**. Your manager may need to approve it. After about a minute it shows up in your **Launchpad**.
 
    ![Request Center](docs/screenshots/launcher-0-request-center-access.png)
-2. **Launchpad → "<prefix> Bulk Access Request"** → **Launch**. A form opens:
+2. **Launchpad → "<prefix> Bulk Access Request"** → **Launch**.
 
    ![Launchpad](docs/screenshots/launcher-1-launchpad.png)
+
+   A form opens:
+
+   ![The empty form](docs/screenshots/launcher-2-form.png)
 
    | Field | What to enter |
    |---|---|
@@ -80,12 +84,27 @@ first if you aren't an admin; your admin must have made the plugin visible to yo
 
 1. Each card is one bulk request: the **INC**, how many approvals, people and items, the access (permanent or temporary),
    who asked for it and who approved the bulk request.
+
+   ![Approvals grouped by INC](docs/screenshots/plugin-9-approvals-groups.png)
 2. Open a card to check the list. Untick anyone you don't want to decide now; they stay pending.
+
+   ![One bulk request opened, one approval left out](docs/screenshots/plugin-10-approvals-drilldown.png)
 3. Write one comment (needed to deny), then **Approve N** or **Deny N**, and confirm. The dialog repeats the INC and the
    counts. You can only act on one INC at a time.
-4. A progress bar shows the decisions going out (about 8 a second), then the results: approved or denied by you,
-   **decided by someone else** (a colleague in the same approval group, or an admin, got there first; nothing to do),
-   **still pending** or **failed** (with the reason). **Retry** sends the last two again.
+
+   ![Confirm dialog](docs/screenshots/plugin-11-approvals-confirm.png)
+4. A progress bar shows the decisions going out (about 8 a second). Each one is then re-read to confirm it, so
+   "approved by you" only counts confirmed decisions.
+
+   ![Decisions going out](docs/screenshots/plugin-12a-approvals-progress.png)
+5. The results: approved or denied by you, **decided by someone else** (a colleague in the same approval group, or an
+   admin, got there first; nothing to do), **still pending** or **failed** (with the reason). The heading says
+   **Approved** (or **Denied**) only when every one is confirmed as your decision; otherwise **Decided** (some by someone
+   else), **Partly done** or **Not done**. **Retry** sends the failed and still-pending ones again.
+
+   | All confirmed | Partly done, with Retry |
+   |---|---|
+   | ![Approved](docs/screenshots/plugin-12-approvals-progress-result.png) | ![Partly done](docs/screenshots/plugin-13-approvals-partial-retry.png) |
 
 Every decision is recorded as **yours**, exactly as if you had used SailPoint's Approvals page. Approvals that didn't come
 from a bulk request may be listed under *Other* (if your admin turned that on); decide those in SailPoint as usual.

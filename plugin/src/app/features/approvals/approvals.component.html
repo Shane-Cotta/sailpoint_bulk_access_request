@@ -33,7 +33,7 @@
           @switch (run.phase) {
             @case ('sending') { {{ run.action === 'approve' ? 'Approving' : 'Denying' }} {{ plural(run.items.length, 'approval') }} for <span class="mono">{{ run.inc }}</span>… }
             @case ('confirming') { Checking with SailPoint… }
-            @default { {{ run.action === 'approve' ? 'Approved' : 'Denied' }}: <span class="mono">{{ run.inc }}</span> }
+            @default { {{ heading() }}: <span class="mono">{{ run.inc }}</span> }
           }
         </h3>
         @if (run.phase === 'done') {
@@ -53,7 +53,12 @@
         </small>
       }
       <div class="outcomes">
-        <span class="stat stat--ok"><strong>{{ store.counts().confirmed.toLocaleString() }}</strong> {{ run.action === 'approve' ? 'approved' : 'denied' }} by you</span>
+        @if (run.phase === 'done' || store.counts().confirmed) {
+          <span class="stat stat--ok"><strong>{{ store.counts().confirmed.toLocaleString() }}</strong> {{ run.action === 'approve' ? 'approved' : 'denied' }} by you</span>
+        }
+        @if (store.counts().checking) {
+          <span class="stat"><strong>{{ store.counts().checking.toLocaleString() }}</strong> sent, not yet confirmed</span>
+        }
         @if (store.counts().elsewhere) {
           <span class="stat"><strong>{{ store.counts().elsewhere }}</strong> decided by someone else</span>
         }
@@ -208,7 +213,7 @@
       <p class="confirm__inc mono">{{ g.key }}</p>
       <dl class="facts">
         <div><dt>Approvals</dt><dd><strong>{{ store.includedCounts().approvals.toLocaleString() }}</strong>
-          @if (excludedCount() > 0) { <span class="muted">({{ excludedCount() }} left out)</span> }</dd></div>
+          @if (excludedCount() > 0) { <span class="muted left-out">({{ excludedCount() }} left out)</span> }</dd></div>
         <div><dt>People</dt><dd>{{ store.includedCounts().people.toLocaleString() }}</dd></div>
         <div><dt>Items</dt><dd>{{ store.includedCounts().items }}: {{ g.itemNames.join(', ') }}</dd></div>
         @if (g.accessLabel) { <div><dt>Access</dt><dd>{{ g.accessLabel }}</dd></div> }

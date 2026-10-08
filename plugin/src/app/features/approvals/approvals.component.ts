@@ -12,7 +12,7 @@ import { TagModule } from 'primeng/tag';
 import { TextareaModule } from 'primeng/textarea';
 
 import { OTHER_KEY, schemeLabel, type ApprovalGroup, type ApprovalRow } from '../../bulk/approvals';
-import { ApprovalsStore, type RunItem } from '../../bulk/approvals-store';
+import { ApprovalsStore, runHeading, type RunItem } from '../../bulk/approvals-store';
 import type { DecideAction } from '../../bulk/bulk-api.service';
 import { TYPE_LABELS } from '../../bulk/rules';
 import type { ItemType } from '../../bulk/runtime-config';
@@ -51,6 +51,8 @@ export class ApprovalsComponent {
     const run = this.store.run();
     return run && run.items.length ? Math.round((100 * run.done) / run.items.length) : 0;
   });
+  /** The finished run's heading word: "Approved" only when every approval is confirmed as yours. */
+  protected readonly heading = computed(() => runHeading(this.store.run()?.action ?? 'approve', this.store.counts()));
   /** Approvals of the run that need a look: failed, still pending, decided by someone else. */
   protected readonly issues = computed<RunItem[]>(() => (this.store.run()?.items ?? [])
     .filter((i) => i.outcome === 'failed' || i.outcome === 'pending' || i.outcome === 'elsewhere'));

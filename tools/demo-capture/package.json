@@ -1,0 +1,18 @@
+{
+  "name": "bulk-access-demo-capture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Scripted screenshots and a captioned demo video of the Bulk Access Request UI plugin's demo mode.",
+  "type": "module",
+  "scripts": {
+    "capture": "node capture.mjs",
+    "capture:docs": "node capture.mjs --screenshots-only --screenshots-dir docs/screenshots",
+    "capture:video": "node capture.mjs --video-only"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.0"
+  }
+}

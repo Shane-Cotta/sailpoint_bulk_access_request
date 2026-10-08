@@ -14,6 +14,7 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
 | `config/` | `bulk-access.example.json` (committed; the schema). Per-tenant `config/<tenant>.json` files are **gitignored**. |
 | `docs/dev/CONTRACTS.md` | The shared spec for parts, temporary access and the central config: workflow input/output, exact rule messages, live-verified facts |
 | `docs/screenshots/` | Images used by the docs |
+| `tools/demo-capture/` | Playwright script for the plugin screenshots (`plugin-*.png`) and the demo video, from the plugin's demo mode (`npm run start:demo` in `plugin/`, then `npm run capture` there). Output in `out/` (gitignored). |
 | `.claude/agents/` | `bulk-access-builder.md`: the agent definition for parallel workstreams (one worktree and branch each); `dead-code-reviewer.md`: a read-only dead-code review, run before a merge |
 
 ## Conventions
@@ -62,8 +63,6 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
     - On someone else's approval it returns 403.
     - Reject returns 200 with the approval (the spec says 204).
   - The list leaves `approvedBy`/`rejectedBy` empty; only the single GET has them.
-  - Item approval schemes still apply to requests a workflow submits. The requester is the workflow owner, and if that identity
-    is also the approver, ISC escalates the approval to an admin.
 - **Requesting access from a workflow:**
   - `sp:create-approval-request` breaks on one-item lists (the engine unwraps single-element arrays); use `sp:access:manage`.
   - A request takes at most 10 recipients, and nested loops are rejected, so the workflow loops over people and each request carries all the items.

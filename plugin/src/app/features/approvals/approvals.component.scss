@@ -78,6 +78,7 @@
 
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .muted { margin: 0; color: var(--spds-text-muted-color, #667085); }
+.muted.left-out { margin-left: 0.35em; }
 .foot { font-size: 0.85rem; }
 .temp { color: var(--p-blue-700, #1d4ed8); font-weight: 500; white-space: nowrap; }
 .empty {

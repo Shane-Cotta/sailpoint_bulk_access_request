@@ -62,7 +62,10 @@ signed-in user's pending access-request approvals **grouped by the INC** in thei
 - **Progress and results.** Decisions go out about 8 a second (SailPoint allows 100 per 10 s), `approvals.concurrency` at a
   time; throttled (429) and failed (5xx) calls are retried. Then the page re-reads every approval and reports each one as
   **approved/denied by you**, **decided by someone else** (a governance-group colleague or an admin got there first: not an
-  error), **still pending** or **failed** (with the reason). **Retry** sends the failed and still-pending ones again.
+  error), **still pending** or **failed** (with the reason). While sending, the panel counts calls sent; "approved by you"
+  only counts re-read, confirmed decisions. The result heading says **Approved** / **Denied** only when every approval is
+  confirmed as yours; otherwise **Decided** (the rest by someone else), **Partly done** or **Not done**.
+  **Retry** sends the failed and still-pending ones again.
 - **Your own decision.** Each approval is decided through `POST /v2025/generic-approvals/{id}/approve|reject` as the signed-in
   user, so SailPoint records them as the approver (`approvedBy`, and *reviewed by* on the access request), exactly as if they
   had used the Approvals page. SailPoint refuses (403) a non-admin's decision on someone else's approval.
@@ -90,7 +93,10 @@ from a config file, and nothing is hard-coded.
 | ![Approver and INC](../docs/screenshots/plugin-3-approver-inc.png) | ![Validation](../docs/screenshots/plugin-3b-inc-validation-error.png) |
 | ![Temporary access](../docs/screenshots/plugin-7-temporary-access.png) | ![Review of a request sent in 3 parts](../docs/screenshots/plugin-8-parts-review.png) |
 | ![Review](../docs/screenshots/plugin-4-review.png) | ![Waiting for the approver](../docs/screenshots/plugin-5-submitted-waiting.png) |
-| ![My bulk requests: parts and temporary access](../docs/screenshots/plugin-6-my-bulk-requests.png) | *(Screenshots use made-up demo data.)* |
+| ![My bulk requests: parts and temporary access](../docs/screenshots/plugin-6-my-bulk-requests.png) | ![Approvals tab: pending approvals grouped by INC](../docs/screenshots/plugin-9-approvals-groups.png) |
+| ![Approvals tab: one INC opened, one approval left out](../docs/screenshots/plugin-10-approvals-drilldown.png) | ![Approvals tab: confirm dialog](../docs/screenshots/plugin-11-approvals-confirm.png) |
+| ![Approvals tab: decisions going out](../docs/screenshots/plugin-12a-approvals-progress.png) | ![Approvals tab: all confirmed](../docs/screenshots/plugin-12-approvals-progress-result.png) |
+| ![Approvals tab: partly done, with Retry](../docs/screenshots/plugin-13-approvals-partial-retry.png) | *(Screenshots use made-up demo data. To retake them, see [tools/demo-capture](../tools/demo-capture/README.md).)* |
 
 ## Who can use it: ORG_ADMIN to submit, any approver for the Approvals tab
 
@@ -250,7 +256,7 @@ cd .. && python -m pytest plugin/tests -q    # installer tests (dry-run payloads
 3 parts), `items`, `approver`, `approver-error`, `temporary`, `review`, `parts-review`, `submitted`, `parts-submitted`, `history`,
 `approvals` (a non-admin item approver with 300 + 40 approvals from two bulk requests, and 3 others) and `approvals-partial`
 (the same, but some calls are throttled or fail, a colleague decides some first, and a few stay pending). Demo mode is ignored inside ISC, where the page always runs in an iframe. The screenshots above
-come from it.
+come from it, taken by [tools/demo-capture](../tools/demo-capture/README.md), which also records the demo video.
 
 **The rules match the core.** `src/app/bulk/rules.ts` is a port of `core/bulkaccess/rules.py` (request validation, INC check, approver ≠ requester,
 catalog filter, `splitIntoParts` / `partLabel`, temporary-access checks and the `removeDuration` and label conversions). `rules.spec.ts` mirrors `core/tests/test_core.py`. If you change a rule, change both.

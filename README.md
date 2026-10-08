@@ -17,7 +17,8 @@ Request access for **many people at once**, approved by **one person you choose*
 
 **Item approvals still apply.** Items with their own approval scheme (owner, manager, …) then need one approval per
 person. The UI plugin's **Approvals** tab lets those approvers, admin or not, see their pending approvals grouped by INC
-and approve or deny a whole bulk request at once, each recorded as their own decision (see [plugin/README.md](plugin/README.md)).
+and approve or deny a whole bulk request at once, each recorded as their own decision (see [plugin/README.md](plugin/README.md)
+and the [Approvals screenshots](#screenshots)).
 
 ## Two ways to deploy it (one config, one command)
 
@@ -88,18 +89,27 @@ Real SailPoint screens (`docs/screenshots/`) from a test installation that used 
 | ![New request](docs/screenshots/plugin-in-isc-1-new-request.png) | ![My bulk requests](docs/screenshots/plugin-in-isc-2-my-bulk-requests.png) |
 | *Four steps: people, access, approver and INC, review* | *Everything you've submitted, by INC* |
 
+| UI plugin (B), Approvals tab (demo data) | |
+|---|---|
+| ![Approvals grouped by INC](docs/screenshots/plugin-9-approvals-groups.png) | ![One INC opened](docs/screenshots/plugin-10-approvals-drilldown.png) |
+| *Item approvers see their pending approvals grouped by INC* | *Check the list, leave some out, approve or deny the rest at once* |
+
 More plugin screens (made with sample data, one per step) are in [plugin/README.md](plugin/README.md) and [USAGE.md](USAGE.md).
+
+**Demo video.** A captioned walk-through of the UI plugin in demo mode (new request, My bulk requests, the Approvals tab)
+is attached to the GitHub release [**demo-2026-10-08**](https://github.com/Shane-Cotta/sailpoint_bulk_access_request/releases/tag/demo-2026-10-08) as `bulk-access-demo.mp4`. [tools/demo-capture](tools/demo-capture/README.md) records it.
 
 ## Folder layout
 ```
 bulk-access-request/
 ├── README.md  INSTALL.md  USAGE.md        ← start here
-├── bulkaccess.py                          ← the one command: show-config · apply · status · uninstall
+├── bulkaccess.py                          ← the one command: show-config · apply · status · uninstall · export
 ├── config/bulk-access.example.json        ← copy to config/<tenant>.json (your copies stay out of git)
 ├── core/        shared Python package: config, API client, rules, definitions (+ tests)
 ├── launcher/    deployment A: install.py · status.py · uninstall.py · e2e.py
 ├── plugin/      deployment B: the Angular UI plugin + its install/status/uninstall
-└── docs/        screenshots/ · dev/ (developer notes)
+├── tools/       demo-capture/: scripted screenshots and the demo video, from the plugin's demo mode
+└── docs/        screenshots/ · dev/ (developer notes) · sailpoint/ (API inventory, requirements)
 ```
 
 ## Tested
@@ -118,4 +128,4 @@ test access profile:
   - 5 people sent in parts of 2: three approvals `(1/3)`–`(3/3)` with one INC. The denied part requested nothing.
   - Temporary by end date and by duration, with `removeDate` on every request. An invalid duration is stopped before the approval.
   - 15 people in one live run.
-- **Unit tests:** core 215, plugin installer 12, plugin UI 156 (`pytest`, `ng test`), none of them needing a tenant.
+- **Unit tests:** core 263, plugin installer 13, plugin UI 163 (`pytest`, `ng test`), none of them needing a tenant.
