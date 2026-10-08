@@ -89,7 +89,6 @@ describe('ApprovalsStore', () => {
     const post = vi.spyOn(plugin, 'post');
     store.toggleGroup(DEMO_PENDING_INCS.small);
     const rows = store.openGroup()!.rows;
-    store.toggleExcluded(rows[0].id);
     store.setIncluded(rows.slice(2).map((r) => r.id));                   // leaves out rows 0 and 1
     expect(store.includedCounts()).toEqual({ approvals: 38, people: 38, items: 1 });
     await settle(store.decide('approve'));

@@ -20,10 +20,6 @@ TYPE_LABELS = {"ACCESS_PROFILE": "Access profile", "ROLE": "Role", "ENTITLEMENT"
 APPROVAL_NAME_MAX = 50
 APPROVAL_DESCRIPTION_MAX = 150
 APPROVAL_COMMENT_MAX = 150
-# Soft limit the plugin applies for a tidy approval comment ("<INC>: <justification>").
-# Not enforced by the Launcher form: a MAX_LENGTH rule on a form textarea breaks submission,
-# and workflow-created approvals accept longer comments (225 characters verified live).
-JUSTIFICATION_MAX = APPROVAL_COMMENT_MAX - len("INC0000000: ")   # 138
 
 
 def inc_is_valid(cfg: Config, value: str | None) -> bool:
@@ -139,7 +135,6 @@ def part_label(i: int, n: int) -> str:
 
 # ── temporary access ──────────────────────────────────────────────────────────
 PERMANENT, DURATION, END_DATE = "permanent", "duration", "endDate"
-ACCESS_MODES = (PERMANENT, DURATION, END_DATE)
 ROUTES = ("launcher", "plugin")
 UNIT_WORDS = {"HOURS": "hour", "DAYS": "day", "WEEKS": "week", "MONTHS": "month"}
 

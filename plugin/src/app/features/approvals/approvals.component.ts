@@ -67,10 +67,6 @@ export class ApprovalsComponent {
     });
   }
 
-  protected verb(action: DecideAction): string {
-    return action === 'approve' ? 'Approve' : 'Deny';
-  }
-
   protected ask(action: DecideAction): void {
     if (!this.store.problems(action).length) this.confirming.set(action);
   }

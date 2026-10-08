@@ -31,7 +31,6 @@ export interface ApprovalRun {
   phase: 'sending' | 'confirming' | 'done';
   /** The bulk endpoint was tried first (ORG_ADMIN). */
   bulk: boolean;
-  startedAt: number;
 }
 
 export type OutcomeCounts = Record<Outcome, number>;
@@ -134,15 +133,6 @@ export class ApprovalsStore implements OnDestroy {
   }
 
   /** Leave one approval out of (or put it back into) the open group's action. */
-  toggleExcluded(id: string): void {
-    this.excluded.update((s) => {
-      const next = new Set(s);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
   /** Include exactly these rows of the open group (the table's selection). */
   setIncluded(ids: Iterable<string>): void {
     const keep = new Set(ids);
@@ -200,7 +190,7 @@ export class ApprovalsStore implements OnDestroy {
     this.sent = new Map();
     const bulk = this.useBulk();
     this.run.set({
-      action, inc, comment, bulk, done: 0, phase: 'sending', startedAt: Date.now(),
+      action, inc, comment, bulk, done: 0, phase: 'sending',
       items: rows.map((r) => ({ ...r, outcome: 'sending', message: '' })),
     });
     const results = await this.api.decideApprovals(action, rows.map((r) => r.id), comment, {

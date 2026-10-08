@@ -7,14 +7,14 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
 ## Layout
 | Path | What |
 |---|---|
-| `bulkaccess.py` | The one CLI: `show-config`, `apply [--dry-run] [--only launcher\|plugin] [--deploy] [--grant me\|<ids>]`, `status`, `uninstall [--yes]`. It calls each enabled deployment's `main(argv)`, loaded by file path (both folders have an `install.py`). |
+| `bulkaccess.py` | The one CLI: `show-config`, `apply [--dry-run] [--only launcher\|plugin] [--deploy] [--grant me\|<ids>]`, `status`, `uninstall [--yes]`, `export [--offline] [--out]`; `apply --workdir` points `--deploy` at another Angular project. It calls each enabled deployment's `main(argv)`, loaded by file path (both folders have an `install.py`). |
 | `core/bulkaccess/` | Shared Python (standard library only): `config.py` (the only config loader, plus derived per-route values), `tenant.py` (PAT client), `rules.py` (validation, parts, temporary access, reading the bulk item comment), `definitions.py` (pure JSON builders for the form, workflows and launcher) |
 | `launcher/` | Deployment A: `install.py`, `status.py`, `uninstall.py`, `e2e.py` (still runnable on their own) |
 | `plugin/` | Deployment B: Angular + PrimeNG UI plugin, plus `install.py` / `status.py` / `uninstall.py` / `pluginlib.py` |
 | `config/` | `bulk-access.example.json` (committed; the schema). Per-tenant `config/<tenant>.json` files are **gitignored**. |
 | `docs/dev/CONTRACTS.md` | The shared spec for parts, temporary access and the central config: workflow input/output, exact rule messages, live-verified facts |
 | `docs/screenshots/` | Images used by the docs |
-| `.claude/agents/` | `bulk-access-builder.md`: the agent definition for parallel workstreams (one worktree and branch each) |
+| `.claude/agents/` | `bulk-access-builder.md`: the agent definition for parallel workstreams (one worktree and branch each); `dead-code-reviewer.md`: a read-only dead-code review, run before a merge |
 
 ## Conventions
 - **One config.** Every setting for both deployments lives in `config/<tenant>.json`, grouped by concern, not by deployment.

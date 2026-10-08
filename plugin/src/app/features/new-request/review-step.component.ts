@@ -7,8 +7,7 @@ import { TagModule } from 'primeng/tag';
 
 import { BulkConfigService } from '../../bulk/bulk-config.service';
 import { EXISTING_CHECK_MAX, partsSummary, RequestStore, type PartState } from '../../bulk/request-store';
-import { APPROVAL_NAME_PREFIX, TYPE_LABELS } from '../../bulk/rules';
-import type { ItemType } from '../../bulk/runtime-config';
+import { APPROVAL_NAME_PREFIX } from '../../bulk/rules';
 
 /** Step 4: check everything, submit, then follow the approval. */
 @Component({
@@ -69,10 +68,6 @@ export class ReviewStepComponent implements OnInit {
     } finally {
       this.checking.set(false);
     }
-  }
-
-  protected typeLabel(t: ItemType): string {
-    return TYPE_LABELS[t] ?? t;
   }
 
   protected requestCount(): number {
