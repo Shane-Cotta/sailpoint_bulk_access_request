@@ -5,12 +5,13 @@ import { SailpointPluginService } from '@core';
 import { App } from './app';
 import { BulkConfigService } from './bulk/bulk-config.service';
 import { NavService } from './bulk/nav';
-import { demoScenario } from './demo/demo';
+import { demoScenario } from './demo/scenario';
 import { providePluginTesting } from './testing/plugin.testing';
 
 describe('App', () => {
   async function render(isOrgAdmin = true, approvalsEnabled = true) {
     TestBed.configureTestingModule({ imports: [App], providers: providePluginTesting() });
+    await TestBed.compileComponents();   // the tabs are @defer blocks (lazy chunks)
     if (!isOrgAdmin) {
       const plugin = TestBed.inject(SailpointPluginService) as unknown as { user: () => unknown };
       const user = plugin.user() as { capabilities: Record<string, boolean> };

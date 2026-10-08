@@ -200,6 +200,10 @@ Options:
   not here. `sail ui-plugins create` also writes the tenant's CSP into that copy's `angular.json`.
 - The CLI gets the PAT from `envFile` through environment variables. Set `SAIL=/path/to/sail` if `sail` isn't on your PATH.
   Never run `sail` with `--debug`: it saves that setting and prints access tokens.
+- The build output (`dist/bulk-access-request-plugin/browser/`) is several files: `index.html`, `main-*.js`, `styles-*.css` and
+  `chunk-*.js`. Each tab (and demo mode) is a lazy chunk that `main-*.js` loads by a relative path, so only the shell counts
+  toward the 1 MB initial budget. `sail ui-plugins upload` uploads every file in that folder, keeping their paths, so upload the
+  whole folder from a fresh build; never copy just `main-*.js`.
 
 Then open the plugin: `https://<tenant>.identitynow.com/ui/plugin/<plugin id>` (the installer prints it). To put it in the menu:
 **Admin → Global → System Settings → Customize Navbar → Custom Item → Destination: Plugin.**
@@ -255,7 +259,8 @@ cd .. && python -m pytest plugin/tests -q    # installer tests (dry-run payloads
 **Demo mode.** `?demo=<scenario>` runs the page on its own with made-up data. The scenarios are `new`, `people` (600 people:
 3 parts), `items`, `approver`, `approver-error`, `temporary`, `review`, `parts-review`, `submitted`, `parts-submitted`, `history`,
 `approvals` (a non-admin item approver with 300 + 40 approvals from two bulk requests, and 3 others) and `approvals-partial`
-(the same, but some calls are throttled or fail, a colleague decides some first, and a few stay pending). Demo mode is ignored inside ISC, where the page always runs in an iframe. The screenshots above
+(the same, but some calls are throttled or fail, a colleague decides some first, and a few stay pending). Demo mode is ignored inside ISC, where the page always runs in an iframe, and its code
+loads only when `?demo=` is in the URL (`src/main.ts` imports it on demand). The screenshots above
 come from it, taken by [tools/demo-capture](../tools/demo-capture/README.md), which also records the demo video.
 
 **The rules match the core.** `src/app/bulk/rules.ts` is a port of `core/bulkaccess/rules.py` (request validation, INC check, approver ≠ requester,
@@ -288,4 +293,4 @@ catalog filter, `splitIntoParts` / `partLabel`, temporary-access checks and the 
 | `src/app/bulk/` | Rules port, runtime config, API calls, request state, the grouping logic for My bulk requests, and the Approvals tab's grouping (`approvals.ts`) and state (`approvals-store.ts`). |
 | `src/app/features/` | The three tabs: `new-request/` (four steps), `my-requests/` and `approvals/`. |
 | `src/app/core/` | SailPoint plugin SDK wrapper, from the official Angular starter. |
-| `src/app/demo/` | Demo mode and its made-up fixtures, also used by the unit tests. |
+| `src/app/demo/` | Demo mode and its made-up fixtures, also used by the unit tests. `scenario.ts` (the `?demo=` check) is the only part in the initial bundle. |
