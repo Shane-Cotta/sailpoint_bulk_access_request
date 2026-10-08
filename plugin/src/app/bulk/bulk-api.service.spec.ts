@@ -17,23 +17,23 @@ const ALAN = '0123456789abcdef0123456789abcdef';
 
 describe('BulkApiService', () => {
   it('starts the workflow through the test endpoint with the trigger contract', async () => {
-    const { api, plugin } = setup({ '/v3/workflows/wf-1/test': { workflowExecutionId: 'exec-1' } });
+    const { api, plugin } = setup({ '/v2025/workflows/wf-1/test': { workflowExecutionId: 'exec-1' } });
     const input: BulkInput = {
       people: [ALAN], items: [{ id: 'ap-1', type: 'ACCESS_PROFILE' as const, name: 'ACME Bulk Test Access' }],
       approverId: 'boss', requesterId: 'me', inc: 'INC0012345', justification: 'why',
       part: 1, parts: 1, partLabel: '', removeDuration: '', accessLabel: 'Permanent',
     };
     await expect(api.submit('wf-1', input)).resolves.toBe('exec-1');
-    expect(plugin.post).toHaveBeenCalledWith('/v3/workflows/wf-1/test', { input });
+    expect(plugin.post).toHaveBeenCalledWith('/v2025/workflows/wf-1/test', { input });
   });
 
   it('says so when the workflow does not start', async () => {
-    const { api } = setup({ '/v3/workflows/': {} });
+    const { api } = setup({ '/v2025/workflows/': {} });
     await expect(api.submit('wf-1', {} as never)).rejects.toThrow('did not start');
   });
 
   it('finds the workflow by name unless the config names its ID', async () => {
-    const { api } = setup({ '/v3/workflows': [{ id: 'other', name: 'Something else' }, { id: 'wf-9', name: DEMO_CONFIG.workflowName }] });
+    const { api } = setup({ '/v2025/workflows': [{ id: 'other', name: 'Something else' }, { id: 'wf-9', name: DEMO_CONFIG.workflowName }] });
     await expect(api.workflowId({ ...DEMO_CONFIG, workflowId: null })).resolves.toBe('wf-9');
     await expect(api.workflowId({ ...DEMO_CONFIG, workflowId: 'fixed' })).resolves.toBe('fixed');
     await expect(api.workflowId({ ...DEMO_CONFIG, workflowId: null, workflowName: 'Missing' })).rejects.toThrow('install.py');
@@ -153,20 +153,34 @@ describe('BulkApiService', () => {
     expect(plugin.post).toHaveBeenCalledTimes(1);
   });
 
-  it('loads the catalog with repeated `types`, the name filter, and sources', async () => {
+  it('loads access profiles and roles from requestable-objects and entitlements from the entitlements API', async () => {
     const { api, plugin } = setup({
       '/v3/requestable-objects': [
         { id: 'ap', type: 'ACCESS_PROFILE', name: 'ACME Bulk Test Access' },
         { id: 'r', type: 'ROLE', name: 'ACME Role' },
         { id: 'x', type: 'ACCESS_PROFILE', name: 'Other' },
       ],
+      // Entitlement rows have no `type` and carry their source.
+      '/v2025/entitlements': [{ id: 'e', name: 'ACME Group', requestable: true, source: { name: 'Active Directory' } }],
       '/v3/search': [{ id: 'ap', source: { name: 'ACME SaaS' } }],
     });
     const options = await api.catalog({ ...DEMO_CONFIG, nameStartsWith: 'ACME' });
-    expect(options.map((o) => o.subLabel)).toEqual(['Access profile · ACME SaaS', 'Role']);
-    const url = plugin.get.mock.calls[0][0] as string;
-    expect(url).toContain('types=ACCESS_PROFILE&types=ROLE&types=ENTITLEMENT');
-    expect(decodeURIComponent(url)).toContain('name sw "ACME"');
+    expect(options.map((o) => o.subLabel)).toEqual(['Access profile · ACME SaaS', 'Entitlement · Active Directory', 'Role']);
+    expect(options[1].value).toEqual({ id: 'e', type: 'ENTITLEMENT', name: 'ACME Group' });
+    const [objects, entitlements] = plugin.get.mock.calls.map((c) => decodeURIComponent(c[0] as string));
+    expect(objects).toContain('/v3/requestable-objects?types=ACCESS_PROFILE&types=ROLE&');
+    expect(objects).not.toContain('ENTITLEMENT');
+    expect(objects).toContain('name sw "ACME"');
+    expect(entitlements).toContain('/v2025/entitlements?filters=requestable eq true and name sw "ACME"');
+    // Only access profiles need a source lookup (the stub ignores the name filter, so 'x' is asked too).
+    expect((plugin.post.mock.calls[0][1] as { query: { query: string } }).query.query).toBe('id:(ap OR x)');
+  });
+
+  it('skips requestable-objects when only entitlements are offered', async () => {
+    const { api, plugin } = setup({ '/v2025/entitlements': [{ id: 'e', name: 'Group' }] });
+    const options = await api.catalog({ ...DEMO_CONFIG, catalogTypes: ['ENTITLEMENT'], nameStartsWith: null });
+    expect(options.map((o) => o.value.type)).toEqual(['ENTITLEMENT']);
+    expect(plugin.get).toHaveBeenCalledTimes(1);
   });
 
   it('reports which chosen people already hold or have requested an item', async () => {
@@ -181,6 +195,32 @@ describe('BulkApiService', () => {
       { personId: 'p3', itemId: 'ap', status: 'PENDING' },
     ]));
     expect(found).toHaveLength(2);
+  });
+
+  it('checks entitlements through identity search (held) and access-request-status (pending)', async () => {
+    const { api, plugin } = setup({
+      '/v3/search': [
+        { id: 'p1', access: [{ id: 'ent', type: 'ENTITLEMENT' }, { id: 'other', type: 'ENTITLEMENT' }] },
+        { id: 'p2', access: [{ id: 'ap', type: 'ACCESS_PROFILE' }] },
+      ],
+      '/v3/access-request-status?requested-for=p1': [{ id: 'ent', type: 'ENTITLEMENT', state: 'EXECUTING', requestType: 'GRANT_ACCESS' }],
+      '/v3/access-request-status?requested-for=p2': [
+        { id: 'ent', type: 'ENTITLEMENT', state: 'EXECUTING', requestType: 'GRANT_ACCESS' },
+        { id: 'ent2', type: 'ENTITLEMENT', state: 'EXECUTING', requestType: 'GRANT_ACCESS' },   // not chosen
+      ],
+      '/v3/access-request-status?requested-for=p3': [{ id: 'ent', type: 'ENTITLEMENT', state: 'EXECUTING', requestType: 'REVOKE_ACCESS' }],
+    });
+    const found = await api.existingAccess(['p1', 'p2', 'p3'], [{ id: 'ent', type: 'ENTITLEMENT', name: 'Group' }]);
+    expect(found).toEqual(expect.arrayContaining([
+      { personId: 'p1', itemId: 'ent', status: 'ASSIGNED' },     // held wins over its open request
+      { personId: 'p2', itemId: 'ent', status: 'PENDING' },
+    ]));
+    expect(found).toHaveLength(2);
+    expect(plugin.get.mock.calls.map((c) => String(c[0])).filter((u) => u.includes('requestable-objects'))).toEqual([]);
+    expect(plugin.get.mock.calls.every((c) => String(c[0]).includes('&request-state=EXECUTING&'))).toBe(true);
+    const search = plugin.post.mock.calls[0][1] as { indices: string[]; query: { query: string } };
+    expect(search.indices).toEqual(['identities']);
+    expect(search.query.query).toBe('id:(p1 OR p2 OR p3)');
   });
 
   it("loads the user's own bulk approvals with approver details the list leaves out", async () => {

@@ -63,7 +63,8 @@ solution's own code.
 | 21 | `POST /v3/access-profiles` | Create it (requestable, MANAGER approval or none) | `launcher/install.py` | same as 20 | `idn:access-profile:manage`, `idn:entitlement:read`, `idn:identity:read`, `idn:sources:read` | GA (legacy v3) [L] |
 | 22 | `PATCH /v3/access-profiles/{id}` | Update its entitlement and `accessRequestConfig` | `launcher/install.py` | ORG_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN | `idn:access-profile:manage` | GA (legacy v3) [L] |
 | 23 | `DELETE /v3/access-profiles/{id}` | Uninstall | `launcher/uninstall.py` | same as 22 | `idn:access-profile:manage` | GA (legacy v3) [S] |
-| 24 | `GET /v3/requestable-objects?types=…&types=…&limit=250&offset=N` | The Request Center catalog, used for the form's item choices | `launcher/install.py` | ORG_ADMIN (no `identity-id` means admin only) | `idn:requestable-objects:read` | GA (legacy v3) [L]. See the `ENTITLEMENT` note in §6 |
+| 24 | `GET /v3/requestable-objects?types=…&types=…&limit=250&offset=N` | The Request Center catalog's access profiles and roles (only the configured ones among `ACCESS_PROFILE`, `ROLE`), used for the form's item choices | `launcher/install.py` | ORG_ADMIN (no `identity-id` means admin only) | `idn:requestable-objects:read` | GA (legacy v3) [L]. See the `ENTITLEMENT` note in §6 |
+| 24a | `GET /v2025/entitlements?filters=requestable eq true[ and name sw "…"]&sorters=name&limit=250&offset=N` | Requestable entitlements for the form's item choices (when `catalog.types` has `ENTITLEMENT`) | `launcher/install.py` | Any | `idn:entitlement:read` | GA [L] (filter, paging and sorting verified) |
 | 25 | `POST /v3/access-requests` | `--grant`: request the *Launcher Access* profile for given identities (`GRANT_ACCESS`) | `launcher/install.py` | ORG_ADMIN, USER | `idn:access-request:manage` | GA (legacy v3) [L] |
 | 26 | `GET /v2025/generic-approvals?limit=250` | Pending `Bulk access …` approvals, in `status` | `plugin/status.py` | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] |
 | 27 | `GET /v2025/generic-approvals/{id}` | Approvers of one approval (the list leaves them out) | `plugin/status.py` | APPROVAL_OWNER | same | GA [L] |
@@ -92,12 +93,15 @@ All calls go through `SailpointPluginService.get/post` → `@sailpoint/ui-plugin
 | People search | `GET /v3/accounts?filters=name sw … \| name in … \| nativeIdentity in … \| identityId in …` | Find identities not indexed yet | ORG_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN, HELPDESK | `idn:accounts:read` | GA (legacy v3) [L] |
 | Paste a list | `GET /v2025/identities?filters=id in (…)` and `alias eq … or email eq …` (50 per call) | Resolve pasted IDs, usernames and emails | — | `idn:identity:read` | GA [L] |
 | Paste a list | `GET /v2025/identities/{id}` | Last-resort lookup of a single ID | — | `idn:identity:read` | GA [L] |
-| Access step | `GET /v3/requestable-objects?types=…&limit=250&offset=N[&filters=name sw …]` | The catalog | ORG_ADMIN | `idn:requestable-objects:read` | GA (legacy v3) [L] |
-| Access step | `POST /v3/search` (`indices: ["accessprofiles","entitlements"]`) | Source names to show next to items | see above | `sp:search:read` | GA (legacy v3) [L] |
-| Review step | `GET /v3/requestable-objects?identity-id=<id>&types=…&filters=id in (…)` | "Already has it" warning (up to 100 people) | ORG_ADMIN (USER for oneself) | `idn:requestable-objects:read` | GA (legacy v3) [L] |
-| Submit | `GET /v3/workflows?limit=250` | Find the workflow by name (only when the runtime config has no ID) | ORG_ADMIN | `sp:workflow:read` | **v3 Workflows sends `Deprecation: 31 Mar 2027`** [L] |
-| Submit | `POST /v3/workflows/{id}/test` `{input}` | **Start one run per part** (the workflow must be disabled) | ORG_ADMIN | `sp:workflow-execute:external` | **v3 Workflows sends `Deprecation: 31 Mar 2027`** [L] |
-| Submit | `GET /v3/workflow-executions/{id}` | Follow each run | ORG_ADMIN | `sp:workflow-execution:read` | **Same deprecation header** [L] |
+| Access step | `GET /v3/requestable-objects?types=…&limit=250&offset=N[&filters=name sw …]` | The catalog's access profiles and roles | ORG_ADMIN | `idn:requestable-objects:read` | GA (legacy v3) [L] |
+| Access step | `GET /v2025/entitlements?filters=requestable eq true[ and name sw …]&sorters=name&limit=250&offset=N` | The catalog's requestable entitlements (rows carry `source.name`, no `type`) | Any | `idn:entitlement:read` | GA [L] |
+| Access step | `POST /v3/search` (`indices: ["accessprofiles","entitlements"]`) | Source names to show next to access profiles | see above | `sp:search:read` | GA (legacy v3) [L] |
+| Review step | `GET /v3/requestable-objects?identity-id=<id>&types=…&filters=id in (…)` | "Already has it" warning for access profiles and roles (up to 100 people) | ORG_ADMIN (USER for oneself) | `idn:requestable-objects:read` | GA (legacy v3) [L] |
+| Review step | `POST /v3/search` (`indices: ["identities"]`, `id:(…)`, includes `access.id`, `access.type`) | "Already has it" for entitlements (held), 100 people per call | see People search | `sp:search:read` | GA (legacy v3) [L]. Identities missing from the index get no warning |
+| Review step | `GET /v3/access-request-status?requested-for=<id>&request-state=EXECUTING&limit=250` | "Already requested" for entitlements (the row `id` is the item's ID) | ORG_ADMIN; any user for their own [D] | `idn:access-request-status:read` | GA (legacy v3) [L] |
+| Submit | `GET /v2025/workflows?limit=250` | Find the workflow by name (only when the runtime config has no ID) | ORG_ADMIN | `sp:workflow:read` | GA [L]; no deprecation header (v3 sent `Deprecation: 31 Mar 2027`) |
+| Submit | `POST /v2025/workflows/{id}/test` `{input}` | **Start one run per part** (the workflow must be disabled) | ORG_ADMIN | `sp:workflow-execute:external` | GA [S] (same contract as v3; not called live, it starts a run) |
+| Submit | `GET /v2025/workflow-executions/{id}` | Follow each run | ORG_ADMIN | `sp:workflow-execution:read` | GA [L]; same keys as v3, no deprecation header |
 | Submit, My bulk requests | `GET /v2025/generic-approvals?limit=250`, `GET /v2025/generic-approvals/{id}` | Find the part's approval, approver and decider | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] |
 | My bulk requests | `GET /v3/access-request-status?requested-by=<me>&limit=250&offset=N&sorters=-created` | Requests carrying an INC | ORG_ADMIN; any user for their own [D] | `idn:access-request-status:read` | GA (legacy v3) [L] |
 | **Approvals** | `GET /v2025/generic-approvals?mine=true&include-comments=true&limit=250&offset=N&sorters=createdDate&filters=status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"` | The caller's pending access-request approvals, with the item comment holding the INC | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] (as a non-admin) |
@@ -159,18 +163,19 @@ on one-item lists), and `sp:serial:iterator` (it silently stops after 50 items) 
 |---|---|---|
 | **Form definition** "<prefix> Bulk Access Request Form" | `/v2025/form-definitions` | SECTION. SELECT with an **INTERNAL IDENTITY** data source (`maximum` ≤ 30) and with **STATIC** options holding full `{id,type,name}` objects (`maximum` ≤ 25). TEXT with **REGEX** validation. TEXTAREA (no MAX_LENGTH). **TOGGLE**. `formConditions` HIDE effects [L] |
 | **Workflow** "<prefix> Bulk Access Request" | `/v2025/workflows` | Enabled, Interactive trigger scoped to its own ID [L] |
-| **Workflow** "<prefix> Bulk Access Request (Plugin)" | `/v2025/workflows` | **Disabled**, External trigger, started through `POST /v3/workflows/{id}/test` [L] |
+| **Workflow** "<prefix> Bulk Access Request (Plugin)" | `/v2025/workflows` | **Disabled**, External trigger, started through `POST /v2025/workflows/{id}/test` (formerly v3 [L]) |
 | **Launcher** "<prefix> Bulk Access Request" | `/v2025/launchers` | `type: INTERACTIVE_PROCESS`, `reference: {type: WORKFLOW}`. ISC auto-creates an `assignedLaunchers` entitlement on the IdentityNow source [L] |
 | **Access profile** "<prefix> Bulk Access Request - Launcher Access" | `/v3/access-profiles` | Wraps the `assignedLaunchers` entitlement. Requestable, with `approvalSchemes: [{approverType: MANAGER}]` or none [L] |
 | **UI plugin** (alias `<prefix>-bulk-access`) | `/ui-plugins/v1` through `sail` | Slot `full-page`, `apiScopes: ["sp:scopes:all"]`, `restrictToUsers` (private = only the installer). Slots also carry `requiredCapabilities` [L] |
 | **Access requests** (runtime) | Manage Access v2 in the workflow | Requester = **workflow owner**. Item approval schemes still apply [L] |
 | **Generic approvals** (runtime) | `sp:generic-approval`, read through `/v2025/generic-approvals` | Named `Bulk access <INC>[ (k/n)]` [L] |
 
-**`ENTITLEMENT` in the catalog** [L]+[S]: `catalog.types` accepts `ENTITLEMENT`, but in the spec the
-`requestable-objects` `types` enum is only `ACCESS_PROFILE` and `ROLE` (v3, v2025 and v2026). On the test tenant,
-`types=ENTITLEMENT` alone returns **400**, and the repeated form (`types=ACCESS_PROFILE&types=ENTITLEMENT`) returns 200
-**without any entitlement rows**, although 10 requestable entitlements exist. So, through this API, the catalog
-offers access profiles and (enabled) roles only. See the risks in [API_CONTRACT_ALIGNMENT.md](API_CONTRACT_ALIGNMENT.md#5-risks-and-what-to-watch).
+**`ENTITLEMENT` in the catalog** [L]+[S]: in the spec the `requestable-objects` `types` enum is only `ACCESS_PROFILE`
+and `ROLE` (v3, v2025 and v2026). On the test tenant, `types=ENTITLEMENT` alone returns **400**, and the repeated form
+(`types=ACCESS_PROFILE&types=ENTITLEMENT`) returns 200 **without any entitlement rows**, although 10 requestable
+entitlements exist. So both deployments ask `requestable-objects` for access profiles and roles only, and read
+requestable entitlements from `GET /v2025/entitlements?filters=requestable eq true` (plus `and name sw "<nameStartsWith>"`),
+which returned exactly those 10 [L]. Entitlement rows have no `type`, so the code tags them `ENTITLEMENT`. See the risks in [API_CONTRACT_ALIGNMENT.md](API_CONTRACT_ALIGNMENT.md#5-risks-and-what-to-watch).
 
 ## 7. Scopes: what `sp:scopes:all` covers
 Both the PAT and the plugin manifest ask for `sp:scopes:all`. The effective rights are still those of the user

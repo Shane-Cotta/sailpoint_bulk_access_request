@@ -109,6 +109,41 @@ def test_catalog_options_carry_full_access_objects_and_respect_filters():
                      "value": {"id": "1", "type": "ACCESS_PROFILE", "name": "ACME Bulk Test Access"}}]
 
 
+def test_entitlements_come_from_the_entitlements_api_not_requestable_objects():
+    # /v3/requestable-objects can't list entitlements (CONTRACTS §8).
+    assert rules.requestable_object_types(cfg_with(catalog__types=["ENTITLEMENT", "ROLE", "ACCESS_PROFILE"])) == ["ROLE", "ACCESS_PROFILE"]
+    assert rules.requestable_object_types(cfg_with(catalog__types=["ENTITLEMENT"])) == []
+    assert rules.entitlement_filter(cfg_with(catalog__types=["ACCESS_PROFILE"])) is None
+    assert rules.entitlement_filter(cfg_with(catalog__types=["ENTITLEMENT"], catalog__nameStartsWith=None)) == "requestable eq true"
+    assert (rules.entitlement_filter(cfg_with(catalog__types=["ENTITLEMENT"], catalog__nameStartsWith='AC"ME\\'))
+            == 'requestable eq true and name sw "AC\\"ME\\\\"')
+
+
+def test_launcher_catalog_merges_requestable_entitlements():
+    spec = importlib.util.spec_from_file_location("launcher_install_catalog", ROOT / "launcher" / "install.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    calls = []
+
+    class FakeTenant:
+        def call(self, method, path, *a, **k):
+            calls.append(path)
+            if path.startswith("/v3/requestable-objects"):
+                return [{"id": "ap", "type": "ACCESS_PROFILE", "name": "ACME AP"}]
+            return [{"id": "e1", "name": "ACME Group", "source": {"name": "AD"}, "requestable": True}]
+
+    cfg = cfg_with(catalog__types=["ACCESS_PROFILE", "ENTITLEMENT"], catalog__nameStartsWith="ACME")
+    opts = rules.catalog_options(cfg, mod.requestable_objects(FakeTenant(), cfg))
+    assert [o["value"] for o in opts] == [{"id": "ap", "type": "ACCESS_PROFILE", "name": "ACME AP"},
+                                         {"id": "e1", "type": "ENTITLEMENT", "name": "ACME Group"}]
+    assert opts[1]["subLabel"] == "Entitlement · AD"
+    assert calls[0] == "/v3/requestable-objects?types=ACCESS_PROFILE&limit=250&offset=0"
+    assert calls[1].startswith("/v2025/entitlements?filters=requestable%20eq%20true%20and%20name%20sw%20%22ACME%22")
+    calls.clear()
+    mod.requestable_objects(FakeTenant(), cfg_with(catalog__types=["ENTITLEMENT"]))
+    assert [c.split("?")[0] for c in calls] == ["/v2025/entitlements"]   # no type-less requestable-objects call
+
+
 # ── definitions ───────────────────────────────────────────────────────────────
 def _form_elements(form):
     return {e["key"]: e for e in form["formElements"][0]["config"]["formElements"]}

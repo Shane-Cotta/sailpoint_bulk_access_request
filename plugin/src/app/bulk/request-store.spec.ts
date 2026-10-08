@@ -57,7 +57,7 @@ describe('RequestStore', () => {
     await vi.advanceTimersByTimeAsync(1000);
     await done;
     expect(post).toHaveBeenCalledTimes(1);
-    expect(post).toHaveBeenCalledWith('/v3/workflows/demo-workflow/test', {
+    expect(post).toHaveBeenCalledWith('/v2025/workflows/demo-workflow/test', {
       input: {
         people: store.people().map((x) => x.id),
         items: store.items().map((o) => o.value),

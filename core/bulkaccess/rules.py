@@ -58,8 +58,35 @@ def clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+# ── where the catalog comes from (CONTRACTS §8) ──────────────────────────────
+# /v3/requestable-objects only lists access profiles and roles: ENTITLEMENT is outside its
+# `types` enum (alone -> 400; repeated next to another type -> silently dropped). Requestable
+# entitlements come from /v2025/entitlements?filters=requestable eq true instead.
+REQUESTABLE_OBJECT_TYPES = ("ACCESS_PROFILE", "ROLE")
+
+
+def requestable_object_types(cfg: Config) -> list[str]:
+    """The configured types that /v3/requestable-objects can list (empty: don't call it)."""
+    return [t for t in cfg.catalog_types if t in REQUESTABLE_OBJECT_TYPES]
+
+
+def filter_quote(value: str) -> str:
+    """A string literal for a SailPoint `filters` expression."""
+    return '"' + re.sub(r'(["\\])', r"\\\1", value) + '"'
+
+
+def entitlement_filter(cfg: Config) -> str | None:
+    """The /v2025/entitlements filter for the catalog's entitlements (None: not offered)."""
+    if "ENTITLEMENT" not in cfg.catalog_types:
+        return None
+    prefix = cfg.catalog_name_starts_with
+    return "requestable eq true" + (f" and name sw {filter_quote(prefix)}" if prefix else "")
+
+
 def catalog_options(cfg: Config, requestable: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Form SELECT options from /v3/requestable-objects, filtered by the config.
+    """Form SELECT options from /v3/requestable-objects and requestable entitlements, filtered by the config.
+
+    Entitlement rows (from /v2025/entitlements) carry no `type`; the caller tags them "ENTITLEMENT".
 
     Each option's value is the complete access object ({id, type, name}), which is
     exactly what the workflow's Manage Access step needs -- so the workflow never has

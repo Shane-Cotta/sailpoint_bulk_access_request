@@ -84,7 +84,33 @@ export interface CatalogOption {
   value: AccessItem;
 }
 
-/** /v3/requestable-objects rows -> catalog options, filtered by type and name prefix (rules.catalog_options). */
+/**
+ * Where the catalog comes from (CONTRACTS §8, rules.py): /v3/requestable-objects only lists
+ * access profiles and roles (ENTITLEMENT alone is a 400, next to another type it is silently
+ * dropped), so requestable entitlements come from /v2025/entitlements.
+ */
+export const REQUESTABLE_OBJECT_TYPES: readonly ItemType[] = ['ACCESS_PROFILE', 'ROLE'];
+
+/** The configured types /v3/requestable-objects can list (empty: don't call it). */
+export function requestableObjectTypes(cfg: Pick<RuntimeConfig, 'catalogTypes'>): ItemType[] {
+  return cfg.catalogTypes.filter((t) => REQUESTABLE_OBJECT_TYPES.includes(t));
+}
+
+/** A string literal for a SailPoint `filters` expression (rules.filter_quote). */
+export function filterQuote(value: string): string {
+  return `"${value.replace(/["\\]/g, (c) => `\\${c}`)}"`;
+}
+
+/** The /v2025/entitlements filter for the catalog's entitlements (null: not offered). */
+export function entitlementFilter(cfg: Pick<RuntimeConfig, 'catalogTypes' | 'nameStartsWith'>): string | null {
+  if (!cfg.catalogTypes.includes('ENTITLEMENT')) return null;
+  return 'requestable eq true' + (cfg.nameStartsWith ? ` and name sw ${filterQuote(cfg.nameStartsWith)}` : '');
+}
+
+/**
+ * Catalog rows -> catalog options, filtered by type and name prefix (rules.catalog_options).
+ * Rows from /v2025/entitlements carry no `type`; the caller tags them ENTITLEMENT.
+ */
 export function catalogOptions(
   cfg: Pick<RuntimeConfig, 'catalogTypes' | 'nameStartsWith'>,
   requestable: Iterable<Record<string, unknown>>,

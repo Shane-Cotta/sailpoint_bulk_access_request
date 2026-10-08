@@ -52,7 +52,7 @@ deployment, so the Launcher and the plugin behave the same way. Where SailPoint 
 | `inc.pattern` | `^INC\d{7}$` | The INC format, as a regular expression. Use one that means the same in Python and JavaScript (`\d`, `[A-Z]`, anchors, groups). | both |
 | `inc.example` | `INC0012345` | The example shown in the field. Must match `inc.pattern`. | both |
 | `inc.message` | "Enter a ServiceNow incident number, e.g. `<example>`." | The error shown for a bad INC. | both |
-| `catalog.types` | all three | Which Request Center item types to offer: `ACCESS_PROFILE`, `ROLE`, `ENTITLEMENT`. | both |
+| `catalog.types` | all three | Which Request Center item types to offer: `ACCESS_PROFILE`, `ROLE`, `ENTITLEMENT`. Access profiles and roles are the ones the Request Center lists; entitlements are those marked **requestable** (SailPoint's catalog API doesn't list entitlements, so the tool reads requestable entitlements separately). | both |
 | `catalog.nameStartsWith` | `null` | Only offer items whose names start with this text. `null` = all items. | both |
 | `catalog.maxItems` | `25` | Most items per request, 1 to 25 (SailPoint's per-request limit). | both |
 | `people.max` | `null` | Most people per request. `null` = no limit. The Launcher always stops at 30 (SailPoint's form limit), so it uses the smaller of this and 30. | both |
@@ -204,7 +204,7 @@ Some of this design comes from limits we hit on a live tenant:
 | The Launcher isn't in someone's Launchpad | They need the *Launcher Access* profile. Request or grant it, wait about a minute, then refresh. |
 | `HTTP 401 insufficient authorization` when launching | Same as above: the user doesn't hold the launcher's entitlement yet. |
 | `HTTP 409 launcher is disabled` | Run `apply` again; it re-enables the Launcher. |
-| The form offers nothing to request | Check `catalog.types` / `catalog.nameStartsWith`, then run `apply` again. |
+| The form offers nothing to request | Check `catalog.types` / `catalog.nameStartsWith`, then run `apply` again. An entitlement only appears once it is marked requestable. |
 | "Temporary access isn't available." | `temporaryAccess.enabled` is `false`, or the chosen way (for example an end date on the Launcher) isn't allowed. |
 | "Temporary access can last at most N days." | The duration is longer than `temporaryAccess.maxDays`. |
 | An approval went to someone unexpected | The requester chose themselves. That's now blocked; check the workflow is up to date (`status`). |

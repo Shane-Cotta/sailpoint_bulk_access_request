@@ -3,7 +3,10 @@ import { SailpointPluginService } from '@core';
 
 import { describeError } from './errors';
 import type { RuntimeConfig } from './runtime-config';
-import { APPROVAL_NAME_PREFIX, catalogOptions, type AccessItem, type CatalogOption } from './rules';
+import {
+  APPROVAL_NAME_PREFIX, catalogOptions, entitlementFilter, filterQuote, requestableObjectTypes, type AccessItem,
+  type CatalogOption,
+} from './rules';
 
 /**
  * Every SailPoint API call the page makes, as the signed-in user with the
@@ -27,7 +30,7 @@ export interface Resolution {
 }
 
 /**
- * What POST /v3/workflows/{id}/test receives as `input`: the plugin workflow's trigger
+ * What POST /v2025/workflows/{id}/test receives as `input`: the plugin workflow's trigger
  * contract (CONTRACTS §3). One run per part; every field is always present.
  */
 export interface BulkInput {
@@ -153,7 +156,10 @@ export interface AccessRequestStatus {
   removeDate?: string | null;
 }
 
-/** Item access a chosen person already holds or has pending (from requestable-objects?identity-id=). */
+/**
+ * Item access a chosen person already holds or has pending: access profiles and roles from
+ * requestable-objects?identity-id=, entitlements from identity search and access-request-status (CONTRACTS §8).
+ */
 export interface ExistingAccess {
   personId: string;
   itemId: string;
@@ -167,9 +173,7 @@ export function escapeQuery(term: string): string {
   return term.replace(LUCENE_SPECIAL, (c) => `\\${c}`);
 }
 
-function quoted(value: string): string {
-  return `"${value.replace(/["\\]/g, (c) => `\\${c}`)}"`;
-}
+const quoted = filterQuote;
 
 /**
  * Batch sizes for resolving a pasted list. Verified with read-only GETs on a demo tenant:
@@ -469,23 +473,40 @@ export class BulkApiService {
   }
 
   // ── Catalog ──────────────────────────────────────────────────────────────
-  /** The Request Center catalog (types and name prefix from the config), with each item's source. */
+  /**
+   * The Request Center catalog (types and name prefix from the config), with each item's source.
+   * Access profiles and roles come from /v3/requestable-objects, requestable entitlements from
+   * /v2025/entitlements (requestable-objects can't list them; CONTRACTS §8).
+   */
   async catalog(cfg: RuntimeConfig, max = 1000): Promise<CatalogOption[]> {
-    // Repeat `types`: a comma list that includes ENTITLEMENT is rejected with a 400.
-    const types = cfg.catalogTypes.map((t) => `types=${t}`).join('&');
-    const filter = cfg.nameStartsWith ? `&filters=${encodeURIComponent(`name sw ${quoted(cfg.nameStartsWith)}`)}` : '';
     const rows: Row[] = [];
-    for (let offset = 0; offset < max; offset += 250) {
-      const page = await this.plugin.get<Row[]>(`/v3/requestable-objects?${types}&limit=250&offset=${offset}${filter}`);
-      rows.push(...(page ?? []));
-      if (!page || page.length < 250) break;
+    const types = requestableObjectTypes(cfg);
+    if (types.length) {   // without `types` the API would return every type
+      const filter = cfg.nameStartsWith ? `&filters=${encodeURIComponent(`name sw ${quoted(cfg.nameStartsWith)}`)}` : '';
+      rows.push(...await this.paged(`/v3/requestable-objects?${types.map((t) => `types=${t}`).join('&')}${filter}`, max));
+    }
+    const entitlements = entitlementFilter(cfg);
+    if (entitlements) {
+      const found = await this.paged(`/v2025/entitlements?filters=${encodeURIComponent(entitlements)}&sorters=name`, max);
+      rows.push(...found.map((e) => ({ ...e, type: 'ENTITLEMENT' })));
     }
     return catalogOptions(cfg, rows, await this.sources(rows));
   }
 
-  /** Source names for access profiles and entitlements (roles have none). Best effort. */
+  /** Up to `max` rows of a list call, 250 at a time. */
+  private async paged(path: string, max: number): Promise<Row[]> {
+    const rows: Row[] = [];
+    for (let offset = 0; offset < max; offset += 250) {
+      const page = await this.plugin.get<Row[]>(`${path}&limit=250&offset=${offset}`);
+      rows.push(...(page ?? []));
+      if (!page || page.length < 250) break;
+    }
+    return rows;
+  }
+
+  /** Source names for access profiles (roles have none; entitlement rows carry theirs). Best effort. */
   private async sources(rows: Row[]): Promise<Record<string, string>> {
-    const ids = rows.filter((r) => r['type'] !== 'ROLE').map((r) => String(r['id']));
+    const ids = rows.filter((r) => r['type'] === 'ACCESS_PROFILE').map((r) => String(r['id']));
     const out: Record<string, string> = {};
     await Promise.all(chunk(ids, 100).map(async (part) => {
       try {
@@ -505,36 +526,75 @@ export class BulkApiService {
     return out;
   }
 
-  /** Which chosen people already hold (or have pending) which chosen items. */
+  /**
+   * Which chosen people already hold (or have pending) which chosen items. Best effort: a check that
+   * fails, or a person missing from the search index, just gives no warning.
+   */
   async existingAccess(personIds: string[], items: AccessItem[], concurrency = 5): Promise<ExistingAccess[]> {
     if (!personIds.length || !items.length) return [];
-    const types = [...new Set(items.map((i) => i.type))].map((t) => `types=${t}`).join('&');
-    const filter = encodeURIComponent(`id in (${items.map((i) => quoted(i.id)).join(',')})`);
+    const objects = items.filter((i) => i.type !== 'ENTITLEMENT');
+    const entitlements = new Set(items.filter((i) => i.type === 'ENTITLEMENT').map((i) => i.id));
+    const types = [...new Set(objects.map((i) => i.type))].map((t) => `types=${t}`).join('&');
+    const filter = encodeURIComponent(`id in (${objects.map((i) => quoted(i.id)).join(',')})`);
     const out: ExistingAccess[] = [];
-    const queue = [...personIds];
-    const worker = async () => {
-      for (let id = queue.shift(); id; id = queue.shift()) {
-        try {
-          const rows = await this.plugin.get<Row[]>(
-            `/v3/requestable-objects?identity-id=${encodeURIComponent(id)}&${types}&limit=250&filters=${filter}`,
-          );
+    const jobs: (() => Promise<void>)[] = [];
+    for (const id of personIds) {
+      // Access profiles and roles: requestable-objects annotates each with the person's status.
+      if (objects.length) {
+        jobs.push(() => this.plugin.get<Row[]>(
+          `/v3/requestable-objects?identity-id=${encodeURIComponent(id)}&${types}&limit=250&filters=${filter}`,
+        ).then((rows) => {
           for (const r of rows ?? []) {
             const status = r['requestStatus'];
             if (status === 'ASSIGNED' || status === 'PENDING') out.push({ personId: id, itemId: String(r['id']), status });
           }
-        } catch {
-          /* a warning we can't compute is not a blocker */
-        }
+        }).catch(() => undefined));
       }
-    };
-    await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
-    return out;
+      // Entitlements, pending: open requests for this person (the row `id` is the item's ID).
+      if (entitlements.size) {
+        jobs.push(() => this.plugin.get<Row[]>(
+          `/v3/access-request-status?requested-for=${encodeURIComponent(id)}&request-state=EXECUTING&limit=250`,
+        ).then((rows) => {
+          for (const r of rows ?? []) {
+            if (r['type'] === 'ENTITLEMENT' && r['requestType'] !== 'REVOKE_ACCESS' && entitlements.has(String(r['id']))) {
+              out.push({ personId: id, itemId: String(r['id']), status: 'PENDING' });
+            }
+          }
+        }).catch(() => undefined));
+      }
+    }
+    // Entitlements, held: the identities search index lists each person's access.
+    if (entitlements.size) {
+      for (const part of chunk(personIds, 100)) {
+        jobs.push(() => this.plugin.post<Row[]>('/v3/search?limit=250', {
+          indices: ['identities'],
+          query: { query: `id:(${part.join(' OR ')})` },
+          queryResultFilter: { includes: ['id', 'access.id', 'access.type'] },
+        }).then((docs) => {
+          for (const d of docs ?? []) {
+            for (const a of (d['access'] as Row[] | undefined) ?? []) {
+              if (a['type'] === 'ENTITLEMENT' && entitlements.has(String(a['id']))) {
+                out.push({ personId: String(d['id']), itemId: String(a['id']), status: 'ASSIGNED' });
+              }
+            }
+          }
+        }).catch(() => undefined));
+      }
+    }
+    await pool(jobs, concurrency);
+    // One entry per person and item; held wins over a still-open request (or a second account).
+    const unique = new Map<string, ExistingAccess>();
+    for (const e of out) {
+      const key = `${e.personId}|${e.itemId}`;
+      if (!unique.has(key) || e.status === 'ASSIGNED') unique.set(key, e);
+    }
+    return [...unique.values()];
   }
 
   // ── Workflow ─────────────────────────────────────────────────────────────
   async workflowId(cfg: RuntimeConfig): Promise<string> {
     if (cfg.workflowId) return cfg.workflowId;
-    const flows = await this.plugin.get<Row[]>('/v3/workflows?limit=250');
+    const flows = await this.plugin.get<Row[]>('/v2025/workflows?limit=250');
     const hit = (flows ?? []).find((w) => w['name'] === cfg.workflowName);
     if (!hit) throw new Error(`The workflow "${cfg.workflowName}" is not installed in this tenant. Run plugin/install.py.`);
     return String(hit['id']);
@@ -543,7 +603,7 @@ export class BulkApiService {
   /** Start the plugin workflow through the workflow test endpoint (needs the right to test workflows). */
   async submit(workflowId: string, input: BulkInput): Promise<string> {
     const started = await this.plugin.post<{ workflowExecutionId?: string }>(
-      `/v3/workflows/${encodeURIComponent(workflowId)}/test`,
+      `/v2025/workflows/${encodeURIComponent(workflowId)}/test`,
       { input },
     );
     if (!started?.workflowExecutionId) throw new Error('The workflow did not start (no execution ID returned).');
@@ -551,7 +611,7 @@ export class BulkApiService {
   }
 
   execution(id: string): Promise<Execution> {
-    return this.plugin.get<Execution>(`/v3/workflow-executions/${encodeURIComponent(id)}`);
+    return this.plugin.get<Execution>(`/v2025/workflow-executions/${encodeURIComponent(id)}`);
   }
 
   async approvals(): Promise<GenericApproval[]> {

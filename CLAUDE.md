@@ -94,9 +94,16 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
 - **Launchers:**
   - Visible and launchable only for holders of the auto-created `assignedLaunchers` entitlement (on the IdentityNow source). The installer wraps it in a requestable "Launcher Access" profile.
   - Disabling the workflow disables its Launcher a moment later.
-- **Plugins:** a browser plugin can't hold a workflow's external-trigger secret, so the plugin uses the workflow **test** endpoint. That
-  requires a disabled workflow and an ORG_ADMIN user.
+- **Plugins:** a browser plugin can't hold a workflow's external-trigger secret, so the plugin uses the workflow **test** endpoint
+  (`POST /v2025/workflows/{id}/test`, then `GET /v2025/workflow-executions/{id}`). That requires a disabled workflow and an ORG_ADMIN user.
+  The `/v3/workflows…` and `/v3/workflow-executions…` paths answer the same but send `Deprecation: 31 Mar 2027`; v2025 sends none.
 - **APIs:**
-  - `/v3/requestable-objects` needs `types=` repeated; a comma list containing ENTITLEMENT returns 400.
+  - `/v3/requestable-objects` only lists **access profiles and roles** (its `types` enum). `types=ENTITLEMENT` alone returns 400,
+    and next to another type (repeated `types=`) it is silently dropped. Never call it without `types` (that means every type).
+  - **Requestable entitlements** come from `GET /v2025/entitlements?filters=requestable eq true[ and name sw "<prefix>"]`
+    (`limit`/`offset` paging and `sorters=name` work). Rows carry `source.name` but **no `type`**: tag them `ENTITLEMENT`.
+  - "Already has it" for entitlements: held = `POST /v3/search` on `identities` with `id:(…)`, reading `access[]`
+    (`{id,type}`); identities missing from the search index get no warning. Pending = `GET /v3/access-request-status?requested-for=<id>&request-state=EXECUTING`
+    (the row `id` is the item's ID).
   - There's no v3 identities API; use `/v2025/identities`.
   - Some tenants sit behind Cloudflare, which rejects Python's default User-Agent; the client sends its own.

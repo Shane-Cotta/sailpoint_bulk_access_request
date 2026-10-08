@@ -2,8 +2,8 @@
 // plugin and the Python core refuse exactly the same requests.
 import { DEFAULT_CONFIG, parseRuntimeConfig, RuntimeConfigError, type DurationUnit, type RuntimeConfig } from './runtime-config';
 import {
-  accessLabel, catalogOptions, clip, COMMENT_SEPARATOR, endDateHours, extractInc, incIsValid, justificationMax, parseBulkComment,
-  partLabel, partOf, removeDuration, splitIntoParts, temporaryModes, validateAccess, validateRequest, type AccessChoice,
+  accessLabel, catalogOptions, clip, COMMENT_SEPARATOR, endDateHours, entitlementFilter, extractInc, incIsValid, justificationMax,
+  parseBulkComment, partLabel, requestableObjectTypes, partOf, removeDuration, splitIntoParts, temporaryModes, validateAccess, validateRequest, type AccessChoice,
 } from './rules';
 
 /**
@@ -151,6 +151,15 @@ describe('rules (core/bulkaccess/rules.py)', () => {
       { label: 'ACME Bulk Test Access', subLabel: 'Access profile · ACME SaaS',
         value: { id: '1', type: 'ACCESS_PROFILE', name: 'ACME Bulk Test Access' } },
     ]);
+  });
+
+  it('lists entitlements through the entitlements API, not requestable-objects (like rules.py)', () => {
+    expect(requestableObjectTypes(cfgWith({ catalogTypes: ['ENTITLEMENT', 'ROLE', 'ACCESS_PROFILE'] }))).toEqual(['ROLE', 'ACCESS_PROFILE']);
+    expect(requestableObjectTypes(cfgWith({ catalogTypes: ['ENTITLEMENT'] }))).toEqual([]);
+    expect(entitlementFilter(cfgWith({ catalogTypes: ['ACCESS_PROFILE'] }))).toBeNull();
+    expect(entitlementFilter(cfgWith({ catalogTypes: ['ENTITLEMENT'], nameStartsWith: null }))).toBe('requestable eq true');
+    expect(entitlementFilter(cfgWith({ catalogTypes: ['ENTITLEMENT'], nameStartsWith: 'AC"ME\\' })))
+      .toBe('requestable eq true and name sw "AC\\"ME\\\\"');
   });
 
   it('takes sources looked up separately and sorts by name', () => {

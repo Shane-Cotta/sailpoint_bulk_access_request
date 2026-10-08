@@ -82,6 +82,7 @@ Messages must match **exactly** in both languages.
   `definitions.py` builds the comment from `COMMENT_SEPARATOR`, and a test checks that the rendered comment parses back to its inputs.
 
 ## 3. Plugin workflow input (one workflow-test run **per part**)
+Sent as `{input}` to `POST /v2025/workflows/{id}/test`; each run is followed with `GET /v2025/workflow-executions/{id}` (§8).
 Every field is **always** present (no missing paths in templates):
 ```json
 { "people": ["<identityId>", "..."],          // 1..partSize (≤250)
@@ -160,6 +161,33 @@ Item approvers decide the per-person approvals a bulk request created, one INC a
   | `pending` (still pending) | our call succeeded but the last re-read still says PENDING; can be retried |
   | `failed` | our call failed and it's still PENDING; can be retried, with the reason |
 - After a run, `confirmed` and `elsewhere` rows leave the list; a later approval step of a serial scheme appears on refresh.
+
+## 8. Where the catalog and the workflow calls come from
+Verified live with read-only calls on the test tenant (2026-10-08); the test endpoint was checked in the spec only (it starts a run).
+- **Workflows (plugin):** `GET /v2025/workflows?limit=250` (find by name), `POST /v2025/workflows/{id}/test` `{input}`
+  (ORG_ADMIN, disabled workflow; same request and `{workflowExecutionId}` response as v3 in the spec), and
+  `GET /v2025/workflow-executions/{id}` (`{id, workflowId, requestId, status, startTime, closeTime}`, the same keys as v3).
+  The v3 paths send `Deprecation: Wed, 31 Mar 2027`; the v2025 ones send no deprecation header. The installers already use v2025.
+- **Catalog, access profiles and roles:** `GET /v3/requestable-objects?types=…&types=…&limit=250&offset=N`, with only the
+  configured types among `ACCESS_PROFILE`/`ROLE` (`rules.requestable_object_types` / `requestableObjectTypes`); not called
+  when none is configured (no `types` means every type). `ENTITLEMENT` is outside its `types` enum: alone → 400, next to
+  another type → silently dropped (no entitlement rows although the tenant had 10 requestable ones).
+- **Catalog, entitlements** (when `catalog.types` contains `ENTITLEMENT`): `GET /v2025/entitlements?filters=<f>&sorters=name&limit=250&offset=N`,
+  where `<f>` = `rules.entitlement_filter(cfg)` / `entitlementFilter(cfg)`:
+  `requestable eq true`, plus ` and name sw "<nameStartsWith>"` (quoted like every filter value: `"` and `\` escaped).
+  Rows have `source.name` and `description` but **no `type`**: the caller adds `type: "ENTITLEMENT"` before `catalog_options`,
+  so the item sent to the workflow stays `{id, type: "ENTITLEMENT", name}`. "Any" user level (`idn:entitlement:read`).
+- **"Already has it" (plugin review step, best effort):**
+  - access profiles and roles: `GET /v3/requestable-objects?identity-id=<id>&types=…&filters=id in (…)` → `requestStatus`
+    `ASSIGNED` / `PENDING` (unchanged);
+  - entitlements, held: `POST /v3/search?limit=250` `{indices: ["identities"], query: {query: "id:(<id> OR …)"}, queryResultFilter:
+    {includes: ["id","access.id","access.type"]}}`, 100 people per call; a chosen entitlement in `access[]` → `ASSIGNED`.
+    Identities missing from the search index (it lags, and some identities aren't indexed) get no warning;
+  - entitlements, pending: `GET /v3/access-request-status?requested-for=<id>&request-state=EXECUTING&limit=250`; a row with
+    `type: ENTITLEMENT`, a chosen `id` (the row `id` is the item's ID) and not `requestType: REVOKE_ACCESS` → `PENDING`;
+  - one entry per person and item; `ASSIGNED` wins.
+- The Launcher form's `items` SELECT keeps `maximum: catalog.maxItems` (≤ 25, under the 30-selection limit); entitlements only
+  add options, not selections.
 
 ## Test data and safety (live tests in a test or shared tenant)
 - Only touch objects named with the config's prefix. Use a harmless test access profile as the only catalog item
