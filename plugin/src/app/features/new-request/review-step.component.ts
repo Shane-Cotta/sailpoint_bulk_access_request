@@ -5,6 +5,7 @@ import { MessageModule } from 'primeng/message';
 import { ProgressSpinnerModule } from 'primeng/progressspinner';
 import { TagModule } from 'primeng/tag';
 
+import { BulkApiService } from '../../bulk/bulk-api.service';
 import { BulkConfigService } from '../../bulk/bulk-config.service';
 import { EXISTING_CHECK_MAX, partsSummary, RequestStore, type PartState } from '../../bulk/request-store';
 import { APPROVAL_NAME_PREFIX } from '../../bulk/rules';
@@ -21,16 +22,24 @@ export class ReviewStepComponent implements OnInit {
   protected readonly cfg = inject(BulkConfigService).config;
   protected readonly configError = inject(BulkConfigService).error;
   private readonly plugin = inject(SailpointPluginService);
+  private readonly api = inject(BulkApiService);
 
   /** Ask the host page to show the My bulk requests tab. */
   readonly showHistory = output<void>();
 
   protected readonly checking = signal(false);
   protected readonly isAdmin = computed(() => this.plugin.user()?.capabilities?.isOrgAdmin ?? false);
-  protected readonly canSubmit = computed(() => !this.store.problems().length && this.isAdmin() && !this.configError()
+  /** Through the Launcher anyone may try (SailPoint checks the Launcher access); the test endpoint is ORG_ADMIN only. */
+  protected readonly viaLauncher = computed(() => this.cfg().submit === 'launcher');
+  protected readonly mayStart = computed(() => this.viaLauncher() || this.isAdmin());
+  protected readonly canSubmit = computed(() => !this.store.problems().length && this.mayStart() && !this.configError()
     && (!this.store.submission() || this.store.submission()!.state === 'error'));
-  protected readonly canRetry = computed(() => this.isAdmin() && !this.configError() && this.store.startFailed().length > 0
+  protected readonly canRetry = computed(() => this.mayStart() && !this.configError() && this.store.startFailed().length > 0
     && !this.store.submission()?.parts.some((p) => p.state === 'queued' || p.state === 'starting'));
+
+  /** Chosen entitlements the "already has it" check skips (it needs admin rights for them). */
+  protected readonly entitlementsUnchecked = computed(() => !this.api.entitlementsChecked()
+    && this.store.items().some((o) => o.value.type === 'ENTITLEMENT'));
 
   /** People shown by name on the review card; the rest are counted. */
   protected readonly previewMax = 5;

@@ -3,9 +3,10 @@
 
     python plugin/status.py --config config/<tenant>.json [--executions 5] [--plugin]
 
-Prints the plugin workflow (ID, enabled flag, mode, trigger), its latest
-executions, pending "Bulk access …" approvals, and with --plugin the plugin
-instance registered under the configured alias (needs the SailPoint CLI).
+Prints how the plugin submits (`plugin.submit`): through the Launcher (its ID), or
+through the plugin workflow (ID, enabled flag, mode, trigger, latest executions);
+then pending "Bulk access …" approvals, and with --plugin the plugin instance
+registered under the configured alias (needs the SailPoint CLI).
 """
 
 from __future__ import annotations
@@ -31,7 +32,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Tenant {tenant.tenant_name} · prefix {cfg.prefix!r} · config mode {cfg.mode}")
 
     wf = lib.find_workflow(tenant, cfg.plugin_workflow_name)
-    if not wf:
+    if cfg.plugin_submits_via_launcher:
+        launcher = lib.find_launcher(tenant, cfg.launcher_name)
+        print(f"Submit: through the Launcher (plugin.submit \"launcher\"), as the signed-in user; "
+              f"needs '{cfg.launcher_access_profile_name}'")
+        print(f"Launcher: {launcher['id']}  {cfg.launcher_name}  (disabled={launcher.get('disabled')})" if launcher
+              else f"Launcher: MISSING ({cfg.launcher_name!r}); the plugin can't submit. Run launcher/install.py, "
+                   "then plugin/install.py.")
+        print(f"Workflow: {wf['id']}  {wf['name']}  (not used in launcher mode; uninstall removes it)" if wf
+              else "Workflow: none (not needed in launcher mode)")
+    elif not wf:
         print(f"Workflow: not installed ({cfg.plugin_workflow_name!r})")
     else:
         steps = (wf.get("definition") or {}).get("steps") or {}

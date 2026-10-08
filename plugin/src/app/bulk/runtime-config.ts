@@ -31,6 +31,18 @@ export interface TemporaryConfig {
   maxDays: number | null;
 }
 
+/**
+ * How the page submits a request (config.PLUGIN_SUBMIT_MODES, `plugin.submit`):
+ *  - launcher: it starts the Launcher deployment's Launcher and submits its form as the signed-in user, so anyone
+ *    holding the Launcher Access profile can submit (CONTRACTS §9);
+ *  - test-endpoint: it starts the disabled plugin workflow through the workflow test endpoint (ORG_ADMIN only).
+ */
+type SubmitMode = 'launcher' | 'test-endpoint';
+const SUBMIT_MODES: readonly SubmitMode[] = ['launcher', 'test-endpoint'];
+export const MSG_SUBMIT = 'submit must be "launcher" or "test-endpoint".';
+export const MSG_LAUNCHER_ID = 'This page doesn\'t know which Launcher to use yet (launcherId is missing): run plugin/install.py, '
+  + 'which writes it when submit is "launcher".';
+
 /** How the Approvals tab sends decisions (config.BULK_ENDPOINT_MODES). */
 export type BulkEndpointMode = 'auto' | 'always' | 'never';
 export const BULK_ENDPOINT_MODES: readonly BulkEndpointMode[] = ['auto', 'always', 'never'];
@@ -56,7 +68,13 @@ export interface RuntimeConfig {
   prefix: string;
   /** "dry-run" (approve, but request nothing) or "live". */
   mode: 'dry-run' | 'live';
-  /** The plugin workflow, found by name when workflowId is empty. */
+  /** How the page submits (see SubmitMode). A file without it comes from an older install: test-endpoint. */
+  submit: SubmitMode;
+  /** The Launcher to start in launcher mode (a non-admin can't list launchers, so install.py writes its ID). */
+  launcherId: string | null;
+  /** The access profile that lets people use the Launcher: what a user without it is told to request. */
+  launcherAccessName: string;
+  /** The plugin workflow (test-endpoint mode), found by name when workflowId is empty. */
   workflowName: string;
   workflowId: string | null;
   incPattern: string;
@@ -69,7 +87,7 @@ export interface RuntimeConfig {
   itemsMax: number;
   catalogTypes: ItemType[];
   nameStartsWith: string | null;
-  /** Shown in the banner: where people without ORG_ADMIN should go instead. */
+  /** The Launcher's name: where people without ORG_ADMIN go instead in test-endpoint mode. */
   launcherName: string;
   temporary: TemporaryConfig;
   approvals: ApprovalsConfig;
@@ -78,6 +96,9 @@ export interface RuntimeConfig {
 export const DEFAULT_CONFIG: RuntimeConfig = {
   prefix: '',
   mode: 'dry-run',
+  submit: 'test-endpoint',
+  launcherId: null,
+  launcherAccessName: 'Bulk Access Request - Launcher Access',
   workflowName: 'Bulk Access Request (Plugin)',
   workflowId: null,
   incPattern: '^INC\\d{7}$',
@@ -123,6 +144,14 @@ export function parseRuntimeConfig(raw: unknown): RuntimeConfig {
 
   cfg.prefix = str('prefix') ?? cfg.prefix;
   cfg.mode = data['mode'] === 'live' ? 'live' : 'dry-run';
+  if (data['submit'] !== undefined && data['submit'] !== null) {
+    if (!SUBMIT_MODES.includes(data['submit'] as SubmitMode)) throw new RuntimeConfigError(MSG_SUBMIT);
+    cfg.submit = data['submit'] as SubmitMode;
+  }
+  // Launcher mode without an ID (the committed neutral file) still loads, so the page can be browsed; submitting
+  // then stops with MSG_LAUNCHER_ID. plugin/install.py always writes the ID in launcher mode.
+  cfg.launcherId = str('launcherId') || null;
+  cfg.launcherAccessName = str('launcherAccessName') || cfg.launcherAccessName;
   cfg.workflowName = str('workflowName') || cfg.workflowName;
   cfg.workflowId = str('workflowId') || null;
   cfg.incPattern = str('incPattern') || cfg.incPattern;

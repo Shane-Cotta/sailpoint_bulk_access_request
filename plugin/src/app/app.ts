@@ -27,11 +27,15 @@ export class App {
   protected readonly title = computed(() => `${this.cfg().prefix} Bulk Access Request`.trim());
   protected readonly isAdmin = computed(() => this.plugin.user()?.capabilities?.isOrgAdmin ?? false);
   protected readonly approvalsOn = computed(() => this.cfg().approvals.enabled);
+  /** Submitting through the workflow test endpoint (ORG_ADMIN only); through the Launcher anyone with its access can. */
+  protected readonly adminOnly = computed(() => this.cfg().submit === 'test-endpoint');
 
   constructor() {
-    // People who can't submit (not ORG_ADMIN) mostly come here to decide approvals: open that tab first.
-    // The config and the user are known by now (app initializers resolve both before the app renders).
-    if (!this.nav.chosen && this.approvalsOn() && !this.isAdmin() && this.tab() === 'new') this.tab.set('approvals');
+    // In test-endpoint mode, people who can't submit (not ORG_ADMIN) mostly come here to decide approvals: open
+    // that tab first. The config and the user are known by now (app initializers resolve both before the app renders).
+    if (!this.nav.chosen && this.approvalsOn() && this.adminOnly() && !this.isAdmin() && this.tab() === 'new') {
+      this.tab.set('approvals');
+    }
   }
 
   protected onTab(value: string | number | undefined): void {

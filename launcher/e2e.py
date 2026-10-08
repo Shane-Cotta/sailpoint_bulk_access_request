@@ -3,7 +3,7 @@
 
     python launcher/e2e.py --config config/<tenant>.json \\
         --people <identityId>,<identityId> --approver <identityId> --scenario approve \\
-        [--access temporary --duration 1 --unit DAYS]
+        [--access temporary --duration 1 --unit DAYS] [--part 2/3]
 
 What it does, as the PAT user (who must be allowed to launch the Launcher):
   1. starts the Launcher                         (POST /v2025/launchers/{id}/launch)
@@ -13,6 +13,10 @@ What it does, as the PAT user (who must be allowed to launch the Launcher):
   4. waits for the workflow run and checks the outcome; in live mode, checks
      every person got an access request with the INC and the access label in its
      comment, and (for temporary access) a removeDate of about now + the duration.
+
+--part k/n sets the form's hidden `partLabel` field to " (k/n)", as the UI plugin does when it
+submits a big request through the Launcher in parts; the approval must then be named
+"Bulk access <INC> (k/n)". Without it the field is left out, as the Launchpad does.
 
 Scenarios: approve, deny, self (the requester names themselves as approver),
 approver-in-people (the approver is also one of the people) and bad-duration
@@ -37,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bulkaccess import config as config_mod  # noqa: E402
-from bulkaccess import definitions  # noqa: E402
+from bulkaccess import definitions, rules  # noqa: E402
 from bulkaccess.config import DURATION_UNITS  # noqa: E402
 from bulkaccess.tenant import Tenant, TenantError  # noqa: E402
 import install  # noqa: E402  (reuse its find_* helpers)
@@ -92,7 +96,12 @@ def main(argv=None) -> int:
     ap.add_argument("--access", choices=["permanent", "temporary"], default="permanent")
     ap.add_argument("--duration", default="1", help="with --access temporary: the duration (sent as the form's text)")
     ap.add_argument("--unit", choices=list(DURATION_UNITS), default="DAYS", help="with --access temporary")
+    ap.add_argument("--part", default="", help="k/n: send the hidden part label \" (k/n)\" like the plugin does")
     a = ap.parse_args(argv)
+    if a.part:
+        k, _, n = a.part.partition("/")
+        if not (k.isdigit() and n.isdigit() and 1 <= int(k) <= int(n)):
+            raise SystemExit("--part must look like 2/3")
     if a.scenario == "approver-in-people" and a.approver not in a.people.split(","):
         a.people = f"{a.people},{a.approver}"
     if a.scenario == "bad-duration":
@@ -107,9 +116,10 @@ def main(argv=None) -> int:
     me = t.me()
     people = [p.strip() for p in a.people.split(",") if p.strip()]
     inc = f"INC{random.randint(0, 9_999_999):07d}"
+    part = rules.part_label(int(a.part.split("/")[0]), int(a.part.split("/")[1])) if a.part else ""
     temporary = a.access == "temporary"
     expected_label = f"Temporary: {a.duration}{DURATION_UNITS[a.unit]}" if temporary else "Permanent"
-    print(f"Tenant {t.tenant_name} · mode {cfg.mode} · scenario {a.scenario} · {inc} · {len(people)} people · "
+    print(f"Tenant {t.tenant_name} · mode {cfg.mode} · scenario {a.scenario} · {inc}{part} · {len(people)} people · "
           f"access {expected_label}")
 
     form = install.find_form(t, cfg.form_name)
@@ -144,9 +154,13 @@ def main(argv=None) -> int:
     approver = me["id"] if a.scenario == "self" else a.approver
     form_data = {"people": people, "items": items, "approver": [approver], "inc": inc,
                  "justification": a.justification or f"E2E test {inc} ({a.scenario}) by launcher/e2e.py"}
+    if part:
+        form_data[definitions.F_PART_LABEL] = part
     if has_temporary:
         # The shapes the Launchpad sends: a TOGGLE is a boolean, a TEXT a string, and a SELECT a list
         # (the workflow engine unwraps one-item lists, so a scalar works too; verified live).
+        # (rules.launcher_form_access builds the same fields from a removeDuration; the duration is sent raw here
+        # so the bad-duration scenario can send what the form would refuse.)
         form_data.update({definitions.F_ACCESS_TYPE: temporary,
                           definitions.F_DURATION: a.duration if temporary else "",
                           definitions.F_DURATION_UNIT: [DURATION_UNITS[a.unit]] if temporary else []})
@@ -186,7 +200,7 @@ def main(argv=None) -> int:
     if a.scenario in ("self", "approver-in-people", "bad-duration"):
         def ours():
             return [r for r in t.call("GET", "/v2025/generic-approvals?limit=100") or []
-                    if (r.get("name") or [{}])[0].get("value") == f"Bulk access {inc}"]
+                    if (r.get("name") or [{}])[0].get("value", "").startswith(f"Bulk access {inc}")]
         # Stop waiting as soon as an approval appears: the run would wait for it forever.
         wait(lambda: run_done() or ours(), "the workflow run to stop", timeout=180)
         leaked = [r for r in ours() if r.get("status") == "PENDING"]
@@ -208,7 +222,7 @@ def main(argv=None) -> int:
         return 0 if ok else 1
 
     # 3. The one approval
-    name = f"Bulk access {inc}"
+    name = f"Bulk access {inc}{part}"
     def approval():
         rows = t.call("GET", "/v2025/generic-approvals?limit=100") or []
         return next((r for r in rows if (r.get("name") or [{}])[0].get("value") == name and r.get("status") == "PENDING"), None)

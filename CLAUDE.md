@@ -20,7 +20,8 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
 ## Conventions
 - **One config.** Every setting for both deployments lives in `config/<tenant>.json`, grouped by concern, not by deployment.
   `core/bulkaccess/config.py` is the only loader. Route-specific values are **derived there** (`launcher_people_cap`,
-  `plugin_people_max`, `launcher_temporary_modes`, `plugin_temporary_modes`, …); never re-implement them in an installer.
+  `plugin_people_max`, `launcher_temporary_modes`, `plugin_temporary_modes`, `plugin_submits_via_launcher`, …); never
+  re-implement them in an installer. `apply` installs the Launcher before the plugin (launcher submit mode needs its ID).
   Renamed keys stay readable and add a note to `cfg.deprecations` (e.g. `launcher.accessApproval` → `access.launcherApproval`).
 - **Generated files are never edited by hand:** `plugin/public/bulk-access.config.json`, `plugin/sp-ui-plugin.json`, and the
   workflows and form in the tenant all come from the config.
@@ -93,9 +94,25 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
 - **Launchers:**
   - Visible and launchable only for holders of the auto-created `assignedLaunchers` entitlement (on the IdentityNow source). The installer wraps it in a requestable "Launcher Access" profile.
   - Disabling the workflow disables its Launcher a moment later.
-- **Plugins:** a browser plugin can't hold a workflow's external-trigger secret, so the plugin uses the workflow **test** endpoint
-  (`POST /v2025/workflows/{id}/test`, then `GET /v2025/workflow-executions/{id}`). That requires a disabled workflow and an ORG_ADMIN user.
-  The `/v3/workflows…` and `/v3/workflow-executions…` paths answer the same but send `Deprecation: 31 Mar 2027`; v2025 sends none.
+- **Plugins:** a browser plugin can't hold a workflow's external-trigger secret. Two ways to submit (`plugin.submit`):
+  - **`launcher`** (default with the Launcher deployment; `docs/dev/CONTRACTS.md` §9): the plugin drives the Launcher **as the
+    signed-in user**, so any holder of the Launcher Access profile can submit (verified as a real non-admin):
+    `POST /v2025/launchers/{id}/launch` `{}` → `{interactiveProcessId}`; poll `GET /beta/interactive-processes/{ipid}/blocks`
+    until the `FORM` block (`config.formInstanceId`); `PATCH /v2025/form-instances/{id}` (JSON Patch: `/formData`, then
+    `/state` `SUBMITTED`; one PATCH went ASSIGNED → COMPLETED). The approval's `requester` is the signed-in user (server-derived).
+  - A non-admin **can't list** launchers (`GET /v2025/launchers` → 500 "insufficient authorization") or form instances (403),
+    but can GET one by ID; so the installer writes `launcherId` into the runtime config. The admin PAT (client credentials) gets
+    401 on `/beta/interactive-processes`: it needs a user session.
+  - Through the API the form takes what its pickers don't: 250 people, items and SELECT values outside its STATIC options, and
+    unknown formData keys. Its REGEX rules still apply. A `HIDDEN` element is accepted; the Launchpad leaves it out of formData,
+    and `StringMatches` on that missing path simply takes the default branch.
+  - The SDK only has `get`/`post`, so `SailpointPluginService.patch` calls `fetch` with the SDK's token and `tenant.apiUrl.idn`.
+  - **`test-endpoint`**: `POST /v2025/workflows/{id}/test`, then `GET /v2025/workflow-executions/{id}`. That requires a disabled
+    workflow and an ORG_ADMIN user. The `/v3/workflows…` and `/v3/workflow-executions…` paths answer the same but send
+    `Deprecation: 31 Mar 2027`; v2025 sends none.
+  - The caller's own generic approvals: the **`requesterId=<me>` query parameter** (with `sorters=-createdDate`). For a
+    non-admin `filters=requesterId eq "<me>"` (and `filters=name sw …`) returns `[]`; the parameter returns their approvals,
+    and another person's ID is 400. An admin gets exactly that requester's approvals with it. (`filters=requester.id …` is a 400.)
 - **APIs:**
   - `/v3/requestable-objects` only lists **access profiles and roles** (its `types` enum). `types=ENTITLEMENT` alone returns 400,
     and next to another type (repeated `types=`) it is silently dropped. Never call it without `types` (that means every type).
@@ -106,3 +123,25 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
     (the row `id` is the item's ID).
   - There's no v3 identities API; use `/v2025/identities`.
   - Some tenants sit behind Cloudflare, which rejects Python's default User-Agent; the client sends its own.
+- **What a non-admin's own ISC session may call** (verified 2026-10-08 with two `sp:user` test users; the plugin branches on
+  `capabilities.isOrgAdmin`):
+
+  | Call | Non-admin | The plugin |
+  |---|---|---|
+  | `GET /v3/requestable-objects?types=…` without `identity-id` (also `/v2025/…`) | **403** | always sends `identity-id=<me>` (200) |
+  | `GET /v3/requestable-objects?identity-id=<someone else>&…&filters=id in (…)` | 200, with that person's `requestStatus` (ASSIGNED seen) | "already has it" for access profiles and roles |
+  | `GET /v2025/entitlements?filters=requestable eq true` | 200 | catalog entitlements |
+  | `GET /v2025/identities` (list), `/v2025/identities/{other}`, `POST /v3/search`, `GET /v3/accounts` | **403** | admins only |
+  | `GET /v3/public-identities` (also `/v2025/…`) | 200 | people search and pasted lists for non-admins |
+  | `GET /v3/access-request-status?requested-for=<someone else>` | **400** "must be the current user" | entitlement "already has it": admins only |
+  | `GET /v2025/generic-approvals?requesterId=<me>` (query parameter) | 200, their approvals | My bulk requests, following a submission |
+  | `GET /v2025/generic-approvals?filters=requesterId eq "<me>"` | 200 but **always `[]`** | not used |
+  | `GET /v3/access-request-status?requested-by=<me>` | 200, but `[]` for bulk requests (filed by the workflow owner) | My bulk requests (best effort) |
+  | `GET /v2025/interactive-processes`, `/beta/interactive-processes` | 200, their own Launcher runs | not used yet |
+  | `POST /v2025/launchers/{id}/launch`, `GET /beta/interactive-processes/{id}/blocks`, `GET`/`PATCH /v2025/form-instances/{id}` | 200 (with Launcher Access) | submit (launcher mode) |
+
+  `/v3/public-identities` rows: `id, name, alias, email, status, identityState, manager, attributes[{key,name,value}]` (no
+  display name; `department` is in `attributes`). Filters: `id` eq/in (50 IDs fine); `alias`, `email`, `firstname`,
+  `lastname`, `displayName` eq/sw, case-insensitive, combinable with `or`/`and`; `in` only on `id`; `name`, `status` and `co`
+  → 400. `sorters=name` (`alias` → 400), `limit` ≤ 250. No `/{id}` (404). It lists only what the tenant's public identity
+  config shows: unlike the admin path there's no accounts fallback for identities not listed.

@@ -4,11 +4,12 @@ import { SailpointPluginService } from '@core';
 import { DEMO_CONFIG } from '../demo/fixtures';
 import { routedPlugin } from '../testing/plugin.testing';
 import {
-  batches, BulkApiService, escapeQuery, isTransient, pool, retry, splitPasted, Throttle, type BulkInput,
+  batches, BulkApiService, escapeQuery, isTransient, launcherStopMessage, pool, retry, splitPasted, Throttle, type BulkInput,
+  type LauncherFormData,
 } from './bulk-api.service';
 
-function setup(routes: Record<string, unknown>) {
-  const plugin = routedPlugin(routes);
+function setup(routes: Record<string, unknown>, isOrgAdmin = true) {
+  const plugin = routedPlugin(routes, { id: 'me', displayName: 'Me', isOrgAdmin });
   TestBed.configureTestingModule({ providers: [{ provide: SailpointPluginService, useValue: plugin }] });
   return { api: TestBed.inject(BulkApiService), plugin };
 }
@@ -168,7 +169,7 @@ describe('BulkApiService', () => {
     expect(options.map((o) => o.subLabel)).toEqual(['Access profile · ACME SaaS', 'Entitlement · Active Directory', 'Role']);
     expect(options[1].value).toEqual({ id: 'e', type: 'ENTITLEMENT', name: 'ACME Group' });
     const [objects, entitlements] = plugin.get.mock.calls.map((c) => decodeURIComponent(c[0] as string));
-    expect(objects).toContain('/v3/requestable-objects?types=ACCESS_PROFILE&types=ROLE&');
+    expect(objects).toContain('/v3/requestable-objects?identity-id=me&types=ACCESS_PROFILE&types=ROLE&');
     expect(objects).not.toContain('ENTITLEMENT');
     expect(objects).toContain('name sw "ACME"');
     expect(entitlements).toContain('/v2025/entitlements?filters=requestable eq true and name sw "ACME"');
@@ -221,6 +222,151 @@ describe('BulkApiService', () => {
     const search = plugin.post.mock.calls[0][1] as { indices: string[]; query: { query: string } };
     expect(search.indices).toEqual(['identities']);
     expect(search.query.query).toBe('id:(p1 OR p2 OR p3)');
+  });
+
+  describe('as a non-admin (only calls an sp:user session may make; verified live)', () => {
+    const urls = (plugin: ReturnType<typeof routedPlugin>) =>
+      [...plugin.get.mock.calls, ...plugin.post.mock.calls].map((c) => String(c[0]));
+    const publicRow = (id: string, name: string, email: string, department = 'Radiology') =>
+      ({ id, name, alias: name, email, attributes: [{ key: 'department', name: 'Department', value: department }] });
+
+    it('searches people through public identities (search and accounts are 403)', async () => {
+      const { api, plugin } = setup({ '/v3/public-identities': [publicRow('id-1', 'Mei.Lin', 'mei@example.edu')] }, false);
+      expect(await api.searchPeople('mei"')).toEqual([{ id: 'id-1', name: 'Mei.Lin', email: 'mei@example.edu', detail: 'Radiology' }]);
+      expect(urls(plugin)).toHaveLength(1);
+      const params = new URLSearchParams(urls(plugin)[0].split('?')[1]);
+      expect(params.get('filters')).toBe('displayName sw "mei\\"" or alias sw "mei\\"" or email sw "mei\\"" or firstname sw "mei\\"" '
+        + 'or lastname sw "mei\\""');
+      expect(params.get('sorters')).toBe('name');
+    });
+
+    it('resolves pasted IDs, usernames and emails through public identities, with no admin-only fallbacks', async () => {
+      const { api, plugin } = setup({
+        '/v3/public-identities': (path: string) => {
+          const f = new URLSearchParams(path.split('?')[1]).get('filters') ?? '';
+          return f.startsWith('id in') ? [publicRow(ALAN, 'Alan.Bradley', 'alan@example.edu')]
+            : [publicRow('id-mei', 'mei.lin', 'Mei.Lin@example.edu')];
+        },
+      }, false);
+      const result = await api.resolvePeople([ALAN, 'MEI.LIN@example.edu', 'nobody']);
+      expect(result.resolved.map((p) => p.id)).toEqual([ALAN, 'id-mei']);
+      expect(result.unresolved).toEqual(['nobody']);
+      expect(urls(plugin).every((u) => u.startsWith('/v3/public-identities?'))).toBe(true);
+      const filters = urls(plugin).map((u) => new URLSearchParams(u.split('?')[1]).get('filters'));
+      expect(filters).toContain(`id in ("${ALAN}")`);
+      expect(filters).toContain('alias eq "MEI.LIN@example.edu" or email eq "MEI.LIN@example.edu" or alias eq "nobody" or email eq "nobody"');
+    });
+
+    it('asks for the catalog as the signed-in user (403 without identity-id) and skips source names (search)', async () => {
+      const { api, plugin } = setup({
+        '/v3/requestable-objects': [{ id: 'ap-1', name: 'ACME Bulk Test Access', type: 'ACCESS_PROFILE' }],
+        '/v2025/entitlements': [],
+      }, false);
+      const options = await api.catalog({ ...DEMO_CONFIG, nameStartsWith: null });
+      expect(options.map((o) => o.value.id)).toEqual(['ap-1']);
+      expect(urls(plugin)[0]).toMatch(/^\/v3\/requestable-objects\?identity-id=me&types=ACCESS_PROFILE&types=ROLE&/);
+      expect(urls(plugin).some((u) => u.startsWith('/v3/search'))).toBe(false);
+    });
+
+    it('checks access profiles for other people, and leaves entitlements out', async () => {
+      const { api, plugin } = setup({ '/v3/requestable-objects?identity-id=p1': [{ id: 'ap', requestStatus: 'ASSIGNED' }] }, false);
+      const found = await api.existingAccess(['p1'], [
+        { id: 'ap', type: 'ACCESS_PROFILE', name: 'X' }, { id: 'ent', type: 'ENTITLEMENT', name: 'Group' }]);
+      expect(found).toEqual([{ personId: 'p1', itemId: 'ap', status: 'ASSIGNED' }]);
+      expect(api.entitlementsChecked()).toBe(false);
+      expect(urls(plugin).every((u) => u.startsWith('/v3/requestable-objects?identity-id=p1'))).toBe(true);
+    });
+  });
+
+  it('asks for the catalog with the signed-in admin\'s identity-id too', async () => {
+    const { api, plugin } = setup({ '/v3/requestable-objects': [], '/v2025/entitlements': [] });
+    await api.catalog({ ...DEMO_CONFIG, nameStartsWith: null });
+    expect(String(plugin.get.mock.calls[0][0])).toContain('/v3/requestable-objects?identity-id=me&');
+    expect(api.entitlementsChecked()).toBe(true);
+  });
+
+  describe('submitting through the Launcher (CONTRACTS §9)', () => {
+    const formData: LauncherFormData = {
+      people: [ALAN], items: [{ id: 'ap-1', type: 'ACCESS_PROFILE', name: 'ACME Bulk Test Access' }], approver: ['boss'],
+      inc: 'INC0012345', justification: 'why', accessType: true, duration: '720', durationUnit: ['h'], partLabel: ' (2/3)',
+    };
+
+    it('launches the Launcher with an empty body and returns the interactive process', async () => {
+      const answers = [{ interactiveProcessId: '01PROCESS' }, {}];
+      const { api, plugin } = setup({ '/v2025/launchers/ln-1/launch': () => answers.shift() });
+      await expect(api.launch('ln-1')).resolves.toBe('01PROCESS');
+      expect(plugin.post).toHaveBeenCalledWith('/v2025/launchers/ln-1/launch', {});
+      await expect(api.launch('ln-1')).rejects.toThrow('did not start');
+    });
+
+    it('polls the process blocks until its FORM block names the form instance', async () => {
+      vi.useFakeTimers();
+      let calls = 0;
+      const { api, plugin } = setup({
+        '/beta/interactive-processes/01P/blocks': () => (++calls < 3 ? { items: [] }
+          : { items: [{ type: 'FORM', config: { formInstanceId: 'fi-1' }, data: { title: 'ACME' } }] }),
+      });
+      const found = api.launcherFormInstance('01P');
+      await vi.advanceTimersByTimeAsync(5000);
+      await expect(found).resolves.toBe('fi-1');
+      expect(plugin.get).toHaveBeenCalledTimes(3);
+      vi.useRealTimers();
+    });
+
+    it('gives up with a clear message when the form never appears', async () => {
+      vi.useFakeTimers();
+      const { api } = setup({ '/beta/interactive-processes/': { items: [] } });
+      const found = api.launcherFormInstance('01P', 3000);
+      const check = expect(found).rejects.toThrow("its form didn't appear within 3 seconds");
+      await vi.advanceTimersByTimeAsync(5000);
+      await check;
+      vi.useRealTimers();
+    });
+
+    it('submits the form with one JSON Patch, repeating until it is SUBMITTED, and returns the run behind it', async () => {
+      const states = ['IN_PROGRESS', 'SUBMITTED'];
+      const { api, plugin } = setup({
+        'PATCH /v2025/form-instances/fi-1': {},
+        '/v2025/form-instances/fi-1': () => ({ state: states.shift(), formErrors: [],
+          createdBy: { type: 'WORKFLOW_EXECUTION', id: 'run-1' } }),
+      });
+      await expect(api.submitLauncherForm('fi-1', formData)).resolves.toEqual({ state: 'SUBMITTED', errors: [], executionId: 'run-1' });
+      expect(plugin.patch).toHaveBeenCalledTimes(2);
+      expect(plugin.patch).toHaveBeenCalledWith('/v2025/form-instances/fi-1', [
+        { op: 'replace', path: '/formData', value: formData },
+        { op: 'replace', path: '/state', value: 'SUBMITTED' },
+      ]);
+    });
+
+    it("stops at the form's own validation errors and returns them", async () => {
+      const { api, plugin } = setup({
+        'PATCH /v2025/form-instances/': {},
+        '/v2025/form-instances/fi-1': { state: 'IN_PROGRESS', createdBy: { type: 'WORKFLOW_EXECUTION', id: 'run-1' },
+          formErrors: [{ key: 'inc', messages: [{ text: 'Enter a ServiceNow incident number.' }] }] },
+      });
+      await expect(api.submitLauncherForm('fi-1', formData)).resolves.toEqual({
+        state: 'IN_PROGRESS', errors: [{ key: 'inc', messages: ['Enter a ServiceNow incident number.'] }], executionId: 'run-1',
+      });
+      expect(plugin.patch).toHaveBeenCalledTimes(1);
+    });
+
+    it('finds an ERROR message among the blocks (the workflow stopped before the approval)', () => {
+      expect(launcherStopMessage([{ type: 'FORM', config: { formInstanceId: 'x' } }])).toBeNull();
+      expect(launcherStopMessage([{ type: 'MESSAGE', config: { category: 'INFO' }, data: { title: 'Sent' } }])).toBeNull();
+      expect(launcherStopMessage([
+        { type: 'FORM', config: { formInstanceId: 'x' } },
+        { type: 'MESSAGE', data: { category: 'ERROR', title: 'Choose a different approver', message: '<p>Not <b>you</b>.</p>' } },
+      ])).toBe('Choose a different approver: Not you .');
+    });
+
+    it("lists the caller's own approvals with the requesterId query parameter (the filter is empty for non-admins)", async () => {
+      const { api, plugin } = setup({ '/v2025/generic-approvals?': [] });
+      await api.approvals('me-1');
+      const params = new URLSearchParams(String(plugin.get.mock.calls[0][0]).split('?')[1]);
+      expect(params.get('requesterId')).toBe('me-1');
+      expect(params.get('filters')).toBeNull();
+      expect(params.get('sorters')).toBe('-createdDate');
+    });
   });
 
   it("loads the user's own bulk approvals with approver details the list leaves out", async () => {

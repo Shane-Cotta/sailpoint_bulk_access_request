@@ -6,7 +6,7 @@
       "en": "ACME Bulk Access Request"
     },
     "description": {
-      "en": "Request access for several people at once: one approver for the whole request, and a ServiceNow INC number on every item. Requires ORG_ADMIN (it starts a workflow through the workflow test endpoint)."
+      "en": "Request access for several people at once: one approver for the whole request, and a ServiceNow INC number on every item. Submitting needs the 'ACME Bulk Access Request - Launcher Access' access (it uses the 'ACME Bulk Access Request' Launcher as you)."
     },
     "apiScopes": [
       "sp:scopes:all"

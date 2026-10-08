@@ -165,6 +165,8 @@
       <p class="muted">Checking who already has this access…</p>
     } @else if (store.people().length > existingCheckMax) {
       <p class="muted">With more than {{ existingCheckMax }} people the page doesn't check who already has this access. SailPoint skips what people already have.</p>
+    } @else if (entitlementsUnchecked()) {
+      <p class="muted">Entitlements aren't checked for who already has them (that needs admin rights); SailPoint skips what people already have.</p>
     }
     @for (w of warnings(); track w.item) {
       <p-message severity="warn" size="small">
@@ -184,7 +186,12 @@
         </ul>
       </p-message>
     }
-    @if (!isAdmin()) {
+    @if (viaLauncher()) {
+      <p class="muted">
+        Submitting fills in the <strong>{{ cfg().launcherName }}</strong> Launcher's form for you, as you
+        ({{ store.parts().length > 1 ? 'once per approval' : 'once' }}). It needs the {{ cfg().launcherAccessName }} access.
+      </p>
+    } @else if (!isAdmin()) {
       <p-message severity="warn" text="You are not an ORG_ADMIN, so SailPoint won't let this page start the workflow. Use the Launcher in the Launchpad instead." />
     }
 

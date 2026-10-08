@@ -25,7 +25,7 @@ and the [Approvals screenshots](#screenshots)).
 | | **A. Launcher** (native) | **B. UI plugin** |
 |---|---|---|
 | Where users find it | **Launchpad**, as a native SailPoint form | A page inside ISC, reachable from a nav-bar link |
-| Who can use it | **Any user** you give the *Launcher Access* profile to (they can request it in the Request Center) | **ORG_ADMIN-level users only** (see the plugin README) |
+| Who can use it | **Any user** you give the *Launcher Access* profile to (they can request it in the Request Center) | **The same users**: with A installed (the default, `plugin.submit: "launcher"`), the plugin submits through the Launcher as the signed-in user. Without A, ORG_ADMIN only (see the plugin README) |
 | People | Form picker, **up to 30** (SailPoint's form limit) | Search or paste a list, **no limit**. Above 250 people, the request is sent as several approvals with the same INC (SailPoint's workflow loop limit). Warns about access people already have. |
 | Temporary access | By **duration**: hours, days, weeks or months | By **duration** or **end date** |
 | Status tracking | Approval email, plus the requests in Request Center → *Track My Requests* | **My bulk requests** tab, grouped by INC |
@@ -42,14 +42,16 @@ python bulkaccess.py status --config config/<tenant>.json             # check
 ```
 
 **Not sure which?** Start with **A**: it works for everyone and needs nothing but this folder. Add **B** if your
-admins or service desk want the richer screen or bigger lists. Both can run side by side in one tenant.
+requesters want the richer screen or bigger lists. Both run side by side in one tenant, and by default B uses A: the plugin
+fills in and submits the Launcher's form for the signed-in user, so whoever may use the Launcher may submit from the plugin.
 
 ## What gets created in the tenant
 Everything is named with your **prefix** (for example `ACME`), so it is easy to find and to remove:
 
 - **A:** *"ACME Bulk Access Request Form"*, the *"ACME Bulk Access Request"* workflow and Launcher, and the
   *"ACME Bulk Access Request - Launcher Access"* access profile.
-- **B:** the *"ACME Bulk Access Request (Plugin)"* workflow (kept disabled, by design) and the *ACME Bulk Access Request* UI plugin.
+- **B:** the *ACME Bulk Access Request* UI plugin. Only when it submits through the workflow test endpoint
+  (`plugin.submit: "test-endpoint"`, the default without A) also the *"ACME Bulk Access Request (Plugin)"* workflow (kept disabled, by design).
 
 Temporary access and large requests need nothing extra: SailPoint removes temporary access on its own, and a large
 plugin request is simply several approvals.

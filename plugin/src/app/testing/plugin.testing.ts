@@ -29,5 +29,6 @@ export function routedPlugin(routes: Record<string, unknown>, user = { id: 'me',
     apiReady: () => true,
     get: vi.fn((path: string) => answer(path)),
     post: vi.fn((path: string, _body: unknown) => answer(path)),
+    patch: vi.fn((path: string, _body: unknown) => answer(`PATCH ${path}`)),
   };
 }

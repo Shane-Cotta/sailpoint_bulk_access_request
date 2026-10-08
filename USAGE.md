@@ -35,9 +35,14 @@ Guides for requesters, approvers and admins. Screenshots live in [docs/screensho
 4. **You get an email** when it's decided. If approved, each person's request appears in
    **Request Center → Track My Requests** with your INC in the comment. Temporary access shows its remove date there.
 
-## Requesters, with the UI plugin (admins)
+## Requesters, with the UI plugin
 Open **<prefix> Bulk Access Request** from the nav bar, or the plugin link your admin gave you, and follow the four
 steps: people → items → approver and INC → review. Details are in [plugin/README.md](plugin/README.md).
+
+**Who can submit.** Usually anyone who may use the Launcher: the plugin fills in and submits the Launcher's form for you,
+so you need the same *<prefix> Bulk Access Request - Launcher Access* profile (request it in the **Request Center**; the page
+tells you if you don't have it). The approval and the requests carry your name. If your admin set the plugin up without the
+Launcher, only ORG_ADMIN users can submit, and the page says so.
 
 ![The plugin inside SailPoint](docs/screenshots/plugin-in-isc-1-new-request.png)
 
@@ -50,7 +55,8 @@ steps: people → items → approver and INC → review. Details are in [plugin/
 - **Big lists are sent in parts.** One approval can cover at most 250 people (your admin may set fewer). Above that,
   the review step shows how the list will be split, and submitting sends one approval per part. Every part has the same
   INC, items, approver, justification and access type. The approver sees one task per part, named
-  `Bulk access INC0012345 (2/3)`.
+  `Bulk access INC0012345 (2/3)`. Submitted through the Launcher, an end date reaches the approver as a number of hours
+  (`Temporary: 720h`).
 
   ![Review with parts](docs/screenshots/plugin-8-parts-review.png)
 - **My bulk requests** shows everything you've submitted, grouped by INC.
@@ -114,8 +120,10 @@ from a bulk request may be listed under *Other* (if your admin turned that on); 
   - Check health: `python bulkaccess.py status --config …`.
   - After any config change, or when the catalog changes: `python bulkaccess.py apply --config …`.
 - **Who can use it:** whoever holds the *Launcher Access* profile. It's an ordinary access profile, so it shows up in
-  certifications too. Submitting from the plugin needs ORG_ADMIN-level users; its Approvals tab works for any item
-  approver who can see the plugin (make it public, or add them to its `restrictToUsers`).
+  certifications too. Submitting from the plugin needs the same profile when it submits through the Launcher
+  (`plugin.submit: "launcher"`, the default with both deployments), or ORG_ADMIN with `plugin.submit: "test-endpoint"`.
+  Either way, people must be able to see the plugin (make it public, or add them to its `restrictToUsers`); its Approvals
+  tab works for any item approver who can see it.
 - **Approvals tab** (`approvals` in the config): on by default. `concurrency`, `useBulkEndpoint` (`auto` = SailPoint's bulk
   endpoint for ORG_ADMIN only; it refuses everyone else), `maxRows`, `showOther` and `denyCommentRequired`.
 - **Temporary access** (`temporaryAccess` in the config): turn it on or off, choose the units, allow end dates (plugin
@@ -127,7 +135,7 @@ from a bulk request may be listed under *Other* (if your admin turned that on); 
     where `<access>` is `Permanent` or `Temporary: …`. The INC always comes first.
   - The approval decisions are in the generic approvals history. Parts share the INC, so search for it to find them all.
   - Each run is in **Admin → Workflows → "<prefix> Bulk Access Request" → Execution History** (the plugin's runs are
-    under "<prefix> Bulk Access Request (Plugin)").
+    there too when it submits through the Launcher, or under "<prefix> Bulk Access Request (Plugin)" with the test endpoint).
 - **Test safely:**
   - Keep `"mode": "dry-run"` until you've run `launcher/e2e.py` on test identities.
   - In shared or test tenants, set `notifications.overrideRecipients` so emails don't reach real people.

@@ -305,6 +305,27 @@ export function accessLabel(choice: AccessChoice): string {
   }
 }
 
+/** The Launcher form's access fields (rules.launcher_form_access, CONTRACTS §9). */
+export interface LauncherFormAccess {
+  accessType: boolean;
+  duration: string;
+  /** A one-item list of the duration suffix ("d"): the unit SELECT's option values are the suffixes. */
+  durationUnit: string[];
+}
+
+const REMOVE_DURATION = /^([1-9][0-9]*)([hdwM])$/;
+
+/**
+ * The Launcher form's access fields for a validated `removeDuration`, for submitting through the Launcher:
+ * "" → permanent; "30d" → temporary, duration "30", unit ["d"]; an end date arrives as hours ("720h").
+ */
+export function launcherFormAccess(duration: string): LauncherFormAccess {
+  if (duration === '') return { accessType: false, duration: '', durationUnit: [] };
+  const m = REMOVE_DURATION.exec(typeof duration === 'string' ? duration : '');
+  if (!m) throw new RangeError(`Not a duration: ${duration}`);
+  return { accessType: true, duration: m[1], durationUnit: [m[2]] };
+}
+
 /** The unit word for a picker ("days"). */
 export function unitWord(unit: DurationUnit, n = 2): string {
   return UNIT_WORDS[unit] + (n === 1 ? '' : 's');

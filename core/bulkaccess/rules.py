@@ -93,7 +93,7 @@ def catalog_options(cfg: Config, requestable: Iterable[dict[str, Any]]) -> list[
     to rebuild objects from bare IDs.
     """
     options = []
-    own = f"{cfg.base_name} - Launcher Access"   # the profile that grants this tool; never offer it
+    own = cfg.launcher_access_profile_name   # the profile that grants this tool; never offer it
     for obj in requestable:
         if obj.get("name") == own:
             continue
@@ -161,7 +161,7 @@ def part_label(i: int, n: int) -> str:
 
 
 # ── temporary access ──────────────────────────────────────────────────────────
-PERMANENT, DURATION, END_DATE = "permanent", "duration", "endDate"
+PERMANENT, DURATION = "permanent", "duration"
 ROUTES = ("launcher", "plugin")
 UNIT_WORDS = {"HOURS": "hour", "DAYS": "day", "WEEKS": "week", "MONTHS": "month"}
 
@@ -268,7 +268,7 @@ def _resolve_access(cfg: Config, mode: str, n: Any, unit: Any, end_date: Any, ro
         if max_days is not None and count * UNIT_MAX_DAYS[unit] > max_days:
             return None, [msg_max_days(max_days)]
         return AccessChoice(f"{count}{DURATION_UNITS[unit]}", duration_label(count, unit)), []
-    # END_DATE
+    # endDate
     d = _parse_date(end_date)
     now = _local(now or datetime.now(tz), tz)
     today = today or now.date()
@@ -300,6 +300,21 @@ def access_choice(cfg: Config, mode: str, *, n: Any = None, unit: Any = None, en
     if problems or choice is None:
         raise ValueError(problems[0] if problems else MSG_TEMPORARY_UNAVAILABLE)
     return choice
+
+
+_REMOVE_DURATION = re.compile(r"([1-9][0-9]*)([hdwM])")
+
+
+def launcher_form_access(remove_duration: str) -> dict[str, Any]:
+    """The Launcher form's access fields for a validated `removeDuration`: what the plugin sends when it
+    submits through the Launcher (CONTRACTS §9). "" -> permanent; "30d" -> temporary, duration "30", unit
+    ["d"] (the unit SELECT's option values are the duration suffixes). An end date arrives as hours ("720h")."""
+    if remove_duration == "":
+        return {"accessType": False, "duration": "", "durationUnit": []}
+    m = _REMOVE_DURATION.fullmatch(remove_duration or "")
+    if not m:
+        raise ValueError(f"Not a duration: {remove_duration!r}")
+    return {"accessType": True, "duration": m.group(1), "durationUnit": [m.group(2)]}
 
 
 # ── regexes the workflows use (they can't do arithmetic) ──────────────────────

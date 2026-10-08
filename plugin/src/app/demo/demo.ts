@@ -5,7 +5,9 @@
  *
  * Scenarios: new (empty), people (600 chosen: no limit, 3 parts), items, approver,
  * approver-error, temporary (approver step with temporary access), review,
- * parts-review (600 people, 3 parts, temporary), submitted, parts-submitted, history,
+ * parts-review (600 people, 3 parts, temporary), submitted, parts-submitted (both through the Launcher, the
+ * default), submitted-test-endpoint (the same through the workflow test endpoint), launcher-denied (a user without
+ * the Launcher Access profile submits), history,
  * approvals (a non-admin item approver: 300 + 40 approvals from two bulk requests, and 3 others),
  * approvals-partial (the same, with throttling, failures and colleagues deciding first).
  */
@@ -81,6 +83,11 @@ export class DemoPluginService {
   /** IDs whose one-off 429/503 has been served. */
   private hiccups = new Set<string>();
   faults: DemoApprovalFaults | null = null;
+  /** Launcher mode: each launch's interactive process (run k) and the form it assigns. */
+  private processes = new Map<string, { k: number; polls: number }>();
+  private forms = new Map<string, { k: number; state: string; formData?: Record<string, unknown> }>();
+  /** false: play a user without the Launcher Access profile (the launch is refused). */
+  launcherAccess = true;
 
   whenReady(): Promise<PluginContext> {
     return Promise.resolve(this._context()!);
@@ -128,17 +135,37 @@ export class DemoPluginService {
   get<T>(path: string): Promise<T> {
     const [route] = path.split('?');
     const params = new URLSearchParams(path.split('?')[1] ?? '');
+    // Verified live: identities, accounts and someone else's access requests are refused to non-admins.
+    const admin = !!this.user()?.capabilities.isOrgAdmin;
+    if (!admin && (route.startsWith('/v2025/identities') || route === '/v3/accounts')) return Promise.reject(apiError(403, 'Forbidden'));
+    if (!admin && route === '/v3/access-request-status' && params.get('requested-for')
+        && params.get('requested-for') !== DEMO_ME.id) {
+      return Promise.reject(apiError(400, '"request-by/requested-for" must be the current user.'));
+    }
     if (route === '/v3/requestable-objects') {
       // Like the real API: access profiles and roles only, never entitlements.
       const types = params.getAll('types');
       const rows = DEMO_CATALOG.filter((c) => c.row['type'] !== 'ENTITLEMENT' && (!types.length || types.includes(String(c.row['type']))));
+      // With identity-id (always sent: a non-admin gets 403 without it), every row carries that person's status;
+      // `filters=id in (…)` narrows it to the chosen items (the "already has it" check).
       const who = params.get('identity-id');
-      if (who) {
-        const held = DEMO_HELD[who] ?? {};
-        return delay(rows.filter((c) => held[String(c.row['id'])])
-          .map((c) => ({ ...c.row, requestStatus: held[String(c.row['id'])] })) as T, 400);
-      }
-      return delay(rows.map((c) => c.row) as T);
+      if (!who && !this.user()?.capabilities.isOrgAdmin) return Promise.reject(apiError(403, 'Forbidden'));
+      const held = (who && DEMO_HELD[who]) || {};
+      const wanted = (params.get('filters') ?? '').startsWith('id in') ? new Set(filterValues(path)) : null;
+      return delay(rows.filter((c) => !wanted || wanted.has(String(c.row['id']).toLowerCase()))
+        .map((c) => ({ ...c.row, requestStatus: held[String(c.row['id'])] ?? 'AVAILABLE' })) as T, who && wanted ? 400 : 120);
+    }
+    if (route === '/v3/public-identities') {
+      // Open to every user. `sw` matches the start of a name, username or email (any word); otherwise exact values.
+      const values = filterValues(path);
+      const prefix = (params.get('filters') ?? '').includes(' sw ');
+      const keys = (d: (typeof DEMO_IDENTITIES)[number]) => [d.id, d.name, d.email, d.displayName].map((v) => v.toLowerCase());
+      const hit = (d: (typeof DEMO_IDENTITIES)[number]) => (prefix
+        ? keys(d).some((k) => k.split(/[\s.@]/).some((w) => values.some((v) => w.startsWith(v))) || values.some((v) => k.startsWith(v)))
+        : keys(d).some((k) => values.includes(k)));
+      return delay([...DEMO_IDENTITIES, ...DEMO_CROWD].filter(hit).slice(0, Number(params.get('limit') ?? 250))
+        .map((d) => ({ id: d.id, name: d.displayName, alias: d.name, email: d.email, status: 'active', identityState: 'ACTIVE',
+          attributes: [{ key: 'department', name: 'Department', value: d.attributes.department }] })) as T);
     }
     if (route === '/v2025/entitlements') {
       // Entitlement rows carry their source and no `type`.
@@ -160,7 +187,23 @@ export class DemoPluginService {
           attributes: { displayName: d.displayName, department: d.attributes.department } })) as T);
     }
     if (route === '/v3/accounts') return delay([] as T);
-    if (route === '/v2025/workflows') return delay([{ id: 'demo-workflow', name: DEMO_CONFIG.workflowName }] as T);
+    const blocks = /^\/beta\/interactive-processes\/([^/]+)\/blocks$/.exec(route);
+    if (blocks) {
+      // Like the real Launcher: the form shows up a moment after the launch.
+      const process = this.processes.get(decodeURIComponent(blocks[1]));
+      if (!process) return Promise.reject(apiError(404, 'Not found'));
+      return delay({ items: process.polls++ < 1 ? [] : [{ id: `b-${process.k}`, type: 'FORM', created: new Date().toISOString(),
+        config: { formInstanceId: `f-${process.k}` }, data: { title: DEMO_CONFIG.launcherName } }] } as T);
+    }
+    if (route.startsWith('/v2025/form-instances/')) {
+      const id = decodeURIComponent(route.split('/').pop()!);
+      const form = this.forms.get(id);
+      if (!form) return Promise.reject(apiError(404, 'Not found'));
+      const errors = form.state === 'IN_PROGRESS'
+        ? [{ key: 'inc', messages: [{ text: DEMO_CONFIG.incMessage }] }] : [];
+      return delay({ id, state: form.state, formData: form.formData ?? null, formErrors: errors,
+        createdBy: { type: 'WORKFLOW_EXECUTION', id: demoExecutionId(form.k) } } as T);
+    }
     if (route.startsWith('/v2025/workflow-executions/')) return delay({ id: route.split('/').pop(), status: 'Running' } as T);
     const approvals = [...this.submitted, ...DEMO_APPROVALS];
     if (route === '/v2025/generic-approvals' && params.get('mine') === 'true') {
@@ -177,7 +220,14 @@ export class DemoPluginService {
     }
     // Like the real API, the list leaves out approvers and deciders; the detail call has them.
     if (route === '/v2025/generic-approvals') {
-      return delay(approvals.map(({ approvers: _a, approvedBy: _b, rejectedBy: _r, ...row }) => row) as T);
+      // Like the real API: the requesterId query parameter must be the caller's own unless they're an admin
+      // (verified live: 400), and it narrows the list to that requester.
+      const requester = params.get('requesterId');
+      if (requester && requester !== DEMO_ME.id && !admin) {
+        return Promise.reject(apiError(400, "requesterId must match the calling user's identity ID"));
+      }
+      return delay(approvals.filter((a) => !requester || a.requester?.identityID === requester)
+        .map(({ approvers: _a, approvedBy: _b, rejectedBy: _r, ...row }) => row) as T);
     }
     if (route.startsWith('/v2025/generic-approvals/')) {
       const hit = [...this.pending, ...approvals].find((a) => a.id === route.split('/').pop());
@@ -198,6 +248,7 @@ export class DemoPluginService {
 
   post<T>(path: string, data: unknown): Promise<T> {
     const body = data as Record<string, unknown>;
+    if (path.startsWith('/v3/search') && !this.user()?.capabilities.isOrgAdmin) return Promise.reject(apiError(403, 'Forbidden'));
     if (path.startsWith('/v3/search')) {
       const indices = (body['indices'] as string[]) ?? [];
       const q = String((body['query'] as { query: string }).query);
@@ -230,6 +281,15 @@ export class DemoPluginService {
       }
       return delay({} as T, 300);
     }
+    if (/^\/v2025\/launchers\/[^/]+\/launch$/.test(path)) {
+      // A user without the Launcher Access profile can't start it.
+      if (!this.launcherAccess) return Promise.reject(apiError(403, 'Forbidden'));
+      const k = this.runs++;
+      const processId = `01DEMOPROCESS${String(k).padStart(13, '0')}`;
+      this.processes.set(processId, { k, polls: 0 });
+      this.forms.set(`f-${k}`, { k, state: 'ASSIGNED' });
+      return delay({ interactiveProcessId: processId } as T, 400);
+    }
     if (/^\/v2025\/workflows\/[^/]+\/test$/.test(path)) {
       const input = body['input'] as { inc: string; approverId: string; partLabel?: string; accessLabel?: string };
       const approver = DEMO_IDENTITIES.find((d) => d.id === input.approverId)?.displayName ?? 'the approver';
@@ -238,6 +298,31 @@ export class DemoPluginService {
       return delay({ workflowExecutionId: demoExecutionId(k) } as T, 600);
     }
     return Promise.reject(new Error(`demo: no fixture for POST ${path}`));
+  }
+
+  /** PATCH /v2025/form-instances/{id}: the Launcher form, submitted (the INC must pass the form's REGEX). */
+  patch<T>(path: string, ops: unknown): Promise<T> {
+    const m = /^\/v2025\/form-instances\/([^/]+)$/.exec(path);
+    const form = m && this.forms.get(decodeURIComponent(m[1]));
+    if (!form) return Promise.reject(new Error(`demo: no fixture for PATCH ${path}`));
+    for (const op of (ops as { path: string; value: unknown }[]) ?? []) {
+      if (op.path === '/formData') form.formData = op.value as Record<string, unknown>;
+    }
+    const data = form.formData ?? {};
+    if (!new RegExp(DEMO_CONFIG.incPattern).test(String(data['inc'] ?? ''))) {
+      form.state = 'IN_PROGRESS';
+      return delay({} as T);
+    }
+    if (form.state !== 'COMPLETED') {
+      form.state = 'COMPLETED';   // verified live: one PATCH can go ASSIGNED -> COMPLETED (the workflow took it)
+      const approverId = (data['approver'] as string[] | undefined)?.[0];
+      const approver = DEMO_IDENTITIES.find((d) => d.id === approverId)?.displayName ?? 'the approver';
+      // The Launcher workflow's own access label: "Temporary: " + duration + unit suffix.
+      const label = data['accessType'] ? `Temporary: ${data['duration']}${(data['durationUnit'] as string[])[0]}` : 'Permanent';
+      setTimeout(() => this.submitted.unshift(
+        demoNewApproval(String(data['inc']), approver, form.k, String(data['partLabel'] ?? ''), label)), 1500);
+    }
+    return delay({} as T);
   }
 
   setRoute(): Promise<void> {
@@ -258,7 +343,12 @@ export class DemoConfigService extends BulkConfigService {
  * scenarios also need the demo plugin service (to play a non-admin) and the approvals store.
  */
 export function applyScenario(scenario: DemoScenario, store: RequestStore, nav: NavService,
-                              more: { plugin?: unknown; approvals?: ApprovalsStore } = {}): void {
+                              more: { plugin?: unknown; approvals?: ApprovalsStore; config?: BulkConfigService } = {}): void {
+  if (scenario === 'submitted-test-endpoint') more.config?.config.update((c) => ({ ...c, submit: 'test-endpoint' }));
+  if (scenario === 'launcher-denied' && more.plugin instanceof DemoPluginService) {
+    more.plugin.setOrgAdmin(false);
+    more.plugin.launcherAccess = false;
+  }
   if (scenario === 'history') {
     nav.tab.set('mine');
     nav.chosen = true;
@@ -312,7 +402,7 @@ export function applyScenario(scenario: DemoScenario, store: RequestStore, nav: 
     return;
   }
   store.step.set(4);
-  if (scenario === 'submitted' || scenario === 'parts-submitted') void store.submit();
+  if (['submitted', 'parts-submitted', 'submitted-test-endpoint', 'launcher-denied'].includes(scenario)) void store.submit();
 }
 
 export function demoProviders(scenario: DemoScenario): (Provider | EnvironmentProviders)[] {
@@ -322,7 +412,7 @@ export function demoProviders(scenario: DemoScenario): (Provider | EnvironmentPr
     provideAppInitializer(() => {
       // inject() only works before the first await.
       const [config, store, nav] = [inject(BulkConfigService), inject(RequestStore), inject(NavService)];
-      const more = { plugin: inject(SailpointPluginService), approvals: inject(ApprovalsStore) };
+      const more = { plugin: inject(SailpointPluginService), approvals: inject(ApprovalsStore), config };
       return config.load().then(() => applyScenario(scenario, store, nav, more));
     }),
   ];
