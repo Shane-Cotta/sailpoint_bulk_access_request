@@ -41,6 +41,17 @@ export function outcomeCounts(items: Pick<RunItem, 'outcome'>[]): OutcomeCounts 
   return counts;
 }
 
+/**
+ * The heading word for a finished run: "Approved" / "Denied" only when you decided every approval;
+ * "Decided" when the rest were decided by someone else (not an error); "Partly done" when some failed
+ * or are still pending; "Not done" when none went through.
+ */
+export function runHeading(action: DecideAction, counts: OutcomeCounts): string {
+  const open = counts.failed + counts.pending;
+  if (!open) return counts.elsewhere ? 'Decided' : action === 'approve' ? 'Approved' : 'Denied';
+  return counts.confirmed ? 'Partly done' : 'Not done';
+}
+
 /** Re-read the decided approvals after these waits (ms), then call what's still PENDING "still pending". */
 export const CONFIRM_SCHEDULE_MS = [1000, 2000, 4000, 8000];
 
@@ -132,7 +143,6 @@ export class ApprovalsStore implements OnDestroy {
     this.comment.set('');
   }
 
-  /** Leave one approval out of (or put it back into) the open group's action. */
   /** Include exactly these rows of the open group (the table's selection). */
   setIncluded(ids: Iterable<string>): void {
     const keep = new Set(ids);

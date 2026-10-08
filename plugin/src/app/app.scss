@@ -11,16 +11,20 @@
 
 .page__header {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem 1.5rem;
   padding-bottom: 1rem;
   border-bottom: 1px solid var(--spds-content-border-color);
 }
+.page__heading { flex: 1 1 auto; min-width: 0; }
 .page__title { margin: 0; }
 .page__subtitle { margin: 0.35rem 0 0; color: var(--spds-text-muted-color); }
-.page__meta { display: flex; align-items: center; gap: 0.5rem; white-space: nowrap; }
+.page__meta { flex: none; display: flex; align-items: center; gap: 0.5rem; padding-top: 0.4rem; white-space: nowrap; }
+/* Narrow screens: the tenant and user go under the title. */
+@media (max-width: 40rem) {
+  .page__header { flex-wrap: wrap; }
+}
 .page__user { color: var(--spds-text-muted-color); }
 
 .banner { display: block; margin: 0.25rem 0 1rem; }

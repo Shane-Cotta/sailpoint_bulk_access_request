@@ -5,7 +5,7 @@ import { DemoPluginService, PARTIAL_FAULTS } from '../demo/demo';
 import { DEMO_PENDING, DEMO_PENDING_INCS } from '../demo/fixtures';
 import { providePluginTesting } from '../testing/plugin.testing';
 import { OTHER_KEY } from './approvals';
-import { ApprovalsStore, outcomeCounts } from './approvals-store';
+import { ApprovalsStore, outcomeCounts, runHeading } from './approvals-store';
 import { BulkApiService } from './bulk-api.service';
 import { BulkConfigService } from './bulk-config.service';
 
@@ -198,6 +198,16 @@ describe('ApprovalsStore', () => {
     expect(outcomeCounts([{ outcome: 'failed' }, { outcome: 'failed' }, { outcome: 'confirmed' }])).toMatchObject({
       failed: 2, confirmed: 1, pending: 0,
     });
+  });
+
+  it('heads a finished run with what actually happened', () => {
+    const counts = (o: Partial<ReturnType<typeof outcomeCounts>>) => ({ ...outcomeCounts([]), ...o });
+    expect(runHeading('approve', counts({ confirmed: 300 }))).toBe('Approved');
+    expect(runHeading('reject', counts({ confirmed: 3 }))).toBe('Denied');
+    expect(runHeading('approve', counts({ confirmed: 290, elsewhere: 10 }))).toBe('Decided');
+    expect(runHeading('approve', counts({ confirmed: 280, elsewhere: 10, failed: 6, pending: 4 }))).toBe('Partly done');
+    expect(runHeading('approve', counts({ pending: 2 }))).toBe('Not done');
+    expect(runHeading('reject', counts({ failed: 5, elsewhere: 1 }))).toBe('Not done');
   });
 
   it('reports a load failure in approvals wording', async () => {
