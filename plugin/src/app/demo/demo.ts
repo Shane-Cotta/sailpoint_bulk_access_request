@@ -22,11 +22,10 @@ import {
   crowdPeople, DEMO_APPROVALS, DEMO_CATALOG, DEMO_COLLEAGUE, DEMO_CONFIG, DEMO_CROWD, DEMO_HELD, DEMO_IDENTITIES, DEMO_ME,
   DEMO_PENDING, DEMO_PENDING_INCS, DEMO_REQUESTS, demoExecutionId, demoItem, demoNewApproval, demoPerson,
 } from './fixtures';
+import type { DemoScenario } from './scenario';
 
-export const DEMO_SCENARIOS = [
-  'new', 'people', 'items', 'approver', 'approver-error', 'temporary', 'review', 'parts-review', 'submitted',
-  'parts-submitted', 'history', 'approvals', 'approvals-partial',
-] as const;
+// The URL check lives in scenario.ts so main.ts can load this file (and the fixtures) only in demo mode.
+export { DEMO_SCENARIOS, demoScenario, type DemoScenario } from './scenario';
 
 /**
  * Trouble the demo's approvals API makes, by an approval's position in DEMO_PENDING (1-based):
@@ -45,16 +44,6 @@ export const PARTIAL_FAULTS: DemoApprovalFaults = { throttle: 25, flaky: 70, fai
 
 const apiError = (status: number, text: string) =>
   Object.assign(new Error(text), { status, statusText: text, body: { messages: [{ text }] } });
-export type DemoScenario = (typeof DEMO_SCENARIOS)[number];
-
-/** The scenario named in the URL, or null. Never inside an iframe (that is ISC). */
-export function demoScenario(loc: Pick<Location, 'search' | 'hash'>, top = window.top === window.self): DemoScenario | null {
-  if (!top) return null;
-  const params = new URLSearchParams(loc.search || loc.hash.split('?')[1] || '');
-  const value = params.get('demo');
-  if (value === null) return null;
-  return (DEMO_SCENARIOS as readonly string[]).includes(value) ? (value as DemoScenario) : 'new';
-}
 
 const delay = <T>(value: T, ms = 120) => new Promise<T>((resolve) => setTimeout(() => resolve(structuredClone(value)), ms));
 

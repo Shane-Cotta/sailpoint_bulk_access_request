@@ -46,17 +46,24 @@
             <strong>{{ cfg().launcherName }}</strong> Launcher. It does the same thing for any user.
           </div>
         </p-message>
-        <app-new-request (showHistory)="tab.set('mine')" />
+        <!-- Each tab's code is a lazy chunk (next to main-*.js), so the first paint only waits for the shell. -->
+        @defer (on immediate) {
+          <app-new-request (showHistory)="tab.set('mine')" />
+        }
       </p-tabpanel>
       <p-tabpanel value="mine">
         @if (tab() === 'mine') {
-          <app-my-requests />
+          @defer (on immediate) {
+            <app-my-requests />
+          }
         }
       </p-tabpanel>
       @if (approvalsOn()) {
         <p-tabpanel value="approvals">
           @if (tab() === 'approvals') {
-            <app-approvals />
+            @defer (on immediate) {
+              <app-approvals />
+            }
           }
         </p-tabpanel>
       }
