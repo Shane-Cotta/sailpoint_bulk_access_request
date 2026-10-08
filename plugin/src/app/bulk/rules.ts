@@ -131,6 +131,44 @@ export function extractInc(cfg: Pick<RuntimeConfig, 'incPattern'>, text: string 
 /** The generic approval name the workflow gives each bulk request (definitions.py: "Bulk access {inc}"). */
 export const APPROVAL_NAME_PREFIX = 'Bulk access ';
 
+// ── The item comment (rules.parse_bulk_comment, CONTRACTS §4) ─────────────────
+/**
+ * Every access request the workflow submits carries one comment (definitions.py):
+ * "<INC> | Bulk access request by <requester> | Approved by <approver> | <access label> | <justification>".
+ */
+export const COMMENT_SEPARATOR = ' | ';
+
+/** A bulk request's item comment, read back. */
+export interface BulkComment {
+  inc: string;
+  requester: string;
+  approver: string;
+  accessLabel: string;
+  justification: string;
+}
+
+// Four fields without "|", then the justification (everything after the 4th separator, "|" allowed).
+// The same patterns as rules.py.
+const BULK_COMMENT = /^\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([\s\S]*?)\s*$/;
+const REQUESTER = /^Bulk\s+access\s+request\s+by\s+(\S[\s\S]*)$/;
+const APPROVER = /^Approved\s+by\s+(\S[\s\S]*)$/;
+
+/**
+ * The parts of a bulk request's item comment, or null for any other comment. The INC must
+ * match the configured pattern; requester, approver and access label must not be empty; the
+ * justification may be empty and may itself contain " | ". Extra whitespace is tolerated.
+ */
+export function parseBulkComment(cfg: Pick<RuntimeConfig, 'incPattern'>, text: unknown): BulkComment | null {
+  if (typeof text !== 'string') return null;
+  const m = BULK_COMMENT.exec(text);
+  if (!m) return null;
+  const [, inc, by, approved, label, justification] = m;
+  const requester = REQUESTER.exec(by);
+  const approver = APPROVER.exec(approved);
+  if (!incIsValid(cfg, inc) || !requester || !approver || !label) return null;
+  return { inc, requester: requester[1], approver: approver[1], accessLabel: label, justification };
+}
+
 // ── Parts (rules.split_into_parts / rules.part_label) ─────────────────────────
 /**
  * The de-duplicated list, in order, cut into chunks of `partSize`. Each chunk is one

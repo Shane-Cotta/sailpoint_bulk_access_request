@@ -56,6 +56,15 @@ def runtime_config(cfg: Config, workflow_id: str | None = None) -> dict[str, Any
             "units": list(cfg.temporary_units),
             "maxDays": cfg.temporary_max_days,
         },
+        # The Approvals tab (item approvers decide one INC's approvals at once).
+        "approvals": {
+            "enabled": cfg.plugin_approvals_enabled,
+            "concurrency": cfg.approvals_concurrency,
+            "useBulkEndpoint": cfg.approvals_use_bulk_endpoint,
+            "maxRows": cfg.approvals_max_rows,
+            "showOther": cfg.approvals_show_other,
+            "denyCommentRequired": cfg.approvals_deny_comment_required,
+        },
     }
 
 

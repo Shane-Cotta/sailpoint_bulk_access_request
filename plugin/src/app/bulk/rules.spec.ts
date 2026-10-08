@@ -2,8 +2,8 @@
 // plugin and the Python core refuse exactly the same requests.
 import { DEFAULT_CONFIG, parseRuntimeConfig, RuntimeConfigError, type DurationUnit, type RuntimeConfig } from './runtime-config';
 import {
-  accessLabel, catalogOptions, clip, endDateHours, extractInc, incIsValid, justificationMax, partLabel, partOf, removeDuration,
-  splitIntoParts, temporaryModes, validateAccess, validateRequest, type AccessChoice,
+  accessLabel, catalogOptions, clip, COMMENT_SEPARATOR, endDateHours, extractInc, incIsValid, justificationMax, parseBulkComment,
+  partLabel, partOf, removeDuration, splitIntoParts, temporaryModes, validateAccess, validateRequest, type AccessChoice,
 } from './rules';
 
 /**
@@ -26,6 +26,7 @@ const committed = {
   nameStartsWith: null,
   launcherName: 'ACME Bulk Access Request',
   temporary: { enabled: true, allow: ['duration', 'endDate'], units: ['HOURS', 'DAYS', 'WEEKS', 'MONTHS'], maxDays: null },
+  approvals: { enabled: true, concurrency: 4, useBulkEndpoint: 'auto', maxRows: 5000, showOther: false, denyCommentRequired: true },
 };
 
 const EXAMPLE: RuntimeConfig = parseRuntimeConfig(committed);
@@ -42,6 +43,7 @@ describe('runtime config', () => {
     expect(EXAMPLE.peopleMax).toBeNull();                 // no people limit
     expect(EXAMPLE.partSize).toBe(250);
     expect(EXAMPLE.temporary).toEqual(committed.temporary);
+    expect(EXAMPLE.approvals).toEqual(committed.approvals);
     expect(EXAMPLE.catalogTypes).toEqual(['ACCESS_PROFILE', 'ROLE', 'ENTITLEMENT']);
     expect(EXAMPLE.workflowName).toMatch(/Bulk Access Request \(Plugin\)$/);
   });
@@ -174,6 +176,70 @@ describe('rules (core/bulkaccess/rules.py)', () => {
     expect(extractInc(EXAMPLE, 'Bulk access INC0099999')).toBe('INC0099999');
     expect(extractInc(EXAMPLE, 'no ticket here INC12')).toBeNull();
     expect(extractInc(EXAMPLE, null)).toBeNull();
+  });
+});
+
+describe('the bulk item comment (rules.parse_bulk_comment)', () => {
+  const BULK = 'INC0012345 | Bulk access request by Ada Lovelace | Approved by Grace Hopper | Temporary: 30 days | Quarterly audit';
+  const PARSED = {
+    inc: 'INC0012345', requester: 'Ada Lovelace', approver: 'Grace Hopper',
+    accessLabel: 'Temporary: 30 days', justification: 'Quarterly audit',
+  };
+  const bulk = (justification: string, label = 'Permanent') =>
+    ({ inc: 'INC0012345', requester: 'Ada', approver: 'Grace', accessLabel: label, justification });
+
+  it('uses the separator definitions.py writes', () => {
+    expect(COMMENT_SEPARATOR).toBe(' | ');
+  });
+
+  it.each([
+    [BULK, PARSED],
+    // the justification is everything after the 4th separator, " | " included
+    ['INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent | move | to | finance', bulk('move | to | finance')],
+    // extra whitespace around the separators and inside the labels
+    ['  INC0012345   |  Bulk  access request   by  Ada Lovelace |Approved   by Grace Hopper|  Temporary: 30 days  |'
+      + '  Quarterly audit  ', PARSED],
+    // an empty justification (a trailing separator, with or without its space)
+    ['INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent | ', bulk('')],
+    ['INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent |', bulk('')],
+    // a multi-line justification is kept as written
+    ['INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent | line one\nline two', bulk('line one\nline two')],
+  ])('reads the bulk item comment (%j)', (text, expected) => {
+    expect(parseBulkComment(EXAMPLE, text)).toEqual(expected);
+  });
+
+  it.each([
+    null, undefined, '', 42, 'INC0012345', 'INC0012345: Quarterly audit',          // plain comments, the INC alone
+    'Please approve, thanks',
+    'INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent',          // only 4 fields
+    'INC12345 | Bulk access request by Ada | Approved by Grace | Permanent | why',       // INC fails the pattern
+    'CHG0012345 | Bulk access request by Ada | Approved by Grace | Permanent | why',
+    'INC0012345 | Access request by Ada | Approved by Grace | Permanent | why',          // wrong labels
+    'INC0012345 | Bulk access request by Ada | Rejected by Grace | Permanent | why',
+    'INC0012345 | Approved by Grace | Bulk access request by Ada | Permanent | why',     // wrong order
+    'INC0012345 | Bulk access request by | Approved by Grace | Permanent | why',          // empty names or label
+    'INC0012345 | Bulk access request by Ada | Approved by  | Permanent | why',
+    'INC0012345 | Bulk access request by Ada | Approved by Grace |  | why',
+    'INC0012345 | Bulk access request byAda | Approved by Grace | Permanent | why',
+  ])('ignores everything else (%j)', (text) => {
+    expect(parseBulkComment(EXAMPLE, text)).toBeNull();
+  });
+
+  it('uses the configured INC pattern', () => {
+    const custom = cfgWith({ incPattern: '^(INC|RITM)\\d{7}$', incExample: 'RITM0000001' });
+    const text = BULK.replace('INC0012345', 'RITM0000001');
+    expect(parseBulkComment(custom, text)?.inc).toBe('RITM0000001');
+    expect(parseBulkComment(EXAMPLE, text)).toBeNull();
+  });
+
+  it('reads back what the workflow writes (definitions.py loop comment, rendered)', () => {
+    const parts = {
+      inc: 'INC0012345', requester: 'Ada Lovelace', approver: 'Grace Hopper',
+      accessLabel: 'Temporary: until 2026-11-07', justification: 'Audit | see INC0099999: finance | Q4',
+    };
+    const rendered = [parts.inc, `Bulk access request by ${parts.requester}`, `Approved by ${parts.approver}`,
+      parts.accessLabel, parts.justification].join(COMMENT_SEPARATOR);
+    expect(parseBulkComment(EXAMPLE, rendered)).toEqual(parts);
   });
 });
 

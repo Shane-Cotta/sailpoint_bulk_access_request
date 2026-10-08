@@ -127,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     me = tenant.me()
     owner_id = cfg.owner_id or me["id"]
     print(f"Tenant {tenant.tenant_name} · prefix {cfg.prefix!r} · mode {cfg.mode} · owner {me.get('name')}")
+    if not cfg.owner_id:
+        print(f"note: {config_mod.OWNER_NOTE}")
     units = definitions.launcher_duration_units(cfg)
     print("Temporary access on the Launcher: "
           + (f"durations in {', '.join(u.lower() for u in units)}"

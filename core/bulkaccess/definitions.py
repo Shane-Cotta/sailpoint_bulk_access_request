@@ -26,8 +26,8 @@ import json
 from typing import Any
 
 from .config import DURATION_UNITS, Config
-from .rules import (APPROVAL_COMMENT_MAX, APPROVAL_DESCRIPTION_MAX, MSG_APPROVER_IN_PEOPLE, MSG_DURATION_NUMBER, MSG_DURATION_UNIT,
-                    duration_regex, msg_max_days, unit_max_count)
+from .rules import (APPROVAL_COMMENT_MAX, APPROVAL_DESCRIPTION_MAX, APPROVER_LABEL, COMMENT_SEPARATOR, MSG_APPROVER_IN_PEOPLE,
+                    MSG_DURATION_NUMBER, MSG_DURATION_UNIT, REQUESTER_LABEL, duration_regex, msg_max_days, unit_max_count)
 
 VARIANTS = ("launcher", "plugin")
 
@@ -189,6 +189,20 @@ def _choice(display: str, comparator: str, a: str, b: Any, yes: str, no: str, *,
             "defaultStep": no}
 
 
+def item_approvals_note(cfg: Config) -> str:
+    """
+    The "Email Approved" sentence (live mode) saying that each item's own approval scheme still applies to the
+    requests the workflow files, and where those approvers can decide them at once. (Not in the bulk approval's
+    description: with the requester's name and the access label templated in, it could pass 150 characters.)
+    """
+    note = ("Approved here means approved by the bulk approver. Items with their own approval (for example by the "
+            "item owner or the person's manager) still need that approval in SailPoint for each person.")
+    if cfg.plugin_approvals_enabled:
+        note += (f" Those approvers can decide the whole request at once on the Approvals tab of "
+                 f"'{cfg.plugin_display_name}'.")
+    return note
+
+
 def plugin_duration_regex(cfg: Config) -> str:
     """What the plugin may send as `removeDuration`: "" (permanent), a duration in the configured
     units, or hours (an end date is sent as hours), all within maxDays."""
@@ -336,10 +350,14 @@ def bulk_workflow(cfg: Config, *, variant: str, owner_id: str, owner_name: str |
         # the loop context and the items / comment parts are read from $.loop.context.
         def in_loop(path: str) -> str:
             return "$.loop.context" + path[1:]
-        loop_comment = (f"{_t(in_loop(p['inc']))} | Bulk access request by "
-                        f"{_t(in_loop('$.getRequester.attributes.displayName'))} | Approved by "
-                        f"{_t(in_loop('$.getApprover.attributes.displayName'))} | {_t(in_loop(p['accessLabel']))} | "
-                        f"{_t(in_loop(p['justification']))}")
+        # The plugin's Approvals tab reads this back with rules.parse_bulk_comment; keep them in step.
+        loop_comment = COMMENT_SEPARATOR.join([
+            _t(in_loop(p["inc"])),
+            f"{REQUESTER_LABEL} {_t(in_loop('$.getRequester.attributes.displayName'))}",
+            f"{APPROVER_LABEL} {_t(in_loop('$.getApprover.attributes.displayName'))}",
+            _t(in_loop(p["accessLabel"])),
+            _t(in_loop(p["justification"])),
+        ])
         steps["Request Access"] = {
             "actionId": "sp:loop:iterator", "type": "action", "versionNumber": 1, "displayName": "Request access per person",
             "attributes": {"input.$": p["people"], "context.$": "$", "start": "Manage Access",
@@ -358,6 +376,7 @@ def bulk_workflow(cfg: Config, *, variant: str, owner_id: str, owner_name: str |
         **_email(cfg, f"Approved: bulk access {inc}{part}{mode_note}",
                  f"<p>Your bulk access request <b>{inc}</b>{part} was approved by {appr}.</p>"
                  f"<p>{'Access was requested for every person and item on the request.' if live else 'DRY RUN: this installation is in dry-run mode, so nothing was requested.'}</p>"
+                 + (f"<p>{item_approvals_note(cfg)}</p>" if live else "") +
                  f"<p>Access: {label}</p>"
                  f"<p>Justification: {_t(p['justification'])}</p>", cc_approver=True),
         "displayName": "Email: approved", "nextStep": "End Step - Success"}

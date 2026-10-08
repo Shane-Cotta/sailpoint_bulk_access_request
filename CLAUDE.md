@@ -7,14 +7,14 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
 ## Layout
 | Path | What |
 |---|---|
-| `bulkaccess.py` | The one CLI: `show-config`, `apply [--dry-run] [--only launcher\|plugin] [--deploy] [--grant me\|<ids>]`, `status`, `uninstall [--yes]`. It calls each enabled deployment's `main(argv)`, loaded by file path (both folders have an `install.py`). |
-| `core/bulkaccess/` | Shared Python (standard library only): `config.py` (the only config loader, plus derived per-route values), `tenant.py` (PAT client), `rules.py` (validation, parts, temporary access), `definitions.py` (pure JSON builders for the form, workflows and launcher) |
+| `bulkaccess.py` | The one CLI: `show-config`, `apply [--dry-run] [--only launcher\|plugin] [--deploy] [--grant me\|<ids>]`, `status`, `uninstall [--yes]`, `export [--offline] [--out]`; `apply --workdir` points `--deploy` at another Angular project. It calls each enabled deployment's `main(argv)`, loaded by file path (both folders have an `install.py`). |
+| `core/bulkaccess/` | Shared Python (standard library only): `config.py` (the only config loader, plus derived per-route values), `tenant.py` (PAT client), `rules.py` (validation, parts, temporary access, reading the bulk item comment), `definitions.py` (pure JSON builders for the form, workflows and launcher) |
 | `launcher/` | Deployment A: `install.py`, `status.py`, `uninstall.py`, `e2e.py` (still runnable on their own) |
 | `plugin/` | Deployment B: Angular + PrimeNG UI plugin, plus `install.py` / `status.py` / `uninstall.py` / `pluginlib.py` |
 | `config/` | `bulk-access.example.json` (committed; the schema). Per-tenant `config/<tenant>.json` files are **gitignored**. |
 | `docs/dev/CONTRACTS.md` | The shared spec for parts, temporary access and the central config: workflow input/output, exact rule messages, live-verified facts |
 | `docs/screenshots/` | Images used by the docs |
-| `.claude/agents/` | `bulk-access-builder.md`: the agent definition for parallel workstreams (one worktree and branch each) |
+| `.claude/agents/` | `bulk-access-builder.md`: the agent definition for parallel workstreams (one worktree and branch each); `dead-code-reviewer.md`: a read-only dead-code review, run before a merge |
 
 ## Conventions
 - **One config.** Every setting for both deployments lives in `config/<tenant>.json`, grouped by concern, not by deployment.
@@ -50,10 +50,28 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
   - `approvalType SINGLE`, `singleApproverCategory IDENTITY`, `singleApproverIdentityId.$`. Branch on `$.<step>.status` (`APPROVED`).
   - A self-approval is silently reassigned to some admin, so it's blocked up front.
   - An ORG_ADMIN can approve or reject on someone's behalf (`/v2025/generic-approvals/{id}/approve|reject`). That's recorded as a manual reassignment: the original approver is the first `reassignmentHistory[].reassignedFrom`.
+  - `/v2025/generic-approvals` also returns access-request approvals, as `type: ACCESS_REQUEST_APPROVAL` (with `requestee`,
+    `requestedTarget`, `assignedTo`, `approvalConfig.serialChain`, `referenceData`). Their `comments[]` (where our INC is) only
+    come back with `include-comments=true`, and `assignedTo` is then left out. Comment text can't be searched or filtered, so group by INC in the page.
+  - `mine=true` returns only the caller's approvals. For a non-admin the plain list is already theirs, and `approverId=<someone else>` returns 400.
+  - `generic-approvals/bulk-approve` and `bulk-reject` take at most 50 IDs and return `202 {}` even for unknown IDs, so re-read
+    to confirm. **A non-admin gets 403**, even for their own approvals.
+  - **Deciding as a non-admin:**
+    - Single `/{id}/approve|reject` works on the caller's own approvals and is recorded as theirs (`approvedBy`/`rejectedBy`,
+      with `actionedAs`, e.g. `ACCESS_PROFILE_OWNER`).
+    - On someone else's approval it returns 403.
+    - Reject returns 200 with the approval (the spec says 204).
+  - The list leaves `approvedBy`/`rejectedBy` empty; only the single GET has them.
+  - Item approval schemes still apply to requests a workflow submits. The requester is the workflow owner, and if that identity
+    is also the approver, ISC escalates the approval to an admin.
 - **Requesting access from a workflow:**
   - `sp:create-approval-request` breaks on one-item lists (the engine unwraps single-element arrays); use `sp:access:manage`.
   - A request takes at most 10 recipients, and nested loops are rejected, so the workflow loops over people and each request carries all the items.
   - Steps inside a loop only see `$.loop.*`, so the loop gets `context.$: "$"` and reads `$.loop.context.…`.
+  - **Item approval schemes still apply** to the requests the workflow submits: an access profile with an OWNER scheme gets
+    one approval per person for its owner, after the bulk approval. (The plugin's Approvals tab exists for those approvers.)
+  - The **requester** of those requests is always the **workflow owner** (the PAT user), not whoever filled in the form. If the
+    workflow owner is also an item's approver, ISC escalates that approval to an admin ("…because the Identity X is the Requester").
   - **Is X in a list?** `StringContains` doesn't search a list. Use a JSONPath filter, `$.list[?(@ == $.getApprover.id)]`, with
     `StringEquals` against the same value. Compare with a plain string: the Launcher form's one-item approver list never matches.
   - **Loop (`sp:loop:iterator`) has a hard 250-item limit:** above it the step fails ("Input has N iterations which exceed 250

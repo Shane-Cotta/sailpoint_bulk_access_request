@@ -12,7 +12,9 @@ This is a page inside SailPoint Identity Security Cloud (ISC) for requesting acc
 
 The approver decides the request. When they approve, SailPoint files one access request per person, each
 with all the chosen items, and puts the INC number in every item's comment. A second tab, **My bulk requests**,
-lists your bulk requests grouped by INC.
+lists your bulk requests grouped by INC. A third tab, **Approvals**, is for the *item* approvers (owners, managers)
+those requests then reach: it groups their pending approvals by INC and decides a whole bulk request at once
+(see [Approvals tab](#approvals-tab-item-approvers)).
 
 ## Limits: no people limit, parts of 250
 
@@ -44,6 +46,41 @@ is granted, so if the approver takes longer, an end date moves later by the same
 (`rules.ts` mirrors `rules.py`). My bulk requests shows **Temporary until …** on every access request that has an end date.
 The Launcher offers durations only (a workflow can't turn a form date into a duration).
 
+## Approvals tab (item approvers)
+
+Approving a bulk request doesn't end the approvals. Each access request the workflow files still goes through the item's
+own approval scheme (owner, manager, source owner, governance group), so 300 people × 1 owner-approved item means 300
+approvals for that owner. SailPoint's own Approvals page shows them one card at a time. The **Approvals** tab lists the
+signed-in user's pending access-request approvals **grouped by the INC** in their comment, and decides them together:
+
+- **Group cards** show the INC, the number of approvals, people and items, the access (`Permanent` or `Temporary: …`), who
+  asked, who approved the bulk request, the oldest created date and the earliest due date.
+- **Open a card** to see every approval (person, item, temporary end date, created, due) and the scheme you approve as.
+  Untick any you don't want to decide; they stay pending.
+- **Approve N / Deny N** with one comment (required to deny unless `approvals.denyCommentRequired` is false). A confirm
+  dialog repeats the INC and the counts. An action never spans INCs.
+- **Progress and results.** Decisions go out about 8 a second (SailPoint allows 100 per 10 s), `approvals.concurrency` at a
+  time; throttled (429) and failed (5xx) calls are retried. Then the page re-reads every approval and reports each one as
+  **approved/denied by you**, **decided by someone else** (a governance-group colleague or an admin got there first: not an
+  error), **still pending** or **failed** (with the reason). **Retry** sends the failed and still-pending ones again.
+- **Your own decision.** Each approval is decided through `POST /v2025/generic-approvals/{id}/approve|reject` as the signed-in
+  user, so SailPoint records them as the approver (`approvedBy`, and *reviewed by* on the access request), exactly as if they
+  had used the Approvals page. SailPoint refuses (403) a non-admin's decision on someone else's approval.
+- **The bulk endpoint** (`generic-approvals/bulk-approve|bulk-reject`, 50 per call) refuses non-admins with 403, even for their
+  own approvals (verified live). `approvals.useBulkEndpoint`: `auto` (default) uses it for ORG_ADMIN only, `always` tries it
+  for everyone, `never` turns it off. A 403 switches back to one call per approval. A `202` proves nothing, so these are
+  re-read too.
+- **Only your own.** The list asks for `mine=true`, so an ORG_ADMIN also sees only approvals assigned to them.
+- **Other approvals** (not from a bulk request) are listed in an *Other* group when `approvals.showOther` is true. They are
+  view-only here; decide them one by one in SailPoint.
+- **Large lists.** Up to `approvals.maxRows` (default 5,000) are loaded, oldest first; the page says when there are more.
+- Approving a step of a multi-step scheme may create the next step's approval. If it's yours, it appears after **Refresh**.
+
+**Who sees it.** The tab appears when `approvals.enabled` is true (the default) and the runtime config comes from an install
+that knows about it. People without ORG_ADMIN open on this tab, and the ORG_ADMIN banner only shows on *New request*. But an
+approver can only open the plugin if they can see it: make it public (`plugin.public: true`), or keep it private and add the
+approvers to the plugin's `restrictToUsers`. `show-config` warns when the tab is on and the plugin is private.
+
 The same code installs into any tenant. Everything tenant-specific (names, INC rule, limits, catalog filter) comes
 from a config file, and nothing is hard-coded.
 
@@ -55,9 +92,10 @@ from a config file, and nothing is hard-coded.
 | ![Review](../docs/screenshots/plugin-4-review.png) | ![Waiting for the approver](../docs/screenshots/plugin-5-submitted-waiting.png) |
 | ![My bulk requests: parts and temporary access](../docs/screenshots/plugin-6-my-bulk-requests.png) | *(Screenshots use made-up demo data.)* |
 
-## Who can use it: ORG_ADMIN only
+## Who can use it: ORG_ADMIN to submit, any approver for the Approvals tab
 
-**Only users who can test workflows (in practice, ORG_ADMIN) can submit from this page.** The reason is how the page
+**Only users who can test workflows (in practice, ORG_ADMIN) can submit from this page.** (The Approvals tab works for any
+user who can see the plugin; see above.) The reason is how the page
 starts the workflow:
 
 - A browser plugin can't safely hold the OAuth client secret that a workflow's external trigger needs.
@@ -66,7 +104,7 @@ starts the workflow:
 - The test endpoint only runs **disabled** workflows. The installer creates the plugin's workflow disabled, so leave it
   that way.
 
-The page shows a banner that explains this. For people who aren't ORG_ADMIN, it also says so and turns the Submit button off.
+The *New request* tab shows a banner that explains this. For people who aren't ORG_ADMIN, it also says so and turns the Submit button off.
 
 **Everyone else uses the Launcher.** The Launcher deployment (`../launcher/`) does the same job for any user,
 from the Launchpad, with SailPoint's own form.
@@ -116,6 +154,7 @@ In `dry-run` mode everything runs, including the approval and the emails, except
    | `people.max`, `people.partSize` | People per request (`null` = no limit) and people per approval (1 to 250, default 250). See *Limits*. |
    | `temporaryAccess.*` | `enabled`, `allow` (`duration`, `endDate`), `units`, `maxDays`. See *Temporary access*. |
    | `approval.*` | Timeout days, what happens at timeout, priority. |
+   | `approvals.*` | The Approvals tab: `enabled` (default true), `concurrency` (1 to 8, default 4), `useBulkEndpoint` (`auto`, `always`, `never`), `maxRows` (250 to 20,000, default 5,000), `showOther` (default false), `denyCommentRequired` (default true). |
    | `notifications.overrideRecipients` | For test tenants: send every email here instead of to real people. |
    | `plugin.alias`, `plugin.displayName`, `plugin.public` | The plugin's alias (lowercase, digits, dashes), the name shown in ISC, and whether everyone can see it (default false: only you). |
 
@@ -123,6 +162,7 @@ In `dry-run` mode everything runs, including the approval and the emails, except
    - `public/bulk-access.config.json`: the runtime config (workflow name and ID, INC rule, `peopleMax`, `partSize`, `itemsMax`,
      catalog filter, `temporary`). The committed copy holds neutral defaults. A runtime config without a `temporary` block
      (from an older install) turns temporary access off, because an older workflow would grant the access permanently.
+     One without an `approvals` block hides the Approvals tab.
    - `sp-ui-plugin.json`: the plugin manifest (alias, name, `apiScopes: ["sp:scopes:all"]`, slot `full-page`).
 
 ## Install
@@ -185,6 +225,7 @@ When dry-run behaves, set `"mode": "live"` in the config and run `install.py` ag
   requested, and access requests you filed whose comment carries an INC number. Requests made through the Launcher show up here too.
 
 The approver decides in ISC as usual (**Home → Approvals**), or an admin can decide for them through `POST /v2025/generic-approvals/{id}/approve` or `/reject`.
+- **Approvals.** Item owners and managers decide the per-person approvals a bulk request created, one INC at a time (see *Approvals tab*).
 
 ## Uninstall
 
@@ -206,7 +247,9 @@ cd .. && python -m pytest plugin/tests -q    # installer tests (dry-run payloads
 ```
 
 **Demo mode.** `?demo=<scenario>` runs the page on its own with made-up data. The scenarios are `new`, `people` (600 people:
-3 parts), `items`, `approver`, `approver-error`, `temporary`, `review`, `parts-review`, `submitted`, `parts-submitted` and `history`. Demo mode is ignored inside ISC, where the page always runs in an iframe. The screenshots above
+3 parts), `items`, `approver`, `approver-error`, `temporary`, `review`, `parts-review`, `submitted`, `parts-submitted`, `history`,
+`approvals` (a non-admin item approver with 300 + 40 approvals from two bulk requests, and 3 others) and `approvals-partial`
+(the same, but some calls are throttled or fail, a colleague decides some first, and a few stay pending). Demo mode is ignored inside ISC, where the page always runs in an iframe. The screenshots above
 come from it.
 
 **The rules match the core.** `src/app/bulk/rules.ts` is a port of `core/bulkaccess/rules.py` (request validation, INC check, approver ≠ requester,
@@ -223,6 +266,10 @@ catalog filter, `splitIntoParts` / `partLabel`, temporary-access checks and the 
 | The workflow run **Failed** and no approval appeared | The workflow's own checks stopped it: the INC was invalid or the approver was the requester. The requester gets an email. |
 | `sail` prints "Secrets storage is not currently functional" | This is harmless. The scripts pass the PAT through environment variables. |
 | "Part 2 didn't start" after submitting a big request | That part's test-endpoint call failed (the message says why). The other parts are unaffected; press **Retry part 2**. |
+| An approver can't open the plugin | It's private. Make it public (`plugin.public`) or add them to the plugin's `restrictToUsers`. |
+| No Approvals tab | `approvals.enabled` is false, or the runtime config predates the tab: re-run `install.py`. |
+| Approvals tab: "decided by someone else" | A colleague in the same governance group, or an admin, decided first. Nothing to do. |
+| Approvals tab: "still pending" after approving | SailPoint accepted the call but hadn't updated the approval when the page checked. **Refresh** later, or **Retry**. |
 | Temporary access isn't offered | `temporaryAccess.enabled` is false, or the runtime config predates temporary access: re-run `install.py`. |
 
 ## Files
@@ -232,7 +279,7 @@ catalog filter, `splitIntoParts` / `partLabel`, temporary-access checks and the 
 | `install.py`, `status.py`, `uninstall.py`, `pluginlib.py` | The installer scripts. They use the shared core in `../core/bulkaccess/`. |
 | `tests/` | pytest tests for the installer. |
 | `sp-ui-plugin.json`, `public/bulk-access.config.json` | The manifest and runtime config, both generated by `install.py`. |
-| `src/app/bulk/` | Rules port, runtime config, API calls, request state, the grouping logic for My bulk requests. |
-| `src/app/features/` | The two tabs: `new-request/` (four steps) and `my-requests/`. |
+| `src/app/bulk/` | Rules port, runtime config, API calls, request state, the grouping logic for My bulk requests, and the Approvals tab's grouping (`approvals.ts`) and state (`approvals-store.ts`). |
+| `src/app/features/` | The three tabs: `new-request/` (four steps), `my-requests/` and `approvals/`. |
 | `src/app/core/` | SailPoint plugin SDK wrapper, from the official Angular starter. |
 | `src/app/demo/` | Demo mode and its made-up fixtures, also used by the unit tests. |

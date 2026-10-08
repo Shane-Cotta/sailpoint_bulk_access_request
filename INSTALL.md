@@ -66,7 +66,7 @@ deployment, so the Launcher and the plugin behave the same way. Where SailPoint 
 | `approval.priority` | `MEDIUM` | The approval task's priority: `LOW`, `MEDIUM` or `HIGH`. | both |
 | `notifications.overrideRecipients` | `[]` | Send **all** emails to these addresses instead of to the real people. Use this in test tenants. | both |
 | `notifications.ccApprover` | `true` | Copy the approver on the outcome email. | both |
-| `owner` | `null` | Owner identity ID for the objects created. `null` = the PAT user. | both |
+| `owner` | `null` | Owner identity ID for the objects created. `null` = the PAT user. **Recommended: a dedicated service identity.** The workflow owner is the *requester* of every access request the workflows file, and ISC escalates to an admin any item approval that would go to the requester (e.g. when the owner also owns or manages an item). With `null`, `show-config` and the installers print a note saying so (not an error). | both |
 | `access.launcherApproval` | `MANAGER` | Who approves requests for the *Launcher Access* profile: `MANAGER` (the requester's manager) or `NONE` (auto-approved). The old key `launcher.accessApproval` still works; `show-config` reminds you to rename it. | A |
 | `plugin.alias` | `<prefix in lowercase>-bulk-access` | The plugin's alias: lowercase letters, digits and dashes. | B |
 | `plugin.displayName` | `<prefix> Bulk Access Request` | The plugin's name in ISC. | B |

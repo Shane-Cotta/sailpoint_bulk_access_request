@@ -1,0 +1,229 @@
+<div class="approvals">
+  <p class="intro">
+    Approvals waiting for <strong>you</strong> that bulk requests created, one per person and item, grouped by INC.
+    Open a request to check it, leave out any you don't want to decide, then approve or deny the rest at once.
+    Each one is recorded as your own decision, exactly as if you had used SailPoint's Approvals page.
+  </p>
+
+  <div class="bar">
+    <div class="stats">
+      <span class="stat"><strong>{{ totals().requests }}</strong> bulk {{ totals().requests === 1 ? 'request' : 'requests' }}</span>
+      <span class="stat stat--warn"><strong>{{ totals().approvals.toLocaleString() }}</strong> waiting for you</span>
+    </div>
+    <div class="bar__tools">
+      <input pInputText type="search" aria-label="Filter by INC, person or item" placeholder="Filter by INC, person or item"
+             class="bar__filter" [ngModel]="store.filter()" (ngModelChange)="store.filter.set($event)" />
+      <p-button label="Refresh" size="small" [outlined]="true" [loading]="store.loading()" [disabled]="store.running()"
+                (onClick)="store.load()" />
+    </div>
+  </div>
+
+  @if (store.error()) {
+    <p-message severity="error" [text]="'Could not load your approvals. ' + store.error()" />
+  }
+  @if (store.truncated()) {
+    <p-message severity="warn" size="small"
+               [text]="'Showing your oldest ' + store.settings().maxRows.toLocaleString() + ' pending approvals; there are more. Decide these, then refresh.'" />
+  }
+
+  @if (store.run(); as run) {
+    <section class="run" [class.run--done]="run.phase === 'done'" aria-live="polite">
+      <div class="run__head">
+        <h3 class="run__title">
+          @switch (run.phase) {
+            @case ('sending') { {{ run.action === 'approve' ? 'Approving' : 'Denying' }} {{ plural(run.items.length, 'approval') }} for <span class="mono">{{ run.inc }}</span>… }
+            @case ('confirming') { Checking with SailPoint… }
+            @default { {{ run.action === 'approve' ? 'Approved' : 'Denied' }}: <span class="mono">{{ run.inc }}</span> }
+          }
+        </h3>
+        @if (run.phase === 'done') {
+          <div class="run__actions">
+            @if (store.retryable().length) {
+              <p-button [label]="'Retry ' + store.retryable().length" size="small" (onClick)="store.retry()" />
+            }
+            <p-button label="Close" size="small" severity="secondary" [text]="true" (onClick)="store.dismiss()" />
+          </div>
+        }
+      </div>
+      @if (run.phase !== 'done') {
+        <p-progressbar [value]="run.phase === 'sending' ? percent() : 100" [showValue]="false" styleClass="run__bar" />
+        <small class="muted">
+          {{ run.done.toLocaleString() }} of {{ run.items.length.toLocaleString() }} sent
+          @if (run.phase === 'sending') { · about 8 a second, to stay under SailPoint's rate limit }
+        </small>
+      }
+      <div class="outcomes">
+        <span class="stat stat--ok"><strong>{{ store.counts().confirmed.toLocaleString() }}</strong> {{ run.action === 'approve' ? 'approved' : 'denied' }} by you</span>
+        @if (store.counts().elsewhere) {
+          <span class="stat"><strong>{{ store.counts().elsewhere }}</strong> decided by someone else</span>
+        }
+        @if (store.counts().pending) {
+          <span class="stat stat--warn"><strong>{{ store.counts().pending }}</strong> still pending</span>
+        }
+        @if (store.counts().failed) {
+          <span class="stat stat--bad"><strong>{{ store.counts().failed }}</strong> failed</span>
+        }
+      </div>
+      @if (run.phase === 'done' && issues().length) {
+        <table class="mini">
+          <thead><tr><th>Person</th><th>Item</th><th>Result</th><th>Details</th></tr></thead>
+          <tbody>
+            @for (i of shownIssues(); track i.id) {
+              <tr>
+                <td>{{ i.person }}</td>
+                <td>{{ i.item }}</td>
+                <td><p-tag [severity]="i.outcome === 'failed' ? 'danger' : i.outcome === 'pending' ? 'warn' : 'secondary'" [value]="outcomeLabel(i)" /></td>
+                <td class="muted">{{ i.message }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+        @if (issues().length > shownIssues().length) {
+          <p-button [label]="'Show all ' + issues().length" size="small" [text]="true" (onClick)="showAllIssues.set(true)" />
+        }
+        <small class="muted">"Decided by someone else" is not an error: a colleague in the same approval group, or an admin, decided it first.</small>
+      }
+    </section>
+  }
+
+  @if (store.approvals() === null) {
+    <p-skeleton height="5rem" />
+    <p-skeleton height="5rem" />
+  } @else {
+    @for (g of store.shown(); track g.key) {
+      <article class="group" [class.group--open]="store.openKey() === g.key" [class.group--other]="g.key === OTHER">
+        <button type="button" class="group__head" (click)="store.toggleGroup(g.key)" [disabled]="store.running()"
+                [attr.aria-expanded]="store.openKey() === g.key">
+          <span class="group__inc" [class.mono]="g.key !== OTHER">{{ groupTitle(g) }}</span>
+          <span class="pill">{{ plural(g.approvals, 'approval') }}</span>
+          @if (g.accessLabel) {
+            <p-tag [severity]="g.accessLabel === 'Permanent' ? 'secondary' : 'info'" [value]="g.accessLabel" />
+          }
+          <span class="group__meta">
+            {{ plural(g.people, 'person', 'people') }} × {{ plural(g.items, 'item') }}
+            @if (g.requester) { · requested by {{ g.requester }} }
+            @if (g.bulkApprover) { · approved by {{ g.bulkApprover }} }
+            · since {{ day(g.oldest) }}
+            @if (g.earliestDue) { · due {{ day(g.earliestDue) }} }
+          </span>
+          <span class="group__chevron" aria-hidden="true">{{ store.openKey() === g.key ? '▾' : '▸' }}</span>
+        </button>
+
+        @if (store.openKey() === g.key) {
+          <div class="group__body">
+            <dl class="facts">
+              <div><dt>Items</dt><dd>{{ g.itemNames.join(', ') }}</dd></div>
+              @if (g.schemes.length) {
+                <div><dt>You approve as</dt><dd>{{ g.schemes.map(schemeLabel).join(', ') }}</dd></div>
+              }
+              @if (g.justification) {
+                <div><dt>Justification</dt><dd>{{ g.justification }}</dd></div>
+              }
+            </dl>
+
+            <p-table [value]="g.rows" [selection]="store.included()" (selectionChange)="onSelection($event)" dataKey="id"
+                     [paginator]="g.rows.length > 25" [rows]="25" [rowsPerPageOptions]="[25, 50, 100]"
+                     styleClass="p-datatable-sm" [tableStyle]="{ 'min-width': '40rem' }">
+              <ng-template #header>
+                <tr>
+                  <th class="col-check">
+                    @if (g.key !== OTHER) { <p-tableHeaderCheckbox ariaLabel="Include all" /> }
+                  </th>
+                  <th>Person</th>
+                  <th>Item</th>
+                  <th>Access</th>
+                  <th>Created</th>
+                  <th>Due</th>
+                </tr>
+              </ng-template>
+              <ng-template #body let-row>
+                <tr [class.row--out]="!isIncluded(row)">
+                  <td class="col-check">
+                    @if (g.key !== OTHER) { <p-tableCheckbox [value]="row" [ariaLabel]="'Include ' + row.person + ', ' + row.item" /> }
+                  </td>
+                  <td>{{ row.person }}</td>
+                  <td>
+                    <div>{{ row.item }}</div>
+                    <small class="muted">{{ typeLabel(row.itemType) }}@if (row.requestType === 'REVOKE_ACCESS') { · <strong>remove</strong> }</small>
+                  </td>
+                  <td>
+                    @if (row.removalDate) { <span class="temp">Until {{ day(row.removalDate) }}</span> }
+                    @else { <span class="muted">Permanent</span> }
+                  </td>
+                  <td>{{ date(row.created) }}</td>
+                  <td>{{ day(row.due) }}</td>
+                </tr>
+              </ng-template>
+            </p-table>
+
+            @if (g.key === OTHER) {
+              <p-message severity="info" size="small"
+                         text="These approvals did not come from a bulk request, so they can't be decided together here. Decide them one by one in SailPoint (Home → Approvals)." />
+            } @else {
+              <div class="decide">
+                <label class="decide__label" for="approvals-comment">
+                  Comment for all {{ plural(store.included().length, 'approval') }}
+                  <span class="muted">{{ store.settings().denyCommentRequired ? '(required to deny)' : '(optional)' }}</span>
+                </label>
+                <textarea id="approvals-comment" pTextarea rows="2" class="decide__input"
+                          placeholder="Shown on every approval, e.g. Checked against INC and the staff list."
+                          [ngModel]="store.comment()" (ngModelChange)="store.comment.set($event)" [disabled]="store.running()"></textarea>
+                <div class="decide__actions">
+                  <p-button [label]="'Approve ' + store.included().length.toLocaleString()" severity="success"
+                            [disabled]="store.problems('approve').length > 0" (onClick)="ask('approve')" />
+                  <p-button [label]="'Deny ' + store.included().length.toLocaleString()" severity="danger" [outlined]="true"
+                            [disabled]="store.problems('reject').length > 0" (onClick)="ask('reject')" />
+                  @if (excludedCount() > 0) {
+                    <small class="muted">{{ excludedCount() }} left out</small>
+                  }
+                  @if (!store.running() && store.problems('reject')[0]; as p) {
+                    <small class="muted">{{ p }}</small>
+                  }
+                </div>
+              </div>
+            }
+          </div>
+        }
+      </article>
+    } @empty {
+      <p class="empty">
+        @if (store.filter()) { No bulk request matches "{{ store.filter() }}". }
+        @else { Nothing is waiting for you. When a bulk request needs your approval for an item you own or manage, it shows up here. }
+      </p>
+    }
+    @if (store.loadedAt(); as t) {
+      <p class="muted foot">
+        Updated {{ t.toLocaleTimeString() }}. Shows access-request approvals assigned to you, grouped by the INC in their comment.
+        @if (store.useBulk()) { Decisions go through SailPoint's bulk endpoint (50 at a time), then are checked one by one. }
+      </p>
+    }
+  }
+</div>
+
+<p-dialog [visible]="confirming() !== null" (visibleChange)="!$event && confirming.set(null)" [modal]="true" [closable]="true"
+          [draggable]="false" [header]="(confirming() === 'reject' ? 'Deny ' : 'Approve ') + plural(store.included().length, 'approval') + '?'"
+          [style]="{ width: '32rem', 'max-width': '95vw' }">
+  @if (store.openGroup(); as g) {
+    <div class="confirm">
+      <p class="confirm__inc mono">{{ g.key }}</p>
+      <dl class="facts">
+        <div><dt>Approvals</dt><dd><strong>{{ store.includedCounts().approvals.toLocaleString() }}</strong>
+          @if (excludedCount() > 0) { <span class="muted">({{ excludedCount() }} left out)</span> }</dd></div>
+        <div><dt>People</dt><dd>{{ store.includedCounts().people.toLocaleString() }}</dd></div>
+        <div><dt>Items</dt><dd>{{ store.includedCounts().items }}: {{ g.itemNames.join(', ') }}</dd></div>
+        @if (g.accessLabel) { <div><dt>Access</dt><dd>{{ g.accessLabel }}</dd></div> }
+        <div><dt>Comment</dt><dd>{{ store.comment().trim() || '(none)' }}</dd></div>
+      </dl>
+      <p class="muted">
+        This is recorded as your own decision on each approval and can't be undone.
+        @if (confirming() === 'approve') { The access is then granted (or goes to the next approver, if the item has more than one step). }
+        @else { Nothing is granted for these people. }
+      </p>
+    </div>
+  }
+  <ng-template #footer>
+    <p-button label="Cancel" severity="secondary" [text]="true" (onClick)="confirming.set(null)" />
+    <p-button [label]="(confirming() === 'reject' ? 'Deny ' : 'Approve ') + store.included().length.toLocaleString()"
+              [severity]="confirming() === 'reject' ? 'danger' : 'success'" (onClick)="confirm()" />
+  </ng-template>
+</p-dialog>

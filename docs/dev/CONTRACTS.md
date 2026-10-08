@@ -32,6 +32,24 @@ it to the orchestrator instead of changing it alone.
 | `deploy_launcher`, `deploy_plugin`, `deployments` | `deployments.*` | at least one must be true |
 | `plugin_public` | `plugin.public` | default false; the installer pushes `--private` unless this or `--public` is set |
 | `launcher_access_approval` | `access.launcherApproval` | the old `launcher.accessApproval` still works (it adds a note to `cfg.deprecations`) |
+| `approvals_enabled` | `approvals.enabled` | bool, default true: the plugin's Approvals tab (see `docs/dev/BULK_APPROVALS_DESIGN.md`) |
+| `approvals_concurrency` | `approvals.concurrency` | 1..8, default 4: decisions sent at a time |
+| `approvals_use_bulk_endpoint` | `approvals.useBulkEndpoint` | `"auto"` (default), `"always"` or `"never"` (`config.BULK_ENDPOINT_MODES`): SailPoint's generic bulk-approve/reject |
+| `approvals_max_rows` | `approvals.maxRows` | 250..20000, default 5000: the most pending approvals the tab loads |
+| `approvals_show_other` | `approvals.showOther` | bool, default false: also list approvals that aren't from a bulk request |
+| `approvals_deny_comment_required` | `approvals.denyCommentRequired` | bool, default true |
+| `plugin_approvals_enabled` | derived | `deploy_plugin and approvals_enabled` (the tab lives in the plugin) |
+
+The `approvals` block may be missing (older configs): every key takes its default. Problems (exact text, mirrored in
+`runtime-config.ts`):
+- not an object: `` `approvals` must be an object. ``
+- a flag that isn't a boolean: `` `approvals.{enabled|showOther|denyCommentRequired}` must be true or false. ``
+- `` `approvals.concurrency` must be a whole number between 1 and 8. ``
+- `` `approvals.useBulkEndpoint` must be "auto", "always" or "never". ``
+- `` `approvals.maxRows` must be a whole number between 250 and 20000. ``
+
+`show-config` prints one `Approvals:` line and, when `plugin_approvals_enabled` and the plugin is private, the warning
+`non-admin approvers can't open a private plugin unless they are listed in the plugin's restrictToUsers`.
 
 Constants in `config.py`: `FORM_SELECT_MAX = 30`, `LOOP_MAX = 250`, `DURATION_UNITS = {"HOURS":"h","DAYS":"d","WEEKS":"w","MONTHS":"M"}`,
 `UNIT_MAX_DAYS = {"HOURS":1/24,"DAYS":1,"WEEKS":7,"MONTHS":31}`.
@@ -53,6 +71,15 @@ Messages must match **exactly** in both languages.
   - Unit not in `temporary_units`: `Choose a unit for the duration.`
   - End date not after today: `Choose an end date after today.`
   - Over the cap (n × UNIT_MAX_DAYS[unit], or hours / 24, greater than maxDays): `Temporary access can last at most {maxDays} days.`
+- **Bulk item comment:** `COMMENT_SEPARATOR = " | "`. `parse_bulk_comment(cfg, text)` / `parseBulkComment(cfg, text)` reads back
+  the item comment of §4 and returns `{inc, requester, approver, accessLabel, justification}`, or `None` / `null` for anything else:
+  - exactly the shape `<INC> | Bulk access request by <requester> | Approved by <approver> | <access label> | <justification>`;
+  - the INC must match the configured INC pattern (`inc_is_valid` / `incIsValid`);
+  - requester, approver and access label must not be empty; the justification may be empty;
+  - the justification is everything after the 4th separator, so it may itself contain ` | ` (and newlines);
+  - extra whitespace around the separators, between the label words and at both ends is tolerated (fields are trimmed);
+  - not a string, plain comments, the INC alone, 4 fields, wrong or reordered labels → `None` / `null`.
+  `definitions.py` builds the comment from `COMMENT_SEPARATOR`, and a test checks that the rendered comment parses back to its inputs.
 
 ## 3. Plugin workflow input (one workflow-test run **per part**)
 Every field is **always** present (no missing paths in templates):
@@ -73,7 +100,9 @@ All parts of one submission share the same INC, approver, items, justification a
   `removeDuration.$: "$.loop.context.trigger.removeDuration"`; the Launcher builds it from its form fields).
 - **Item comment:** `{inc} | Bulk access request by {requester} | Approved by {approver} | {accessLabel} | {justification}`. The
   INC stays first, because the plugin's My bulk requests reads it from there.
-- **Emails** (approved and denied) say which part (when parts > 1) and the access label.
+- **Emails** (approved and denied) say which part (when parts > 1) and the access label. In live mode, "Email Approved"
+  also says that items with their own approval still need it for each person (`definitions.item_approvals_note`), and,
+  when `plugin_approvals_enabled`, that those approvers can use the Approvals tab of `plugin.displayName`.
 - **Launcher form, new fields** (keys): `accessType` (Permanent or Temporary, default Permanent), `duration` (a whole number, only used
   when Temporary), `durationUnit` (from `temporary_units`). Only offered when `launcher_temporary_modes` contains `duration`. The
   Launcher's access label can be `Temporary: {n}{suffix}` (e.g. `Temporary: 30d`) if the unit word can't be templated.
@@ -83,6 +112,12 @@ All parts of one submission share the same INC, approver, items, justification a
 New fields (the rest are unchanged): `"peopleMax": null | number`, `"partSize": number`,
 `"temporary": {"enabled": bool, "allow": ["duration","endDate"], "units": ["HOURS",...], "maxDays": null | number}`.
 `runtime-config.ts` validates: peopleMax null or ≥ 1; partSize 1..250; allow/units from the fixed lists.
+
+`"approvals": {"enabled": bool, "concurrency": 1..8, "useBulkEndpoint": "auto"|"always"|"never", "maxRows": 250..20000,
+"showOther": bool, "denyCommentRequired": bool}`. `enabled` carries the derived `plugin_approvals_enabled`. `runtime-config.ts`
+(`ApprovalsConfig`) applies the same ranges with the same messages as §1. A file **without** the block comes from an older
+install, so the tab is off (`enabled: false`, other keys at their defaults); a block with missing keys gets the Python defaults
+(`enabled: true`).
 
 ## 6. One CLI (`bulkaccess.py` at the repo root)
 ```
@@ -94,6 +129,37 @@ python bulkaccess.py uninstall   --config … [--only …] [--yes]
 It runs each enabled deployment by calling the existing `launcher/*.py` and `plugin/*.py` `main(argv)` functions. They're loaded
 by file path, because both folders have an `install.py`. Those scripts keep working on their own. `plugin/install.py` keeps its flags
 and takes its `--public` default from `cfg.plugin_public`.
+
+## 7. The plugin's Approvals tab: list, decide, confirm
+Item approvers decide the per-person approvals a bulk request created, one INC at a time. Built in `bulk-api.service.ts`
+(`pendingAccessApprovals`, `decideApprovals`, `approvalStatuses`), `approvals.ts` and `approvals-store.ts`; settings from §5
+`approvals`. Facts verified live as a non-admin (2026-10-08) are marked ✔.
+- **List:** `GET /v2025/generic-approvals?mine=true&include-comments=true&limit=250&offset=N&sorters=createdDate`
+  `&filters=status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"` (URL-encoded), paged up to `maxRows`; "more" is shown
+  when the cap is hit. `mine=true` keeps admins to their own (a non-admin only ever gets their own ✔).
+- **Quirk ✔:** with `include-comments=true` rows carry `comments[]` but **no `assignedTo`**. Never rely on `assignedTo`.
+- **Grouping:** by `parse_bulk_comment` / `parseBulkComment` (§2) over each row's `comments[]`; rows without a bulk comment
+  form one *Other* group, shown only with `showOther`, and **view-only**. An action never spans INCs.
+- **Default path (everyone):** `POST /v2025/generic-approvals/{id}/approve|reject`, body `{comment}` (or `{}` with no comment).
+  Approve ✔ and reject ✔ both answer 200 with the approval (the spec says 204 for reject; accept either). `concurrency`
+  (1..8) calls in flight, all generic-approvals calls of the tab spaced to **≤ 8 per second** (limit: 100 per 10 s per
+  client and API version). 429 and 5xx are retried (4 attempts, growing back-off; the plugin SDK hides `Retry-After`).
+  A non-admin deciding someone else's approval gets 403 ✔.
+- **Bulk path:** `POST /v2025/generic-approvals/bulk-approve|bulk-reject` `{approvalIds (≤ 50), comment?}` → `202 {}` even for
+  unknown IDs. Non-admins get **403 even for their own approvals ✔**, so it is used only when `useBulkEndpoint` is
+  `always`, or `auto` and the user is ORG_ADMIN. A 401/403 switches that batch and the rest to the default path.
+- **Deny** needs a non-empty comment when `denyCommentRequired`.
+- **Confirm:** a 2xx or 202 proves nothing. Re-read with `GET /v2025/generic-approvals?limit=250&filters=approvalId in ("a",…)`
+  (50 IDs per call, no `mine`), after 0, 1, 2, 4 and 8 s. The list has `status` but **empty `approvedBy`/`rejectedBy` ✔**;
+  only `GET /v2025/generic-approvals/{id}` names the decider, so it is called only for IDs whose status changed although
+  our call failed. Outcome per ID:
+  | Outcome | When |
+  |---|---|
+  | `confirmed` (decided by me) | status = APPROVED/REJECTED as sent and our call succeeded, or the detail names the caller |
+  | `elsewhere` (decided by someone else) | any other decided status, or the ID is no longer returned. A governance-group colleague or an admin decided first: **not an error** |
+  | `pending` (still pending) | our call succeeded but the last re-read still says PENDING; can be retried |
+  | `failed` | our call failed and it's still PENDING; can be retried, with the reason |
+- After a run, `confirmed` and `elsewhere` rows leave the list; a later approval step of a serial scheme appears on refresh.
 
 ## Test data and safety (live tests in a test or shared tenant)
 - Only touch objects named with the config's prefix. Use a harmless test access profile as the only catalog item

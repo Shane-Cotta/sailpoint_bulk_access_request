@@ -132,17 +132,6 @@ class Tenant:
             return {}
         return self.call("GET", f"/v2025/identities/{identity_id}")   # there is no v3 identities API
 
-    def find_by_name(self, list_path: str, name: str, *, key: str | None = None) -> dict[str, Any] | None:
-        """First object at `list_path` whose name equals `name` (lists may be wrapped)."""
-        sep = "&" if "?" in list_path else "?"
-        items = self.call("GET", f"{list_path}{sep}limit=250")
-        if isinstance(items, dict):
-            items = items.get(key or "results") or items.get("items") or []
-        for item in items or []:
-            if item.get("name") == name:
-                return item
-        return None
-
 
 def _b64url(segment: str) -> str:
     import base64
