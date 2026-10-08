@@ -64,6 +64,15 @@ plugin request is simply several approvals.
 - **Nobody approves their own access:** a request whose approver is also on the people list is stopped before any approval exists.
 - **The plugin is uploaded private** (visible only to you) unless you set `plugin.public`.
 
+## For SailPoint and platform teams
+Before installing in a production tenant, check that the tenant offers everything the tool uses:
+
+| Document | What's in it |
+|---|---|
+| [API inventory](docs/sailpoint/API_INVENTORY.md) | Every API call (method, path, version, caller, user level, scopes), workflow step, form feature and `sail` command |
+| [API contract alignment](docs/sailpoint/API_CONTRACT_ALIGNMENT.md) | How each call maps to v3, the dated versions, experimental APIs and the new `/<service>/v1` paths; known deviations from the spec; migration plan and risks |
+| [Requirements checklist](docs/sailpoint/REQUIREMENTS_CHECKLIST.md) | A tick-box list of features, user levels, scopes, settings, limits and tooling, each with a one-line check |
+
 ## Screenshots
 Real SailPoint screens (`docs/screenshots/`) from a test installation that used the prefix `UCSF`; yours show your own prefix:
 
