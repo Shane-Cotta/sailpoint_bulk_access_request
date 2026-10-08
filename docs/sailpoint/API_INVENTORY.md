@@ -89,16 +89,17 @@ All calls go through `SailpointPluginService.get/post` → `@sailpoint/ui-plugin
 
 | Tab or feature | Method and path | Used for | UL [S] | Scopes [S] | Status |
 |---|---|---|---|---|---|
-| People search | `POST /v3/search` (`indices: ["identities"]`) | Type-ahead, and fallback resolution of pasted names and emails | ORG_ADMIN, CERT_ADMIN, REPORT_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN, ROLE_ADMIN, ROLE_SUBADMIN | `sp:search:read` | GA (legacy v3) [L] |
-| People search | `GET /v3/accounts?filters=name sw … \| name in … \| nativeIdentity in … \| identityId in …` | Find identities not indexed yet | ORG_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN, HELPDESK | `idn:accounts:read` | GA (legacy v3) [L] |
-| Paste a list | `GET /v2025/identities?filters=id in (…)` and `alias eq … or email eq …` (50 per call) | Resolve pasted IDs, usernames and emails | — | `idn:identity:read` | GA [L] |
-| Paste a list | `GET /v2025/identities/{id}` | Last-resort lookup of a single ID | — | `idn:identity:read` | GA [L] |
-| Access step | `GET /v3/requestable-objects?types=…&limit=250&offset=N[&filters=name sw …]` | The catalog's access profiles and roles | ORG_ADMIN | `idn:requestable-objects:read` | GA (legacy v3) [L] |
+| People search (ORG_ADMIN only; 403/400 for others ✔) | `POST /v3/search` (`indices: ["identities"]`) | Type-ahead, and fallback resolution of pasted names and emails | ORG_ADMIN, CERT_ADMIN, REPORT_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN, ROLE_ADMIN, ROLE_SUBADMIN | `sp:search:read` | GA (legacy v3) [L] |
+| People search (ORG_ADMIN only; 403/400 for others ✔) | `GET /v3/accounts?filters=name sw … \| name in … \| nativeIdentity in … \| identityId in …` | Find identities not indexed yet | ORG_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN, HELPDESK | `idn:accounts:read` | GA (legacy v3) [L] |
+| Paste a list (ORG_ADMIN only; 403/400 for others ✔) | `GET /v2025/identities?filters=id in (…)` and `alias eq … or email eq …` (50 per call) | Resolve pasted IDs, usernames and emails | — | `idn:identity:read` | GA [L] |
+| Paste a list (ORG_ADMIN only; 403/400 for others ✔) | `GET /v2025/identities/{id}` | Last-resort lookup of a single ID | — | `idn:identity:read` | GA [L] |
+| People search, paste a list (non-admins) | `GET /v3/public-identities?limit=…&sorters=name&filters=…` (`displayName`/`alias`/`email`/`firstname`/`lastname` `sw` for type-ahead; `id in (…)`, `alias eq … or email eq …` for pasted lists) | Find people without admin rights | **Any user** ✔ | — | GA (legacy v3) [L, non-admin]. Same as `/v2025/public-identities`. Department only in `attributes[]`; no fallbacks for identities it doesn't list |
+| Access step | `GET /v3/requestable-objects?identity-id=<me>&types=…&limit=250&offset=N[&filters=name sw …]` | The catalog's access profiles and roles | ORG_ADMIN; **any user with their own `identity-id`** ✔ (403 without it) | `idn:requestable-objects:read` | GA (legacy v3) [L] |
 | Access step | `GET /v2025/entitlements?filters=requestable eq true[ and name sw …]&sorters=name&limit=250&offset=N` | The catalog's requestable entitlements (rows carry `source.name`, no `type`) | Any | `idn:entitlement:read` | GA [L] |
-| Access step | `POST /v3/search` (`indices: ["accessprofiles","entitlements"]`) | Source names to show next to access profiles | see above | `sp:search:read` | GA (legacy v3) [L] |
-| Review step | `GET /v3/requestable-objects?identity-id=<id>&types=…&filters=id in (…)` | "Already has it" warning for access profiles and roles (up to 100 people) | ORG_ADMIN (USER for oneself) | `idn:requestable-objects:read` | GA (legacy v3) [L] |
-| Review step | `POST /v3/search` (`indices: ["identities"]`, `id:(…)`, includes `access.id`, `access.type`) | "Already has it" for entitlements (held), 100 people per call | see People search | `sp:search:read` | GA (legacy v3) [L]. Identities missing from the index get no warning |
-| Review step | `GET /v3/access-request-status?requested-for=<id>&request-state=EXECUTING&limit=250` | "Already requested" for entitlements (the row `id` is the item's ID) | ORG_ADMIN; any user for their own [D] | `idn:access-request-status:read` | GA (legacy v3) [L] |
+| Access step (ORG_ADMIN only; 403/400 for others ✔) | `POST /v3/search` (`indices: ["accessprofiles","entitlements"]`) | Source names to show next to access profiles | see above | `sp:search:read` | GA (legacy v3) [L] |
+| Review step | `GET /v3/requestable-objects?identity-id=<id>&types=…&filters=id in (…)` | "Already has it" warning for access profiles and roles (up to 100 people) | ORG_ADMIN; ✔ a non-admin may pass another person's ID | `idn:requestable-objects:read` | GA (legacy v3) [L] |
+| Review step (ORG_ADMIN only; 403/400 for others ✔) | `POST /v3/search` (`indices: ["identities"]`, `id:(…)`, includes `access.id`, `access.type`) | "Already has it" for entitlements (held), 100 people per call | see People search | `sp:search:read` | GA (legacy v3) [L]. Identities missing from the index get no warning |
+| Review step (ORG_ADMIN only; 403/400 for others ✔) | `GET /v3/access-request-status?requested-for=<id>&request-state=EXECUTING&limit=250` | "Already requested" for entitlements (the row `id` is the item's ID) | ORG_ADMIN; any user for their own [D] | `idn:access-request-status:read` | GA (legacy v3) [L] |
 | Submit (launcher mode, default) | `POST /v2025/launchers/{id}/launch` `{}` | **Start the Launcher once per part, as the signed-in user** → `{interactiveProcessId}` | ORG_ADMIN [S]; live: **any holder of the Launcher's `assignedLaunchers` entitlement** | `sp:launcher-user:launch` | GA [L] (as a non-admin; the Launchpad itself calls `/beta/launchers/{id}/launch`). Without access: 401/403, or 500 "insufficient authorization" |
 | Submit (launcher mode) | `GET /beta/interactive-processes/{ipid}/blocks` | Poll (1 s, up to 30 s) until the `FORM` block names the form instance; later, look for an `ERROR` message (the workflow stopped) | the process owner [L] | — | **Beta** [L] (as a non-admin; the admin PAT gets 401: needs a user session). No v1 or dated version yet |
 | Submit (launcher mode) | `PATCH /v2025/form-instances/{id}` (`application/json-patch+json`: `/formData`, `/state` `SUBMITTED`), `GET /v2025/form-instances/{id}` | Fill in and submit the Launcher form; repeat up to 3 times until SUBMITTED/COMPLETED or `formErrors`; `createdBy` is the run | USER | `[]` | GA [L] (as a non-admin, who can't *list* form instances: 403). PATCH goes through `fetch` with the SDK's token (the SDK has no PATCH) |
@@ -113,12 +114,19 @@ All calls go through `SailpointPluginService.get/post` → `@sailpoint/ui-plugin
 | **Approvals** | `GET /v2025/generic-approvals?limit=250&filters=approvalId in (…)` | Confirm every decision (50 IDs per call) | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] |
 | **Approvals** | `GET /v2025/generic-approvals/{id}` | Who decided, only for IDs whose status changed although our call failed | APPROVAL_OWNER | same | GA [L] |
 
-**What a non-admin can do in the plugin:** with `plugin.submit: "launcher"` (the default), **submit**, as long as they hold
-the *Launcher Access* profile (launch, the process's blocks and their own form instance were verified as a non-admin on
-2026-10-08), follow their own approvals (*My bulk requests*), and use the Approvals tab (`generic-approvals`, APPROVAL_OWNER).
-With `plugin.submit: "test-endpoint"`, submitting needs ORG_ADMIN and the *New request* tab says so
-(`context.user.capabilities.isOrgAdmin`). The people search and catalog calls above list ORG_ADMIN among their spec user levels;
-the page has used them as admins so far, so check them with a non-admin before relying on launcher mode for everyone.
+**What a non-admin can do in the plugin** (verified 2026-10-08 with two `sp:user` sessions; the page branches on
+`context.user.capabilities.isOrgAdmin`):
+
+| Feature | Non-admin | How |
+|---|---|---|
+| Submit | ✔ with the *Launcher Access* profile (`plugin.submit: "launcher"`) | launch, interactive-process blocks, own form instance |
+| People search, pasted lists | ✔ | `/v3/public-identities` (identities, search and accounts are 403) |
+| Catalog | ✔ | `requestable-objects?identity-id=<me>` (403 without it), `/v2025/entitlements` |
+| "Already has it" | access profiles and roles ✔; entitlements skipped (said on the review step) | `requestable-objects?identity-id=<person>`; search is 403 and another person's `access-request-status` is 400 |
+| My bulk requests | ✔ | `generic-approvals?filters=requesterId eq "<me>"`, `access-request-status?requested-by=<me>` |
+| Approvals tab | ✔ | `generic-approvals` (APPROVAL_OWNER) |
+
+With `plugin.submit: "test-endpoint"`, submitting needs ORG_ADMIN and the *New request* tab says so.
 
 ## 4. `sail` CLI (≥ 2.7.0)
 Run by `plugin/pluginlib.py` with `SAIL_BASE_URL`, `SAIL_CLIENT_ID` and `SAIL_CLIENT_SECRET` in its environment

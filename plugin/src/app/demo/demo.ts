@@ -135,17 +135,37 @@ export class DemoPluginService {
   get<T>(path: string): Promise<T> {
     const [route] = path.split('?');
     const params = new URLSearchParams(path.split('?')[1] ?? '');
+    // Verified live: identities, accounts and someone else's access requests are refused to non-admins.
+    const admin = !!this.user()?.capabilities.isOrgAdmin;
+    if (!admin && (route.startsWith('/v2025/identities') || route === '/v3/accounts')) return Promise.reject(apiError(403, 'Forbidden'));
+    if (!admin && route === '/v3/access-request-status' && params.get('requested-for')
+        && params.get('requested-for') !== DEMO_ME.id) {
+      return Promise.reject(apiError(400, '"request-by/requested-for" must be the current user.'));
+    }
     if (route === '/v3/requestable-objects') {
       // Like the real API: access profiles and roles only, never entitlements.
       const types = params.getAll('types');
       const rows = DEMO_CATALOG.filter((c) => c.row['type'] !== 'ENTITLEMENT' && (!types.length || types.includes(String(c.row['type']))));
+      // With identity-id (always sent: a non-admin gets 403 without it), every row carries that person's status;
+      // `filters=id in (…)` narrows it to the chosen items (the "already has it" check).
       const who = params.get('identity-id');
-      if (who) {
-        const held = DEMO_HELD[who] ?? {};
-        return delay(rows.filter((c) => held[String(c.row['id'])])
-          .map((c) => ({ ...c.row, requestStatus: held[String(c.row['id'])] })) as T, 400);
-      }
-      return delay(rows.map((c) => c.row) as T);
+      if (!who && !this.user()?.capabilities.isOrgAdmin) return Promise.reject(apiError(403, 'Forbidden'));
+      const held = (who && DEMO_HELD[who]) || {};
+      const wanted = (params.get('filters') ?? '').startsWith('id in') ? new Set(filterValues(path)) : null;
+      return delay(rows.filter((c) => !wanted || wanted.has(String(c.row['id']).toLowerCase()))
+        .map((c) => ({ ...c.row, requestStatus: held[String(c.row['id'])] ?? 'AVAILABLE' })) as T, who && wanted ? 400 : 120);
+    }
+    if (route === '/v3/public-identities') {
+      // Open to every user. `sw` matches the start of a name, username or email (any word); otherwise exact values.
+      const values = filterValues(path);
+      const prefix = (params.get('filters') ?? '').includes(' sw ');
+      const keys = (d: (typeof DEMO_IDENTITIES)[number]) => [d.id, d.name, d.email, d.displayName].map((v) => v.toLowerCase());
+      const hit = (d: (typeof DEMO_IDENTITIES)[number]) => (prefix
+        ? keys(d).some((k) => k.split(/[\s.@]/).some((w) => values.some((v) => w.startsWith(v))) || values.some((v) => k.startsWith(v)))
+        : keys(d).some((k) => values.includes(k)));
+      return delay([...DEMO_IDENTITIES, ...DEMO_CROWD].filter(hit).slice(0, Number(params.get('limit') ?? 250))
+        .map((d) => ({ id: d.id, name: d.displayName, alias: d.name, email: d.email, status: 'active', identityState: 'ACTIVE',
+          attributes: [{ key: 'department', name: 'Department', value: d.attributes.department }] })) as T);
     }
     if (route === '/v2025/entitlements') {
       // Entitlement rows carry their source and no `type`.
@@ -184,7 +204,6 @@ export class DemoPluginService {
       return delay({ id, state: form.state, formData: form.formData ?? null, formErrors: errors,
         createdBy: { type: 'WORKFLOW_EXECUTION', id: demoExecutionId(form.k) } } as T);
     }
-    if (route === '/v2025/workflows') return delay([{ id: 'demo-workflow', name: DEMO_CONFIG.workflowName }] as T);
     if (route.startsWith('/v2025/workflow-executions/')) return delay({ id: route.split('/').pop(), status: 'Running' } as T);
     const approvals = [...this.submitted, ...DEMO_APPROVALS];
     if (route === '/v2025/generic-approvals' && params.get('mine') === 'true') {
@@ -222,6 +241,7 @@ export class DemoPluginService {
 
   post<T>(path: string, data: unknown): Promise<T> {
     const body = data as Record<string, unknown>;
+    if (path.startsWith('/v3/search') && !this.user()?.capabilities.isOrgAdmin) return Promise.reject(apiError(403, 'Forbidden'));
     if (path.startsWith('/v3/search')) {
       const indices = (body['indices'] as string[]) ?? [];
       const q = String((body['query'] as { query: string }).query);

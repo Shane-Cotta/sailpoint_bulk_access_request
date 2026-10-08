@@ -7,12 +7,12 @@ import {
 } from './bulk-api.service';
 import { BulkConfigService } from './bulk-config.service';
 import { approvalName, executionIdOf } from './my-requests';
-import { describeError, describeLauncherError, isLauncherAccessDenied } from './errors';
+import { describeError, describeSubmitError, isLauncherAccessDenied } from './errors';
 import {
   accessLabel, APPROVAL_NAME_PREFIX, clip, justificationMax, launcherFormAccess, partLabel, PERMANENT, removeDuration,
   splitIntoParts, temporaryModes, validateAccess, validateRequest, type AccessChoice, type CatalogOption,
 } from './rules';
-import type { DurationUnit } from './runtime-config';
+import { MSG_LAUNCHER_ID, type DurationUnit } from './runtime-config';
 
 /** One part's state: one workflow run and its approval. */
 export type PartState =
@@ -254,14 +254,14 @@ export class RequestStore implements OnDestroy {
       const viaLauncher = cfg.submit === 'launcher';
       const choice = this.accessChoice();
       const problems = validateAccess(cfg, choice);
-      let fatal: string | null = problems[0] ?? null;
+      let fatal: string | null = problems[0] ?? (viaLauncher && !cfg.launcherId ? MSG_LAUNCHER_ID : null);
       const duration = fatal ? '' : removeDuration(choice);
       const label = accessLabel(choice);
       if (!fatal && !viaLauncher) {
         try {
           this.workflowId ??= await this.api.workflowId(cfg);
         } catch (err) {
-          fatal = describeError(err);
+          fatal = describeSubmitError(err, cfg);
         }
       }
       for (const n of partNumbers) {
@@ -294,9 +294,9 @@ export class RequestStore implements OnDestroy {
           if (!this.timer) this.schedule(0);
         } catch (err) {
           const status = (err as { status?: number })?.status;
-          this.patchPart(n, { state: 'start-failed', message: describeError(err) });
+          this.patchPart(n, { state: 'start-failed', message: describeSubmitError(err, cfg) });
           // A permission problem fails every part the same way: don't hammer the endpoint.
-          if (status === 401 || status === 403) fatal = describeError(err);
+          if (status === 401 || status === 403) fatal = describeSubmitError(err, cfg);
         }
       }
     } finally {
@@ -339,7 +339,7 @@ export class RequestStore implements OnDestroy {
       if (!this.timer) this.schedule(0);
       return null;
     } catch (err) {
-      const message = describeLauncherError(err, cfg.launcherAccessName);
+      const message = describeSubmitError(err, cfg);
       this.patchPart(n, { state: 'start-failed', message });
       // Without access to the Launcher every part fails the same way: don't try the others.
       return isLauncherAccessDenied(err) ? message : null;
@@ -451,7 +451,7 @@ export class RequestStore implements OnDestroy {
         await Promise.all(live.map((p) => this.pollPart(p, approvals)));
       } catch (err) {
         // A failed poll is not fatal; try again on the next round.
-        for (const p of live) this.patchPart(p.part, { message: `Still checking… (${describeError(err)})` });
+        for (const p of live) this.patchPart(p.part, { message: `Still checking… (${describeError(err, 'read', 'the approval')})` });
       }
     }
     const now = this.submission();
@@ -474,7 +474,7 @@ export class RequestStore implements OnDestroy {
       if (this.bulkConfig.config().submit === 'launcher') await this.pollLauncherPart(p, approvals);
       else await this.pollWorkflowPart(p, approvals);
     } catch (err) {
-      this.patchPart(p.part, { message: `Still checking… (${describeError(err)})` });
+      this.patchPart(p.part, { message: `Still checking… (${describeError(err, 'read', 'the approval')})` });
     }
   }
 

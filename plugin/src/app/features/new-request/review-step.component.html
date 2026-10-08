@@ -165,6 +165,8 @@
       <p class="muted">Checking who already has this access…</p>
     } @else if (store.people().length > existingCheckMax) {
       <p class="muted">With more than {{ existingCheckMax }} people the page doesn't check who already has this access. SailPoint skips what people already have.</p>
+    } @else if (entitlementsUnchecked()) {
+      <p class="muted">Entitlements aren't checked for who already has them (that needs admin rights); SailPoint skips what people already have.</p>
     }
     @for (w of warnings(); track w.item) {
       <p-message severity="warn" size="small">

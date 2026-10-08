@@ -1,27 +1,36 @@
+import type { RuntimeConfig } from './runtime-config';
+
 /**
- * Where the error happened, so the hint fits: submitting through the workflow test endpoint needs ORG_ADMIN,
- * while the Approvals tab works for any approver on their own approvals. (Submitting through the Launcher
- * has its own hint: see launcherAccessMessage.)
+ * Where the error happened, so the hint fits: a read (people, catalog, history, following a submission), or the
+ * Approvals tab (any approver, on their own approvals). Submitting has its own wording: describeSubmitError.
  */
-export type ErrorContext = 'submit' | 'approvals';
+export type ErrorContext = 'read' | 'approvals';
 
 type ApiErrorLike = { status?: number; message?: string; body?: unknown };
 
 function bodyText(body: unknown): string {
-  const b = body as { messages?: { text?: string }[]; message?: string; detailCode?: string } | undefined;
+  const b = body as { messages?: { text?: string }[]; message?: string } | undefined;
   return b?.messages?.map((m) => m.text).filter(Boolean).join('; ') || b?.message || '';
 }
 
-/** Turn an API error into a sentence, with a hint for permission and throttling errors. */
-export function describeError(err: unknown, context: ErrorContext = 'submit'): string {
+const refused = (err: unknown) => {
+  const status = (err as ApiErrorLike)?.status;
+  return status === 401 || status === 403;
+};
+
+/**
+ * Turn an API error into a sentence, with a hint for permission and throttling errors. `what` names what couldn't
+ * be loaded ("the catalog"); a refused read says so instead of guessing at the missing right.
+ */
+export function describeError(err: unknown, context: ErrorContext = 'read', what = 'this'): string {
   const e = err as ApiErrorLike;
-  if (e?.status === 401 || e?.status === 403) {
+  if (refused(err)) {
     if (context === 'approvals') {
       return `SailPoint refused the call (HTTP ${e.status}). You can only decide approvals that are assigned to you. `
         + 'If it is yours, your session may have expired: reload the page and try again.';
     }
-    return `SailPoint refused the call (HTTP ${e.status}). This page needs ORG_ADMIN (the right to test `
-      + 'workflows). Use the Bulk Access Request Launcher in the Launchpad instead.';
+    return `SailPoint refused the call (HTTP ${e.status}), so ${what} couldn't be loaded. Your session may have expired: `
+      + 'reload the page. If it keeps happening, your account may not be allowed to read it; ask an administrator.';
   }
   if (e?.status === 429) {
     return 'SailPoint is limiting how fast this page may call it (HTTP 429). Wait a moment, then try again.';
@@ -35,17 +44,24 @@ export function describeError(err: unknown, context: ErrorContext = 'submit'): s
  */
 export function isLauncherAccessDenied(err: unknown): boolean {
   const e = err as ApiErrorLike;
-  if (e?.status === 401 || e?.status === 403) return true;
+  if (refused(err)) return true;
   return e?.status === 500 && /insufficient authori[sz]ation/i.test(`${bodyText(e.body)} ${e.message ?? ''}`);
 }
 
-/** What a user who may not use the Launcher is told (launcher submit mode). */
-export function launcherAccessMessage(accessName: string): string {
-  return `You need the ${accessName} access to submit; request it in the Request Center.`;
-}
+type SubmitConfig = Pick<RuntimeConfig, 'submit' | 'launcherName' | 'launcherAccessName'>;
 
-/** An error while submitting through the Launcher, as a sentence. */
-export function describeLauncherError(err: unknown, accessName: string): string {
-  if (isLauncherAccessDenied(err)) return launcherAccessMessage(accessName);
+/**
+ * An error while submitting, worded for the submit mode: through the Launcher a refusal means the user lacks the
+ * Launcher Access profile; through the workflow test endpoint it means they aren't ORG_ADMIN.
+ */
+export function describeSubmitError(err: unknown, cfg: SubmitConfig): string {
+  if (cfg.submit === 'launcher') {
+    if (isLauncherAccessDenied(err)) {
+      return `You need the ${cfg.launcherAccessName} access to submit; request it in the Request Center.`;
+    }
+  } else if (refused(err)) {
+    return `SailPoint refused the call (HTTP ${(err as ApiErrorLike).status}). Submitting from this page needs ORG_ADMIN `
+      + `(the right to test workflows). Use the ${cfg.launcherName} Launcher in the Launchpad instead.`;
+  }
   return describeError(err);
 }

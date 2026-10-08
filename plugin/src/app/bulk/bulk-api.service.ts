@@ -102,7 +102,7 @@ export interface LauncherFormResult {
 }
 
 /** How long to wait for the Launcher's form to appear after the launch. */
-export const LAUNCHER_FORM_TIMEOUT_MS = 30_000;
+const LAUNCHER_FORM_TIMEOUT_MS = 30_000;
 
 const plainText = (v: unknown) => (typeof v === 'string' ? v.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() : '');
 
@@ -374,6 +374,25 @@ function personFromAccount(acct: Row): Person | null {
   };
 }
 
+/** Public-identity fields a type-ahead term is matched against (`sw`, case-insensitive; `name` isn't filterable). */
+const PUBLIC_SEARCH_FIELDS = ['displayName', 'alias', 'email', 'firstname', 'lastname'];
+
+/** A /v3/public-identities row: `attributes` is a list of `{key, name, value}`, and there's no display name. */
+function personFromPublic(row: Row): Person {
+  const attrs = (row['attributes'] as { key?: string; value?: unknown }[] | undefined) ?? [];
+  const department = attrs.find((a) => a.key === 'department')?.value;
+  return {
+    id: String(row['id']),
+    name: String(row['name'] || row['alias'] || row['id']),
+    email: (row['email'] as string) || null,
+    detail: typeof department === 'string' && department ? department : null,
+  };
+}
+
+function publicKeys(row: Row): string[] {
+  return [row['id'], row['name'], row['alias'], row['email']].filter(Boolean).map((v) => String(v).toLowerCase());
+}
+
 /** Keys a pasted token may equal, lower-cased. */
 function identityKeys(row: Row): string[] {
   return [row['id'], row['name'], row['alias'], row['emailAddress']].filter(Boolean).map((v) => String(v).toLowerCase());
@@ -403,6 +422,13 @@ export class BulkApiService {
   async searchPeople(term: string, limit = 20): Promise<Person[]> {
     const t = term.trim();
     if (t.length < 2) return [];
+    if (!this.isAdmin()) {
+      // Search and accounts refuse non-admins (403); public identities is open to everyone (verified live).
+      const v = quoted(t);
+      const filter = PUBLIC_SEARCH_FIELDS.map((f) => `${f} sw ${v}`).join(' or ');
+      const rows = await this.publicIdentities(filter, limit, false);
+      return rows.map(personFromPublic).sort((a, b) => a.name.localeCompare(b.name));
+    }
     const [docs, accounts] = await Promise.allSettled([
       this.plugin.post<Row[]>(`/v3/search?limit=${limit}`, {
         indices: ['identities'],
@@ -454,18 +480,28 @@ export class BulkApiService {
     };
     onProgress?.(0, total);
 
-    // 1 + 2: the identities list, the bulk of the work (progress counts these tokens).
+    // 1 + 2: the identities list, the bulk of the work (progress counts these tokens). A non-admin may not read
+    // /v2025/identities, search or accounts (403), so they get public identities, which take the same filters
+    // (`id in`, `alias eq`, `email eq`; verified live) but have no fallbacks for identities they don't list.
+    const admin = this.isAdmin();
+    const lookup = (filter: string) => (admin
+      ? this.identities(filter).then((rows) => rows.map((r) => [identityKeys(r), personFromIdentity(r)] as const))
+      : this.publicIdentities(filter).then((rows) => rows.map((r) => [publicKeys(r), personFromPublic(r)] as const)));
     const idTerm = (id: string) => quoted(id);
     const wordTerm = (w: string) => `alias eq ${quoted(w)} or email eq ${quoted(w)}`;
     const jobs: (() => Promise<void>)[] = [
-      ...batches(ids, idTerm, ',').map((part) => () => this.identities(`id in (${part.map(idTerm).join(',')})`)
-        .then((rows) => rows.forEach((r) => match(identityKeys(r), personFromIdentity(r))))
+      ...batches(ids, idTerm, ',').map((part) => () => lookup(`id in (${part.map(idTerm).join(',')})`)
+        .then((rows) => rows.forEach(([keys, p]) => match(keys, p)))
         .finally(() => tick(part.length))),
-      ...batches(words, wordTerm, ' or ').map((part) => () => this.identities(part.map(wordTerm).join(' or '))
-        .then((rows) => rows.forEach((r) => match(identityKeys(r), personFromIdentity(r))))
+      ...batches(words, wordTerm, ' or ').map((part) => () => lookup(part.map(wordTerm).join(' or '))
+        .then((rows) => rows.forEach(([keys, p]) => match(keys, p)))
         .finally(() => tick(part.length))),
     ];
     await pool(jobs, RESOLVE_CONCURRENCY);
+    if (!admin) {
+      onProgress?.(total, total);
+      return this.resolution(tokens, candidates);
+    }
 
     // 3: fallbacks for what the identities list didn't find.
     const leftWords = open(words);
@@ -506,7 +542,11 @@ export class BulkApiService {
       }
     }), RESOLVE_CONCURRENCY);
     onProgress?.(total, total);
+    return this.resolution(tokens, candidates);
+  }
 
+  /** Each token's candidates → resolved (exactly one, de-duplicated), ambiguous (several) or unresolved (none). */
+  private resolution(tokens: string[], candidates: Map<string, Map<string, Person>>): Resolution {
     const out: Resolution = { resolved: [], unresolved: [], ambiguous: [] };
     const seen = new Set<string>();
     for (const token of tokens) {
@@ -519,6 +559,22 @@ export class BulkApiService {
       }
     }
     return out;
+  }
+
+  /** The signed-in user is ORG_ADMIN: search, accounts and /v2025/identities are open to them (403 for others). */
+  isAdmin(): boolean {
+    return this.plugin.user()?.capabilities?.isOrgAdmin ?? false;
+  }
+
+  /**
+   * One /v3/public-identities call: the identity list any user may read (verified live as a non-admin).
+   * Filterable: `id` (eq, in), `alias`, `email`, `firstname`, `lastname`, `displayName` (eq, sw; case-insensitive);
+   * not `name`. limit ≤ 250, sorters `name`. Empty on failure, like identities().
+   */
+  private publicIdentities(filter: string, limit = 250, swallow = true): Promise<Row[]> {
+    const call = retry(() => this.plugin.get<Row[]>(
+      `/v3/public-identities?limit=${limit}&sorters=name&filters=${encodeURIComponent(filter)}`)).then((rows) => rows ?? []);
+    return swallow ? call.catch(() => []) : call;
   }
 
   /** One /v2025/identities list call (empty on failure: the fallbacks still run). */
@@ -545,7 +601,11 @@ export class BulkApiService {
     const types = requestableObjectTypes(cfg);
     if (types.length) {   // without `types` the API would return every type
       const filter = cfg.nameStartsWith ? `&filters=${encodeURIComponent(`name sw ${quoted(cfg.nameStartsWith)}`)}` : '';
-      rows.push(...await this.paged(`/v3/requestable-objects?${types.map((t) => `types=${t}`).join('&')}${filter}`, max));
+      // A non-admin gets 403 without `identity-id` and 200 with their own (verified live), so it's always sent:
+      // the catalog as the signed-in user sees it.
+      const me = this.plugin.user()?.id;
+      const who = me ? `identity-id=${encodeURIComponent(me)}&` : '';
+      rows.push(...await this.paged(`/v3/requestable-objects?${who}${types.map((t) => `types=${t}`).join('&')}${filter}`, max));
     }
     const entitlements = entitlementFilter(cfg);
     if (entitlements) {
@@ -568,8 +628,9 @@ export class BulkApiService {
 
   /** Source names for access profiles (roles have none; entitlement rows carry theirs). Best effort. */
   private async sources(rows: Row[]): Promise<Record<string, string>> {
-    const ids = rows.filter((r) => r['type'] === 'ACCESS_PROFILE').map((r) => String(r['id']));
     const out: Record<string, string> = {};
+    if (!this.isAdmin()) return out;   // search refuses non-admins (403)
+    const ids = rows.filter((r) => r['type'] === 'ACCESS_PROFILE').map((r) => String(r['id']));
     await Promise.all(chunk(ids, 100).map(async (part) => {
       try {
         const docs = await this.plugin.post<Row[]>('/v3/search?limit=250', {
@@ -592,10 +653,19 @@ export class BulkApiService {
    * Which chosen people already hold (or have pending) which chosen items. Best effort: a check that
    * fails, or a person missing from the search index, just gives no warning.
    */
+  /** Whether existingAccess() can check entitlements for the signed-in user (ORG_ADMIN only). */
+  entitlementsChecked(): boolean {
+    return this.isAdmin();
+  }
+
   async existingAccess(personIds: string[], items: AccessItem[], concurrency = 5): Promise<ExistingAccess[]> {
     if (!personIds.length || !items.length) return [];
     const objects = items.filter((i) => i.type !== 'ENTITLEMENT');
-    const entitlements = new Set(items.filter((i) => i.type === 'ENTITLEMENT').map((i) => i.id));
+    // Access profiles and roles work for anyone (requestable-objects takes another person's identity-id, verified as a
+    // non-admin). Entitlements need identity search (403) and another person's access-request-status (400 "must be
+    // the current user") for a non-admin, so they're only checked for admins (see entitlementsChecked()).
+    const entitlements = new Set(this.entitlementsChecked()
+      ? items.filter((i) => i.type === 'ENTITLEMENT').map((i) => i.id) : []);
     const types = [...new Set(objects.map((i) => i.type))].map((t) => `types=${t}`).join('&');
     const filter = encodeURIComponent(`id in (${objects.map((i) => quoted(i.id)).join(',')})`);
     const out: ExistingAccess[] = [];

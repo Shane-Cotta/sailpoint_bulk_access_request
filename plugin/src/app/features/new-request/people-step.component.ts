@@ -73,7 +73,7 @@ export class PeopleStepComponent implements OnDestroy {
       const found = await this.api.searchPeople(term);
       if (seq === this.searchSeq) this.store.peopleResults.set(found);
     } catch (err) {
-      if (seq === this.searchSeq) this.error.set(describeError(err));
+      if (seq === this.searchSeq) this.error.set(describeError(err, 'read', 'the people list'));
     } finally {
       if (seq === this.searchSeq) this.searching.set(false);
     }
@@ -118,7 +118,7 @@ export class PeopleStepComponent implements OnDestroy {
       // Leave only what still needs attention in the box.
       this.store.pasteText.set([...result.unresolved, ...result.ambiguous.map((a) => a.token)].join('\n'));
     } catch (err) {
-      this.error.set(describeError(err));
+      this.error.set(describeError(err, 'read', 'the people list'));
     } finally {
       this.resolving.set(false);
       this.progress.set(null);

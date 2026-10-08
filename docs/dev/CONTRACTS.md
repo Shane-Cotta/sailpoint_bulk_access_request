@@ -125,8 +125,9 @@ All parts of one submission share the same INC, approver, items, justification a
 `"submit": "launcher" | "test-endpoint"`, `"launcherId": string | null` (launcher mode: the Launcher's ID, looked up by name at
 install, since a non-admin can't list launchers), `"launcherAccessName": string`, and `"workflowId"` (test-endpoint mode only).
 `runtime-config.ts`: a file without `submit` comes from an older install → `"test-endpoint"`; other values → `submit must be
-"launcher" or "test-endpoint".`; `"launcher"` without `launcherId` → `launcherId is missing: …` (the committed neutral file has
-`launcherId: null`, so a build that skipped install.py refuses to submit). `temporary.enabled`/`allow` carry `plugin_temporary_modes`.
+"launcher" or "test-endpoint".`; `"launcher"` without `launcherId` loads (the committed neutral file has `launcherId: null`, so
+`npm start` works), but submitting stops with `MSG_LAUNCHER_ID` ("…launcherId is missing: run plugin/install.py…"); a real install
+always writes the ID. `temporary.enabled`/`allow` carry `plugin_temporary_modes`.
 
 New fields (the rest are unchanged): `"peopleMax": null | number`, `"partSize": number`,
 `"temporary": {"enabled": bool, "allow": ["duration","endDate"], "units": ["HOURS",...], "maxDays": null | number}`.
@@ -187,7 +188,8 @@ Verified live with read-only calls on the test tenant (2026-10-08); the test end
   (ORG_ADMIN, disabled workflow; same request and `{workflowExecutionId}` response as v3 in the spec), and
   `GET /v2025/workflow-executions/{id}` (`{id, workflowId, requestId, status, startTime, closeTime}`, the same keys as v3).
   The v3 paths send `Deprecation: Wed, 31 Mar 2027`; the v2025 ones send no deprecation header. The installers already use v2025.
-- **Catalog, access profiles and roles:** `GET /v3/requestable-objects?types=…&types=…&limit=250&offset=N`, with only the
+- **Catalog, access profiles and roles:** `GET /v3/requestable-objects?identity-id=<signed-in user>&types=…&types=…&limit=250&offset=N`
+  (a non-admin gets **403 without `identity-id`** and 200 with their own ✔ non-admin; the installer's PAT calls it without), with only the
   configured types among `ACCESS_PROFILE`/`ROLE` (`rules.requestable_object_types` / `requestableObjectTypes`); not called
   when none is configured (no `types` means every type). `ENTITLEMENT` is outside its `types` enum: alone → 400, next to
   another type → silently dropped (no entitlement rows although the tenant had 10 requestable ones).
@@ -198,13 +200,22 @@ Verified live with read-only calls on the test tenant (2026-10-08); the test end
   so the item sent to the workflow stays `{id, type: "ENTITLEMENT", name}`. "Any" user level (`idn:entitlement:read`).
 - **"Already has it" (plugin review step, best effort):**
   - access profiles and roles: `GET /v3/requestable-objects?identity-id=<id>&types=…&filters=id in (…)` → `requestStatus`
-    `ASSIGNED` / `PENDING` (unchanged);
+    `ASSIGNED` / `PENDING`. A non-admin may pass **another person's** `identity-id` and gets their status ✔ non-admin;
+  - entitlements are checked **for ORG_ADMIN only** (`entitlementsChecked()`): for a non-admin identity search is 403 and another
+    person's `access-request-status` is 400 "must be the current user" ✔ non-admin. The review step then says, in a muted line,
+    that entitlements aren't checked;
   - entitlements, held: `POST /v3/search?limit=250` `{indices: ["identities"], query: {query: "id:(<id> OR …)"}, queryResultFilter:
     {includes: ["id","access.id","access.type"]}}`, 100 people per call; a chosen entitlement in `access[]` → `ASSIGNED`.
     Identities missing from the search index (it lags, and some identities aren't indexed) get no warning;
   - entitlements, pending: `GET /v3/access-request-status?requested-for=<id>&request-state=EXECUTING&limit=250`; a row with
     `type: ENTITLEMENT`, a chosen `id` (the row `id` is the item's ID) and not `requestType: REVOKE_ACCESS` → `PENDING`;
   - one entry per person and item; `ASSIGNED` wins.
+- **People (search and pasted lists).** ORG_ADMIN: `/v2025/identities`, identity search and accounts as above (with fallbacks
+  for identities not indexed yet). Everyone else (those three are **403** ✔ non-admin): `GET /v3/public-identities?limit=…&sorters=name&filters=…`
+  ✔ non-admin. Type-ahead: `displayName sw v or alias sw v or email sw v or firstname sw v or lastname sw v`; pasted IDs: `id in (…)`
+  (50 per call); pasted words: `alias eq v or email eq v`. Matching is case-insensitive. `name`/`status` filters and `co`/`in` (except
+  on `id`) are 400; `limit` ≤ 250. Rows: `id, name, alias, email, attributes[{key,value}]` (department from `attributes`, no
+  display name). No fallbacks: someone public identities doesn't list stays unresolved (paste their ID, or ask an admin).
 - The Launcher form's `items` SELECT keeps `maximum: catalog.maxItems` (≤ 25, under the 30-selection limit); entitlements only
   add options, not selections.
 
@@ -255,7 +266,7 @@ with category `ERROR` (the workflow's *Reject …* interactive messages; shape a
 before the approval: {title}: {message}". After 10 minutes, "still waiting".
 
 **Errors:** a 401/403, or a 500 whose message says "insufficient authorization", on any of these calls →
-`You need the {launcherAccessName} access to submit; request it in the Request Center.` (`errors.ts` `launcherAccessMessage`),
+`You need the {launcherAccessName} access to submit; request it in the Request Center.` (`errors.ts` `describeSubmitError`),
 and the remaining parts are not tried.
 
 ## Test data and safety (live tests in a test or shared tenant)

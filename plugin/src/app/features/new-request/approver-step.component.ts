@@ -112,7 +112,7 @@ export class ApproverStepComponent implements OnDestroy {
       const found = await this.api.searchPeople(term, 10);
       if (seq === this.seq) this.store.approverResults.set(found);
     } catch (err) {
-      if (seq === this.seq) this.error.set(describeError(err));
+      if (seq === this.seq) this.error.set(describeError(err, 'read', 'the people list'));
     } finally {
       if (seq === this.seq) this.searching.set(false);
     }

@@ -159,6 +159,8 @@ def main(argv=None) -> int:
     if has_temporary:
         # The shapes the Launchpad sends: a TOGGLE is a boolean, a TEXT a string, and a SELECT a list
         # (the workflow engine unwraps one-item lists, so a scalar works too; verified live).
+        # (rules.launcher_form_access builds the same fields from a removeDuration; the duration is sent raw here
+        # so the bad-duration scenario can send what the form would refuse.)
         form_data.update({definitions.F_ACCESS_TYPE: temporary,
                           definitions.F_DURATION: a.duration if temporary else "",
                           definitions.F_DURATION_UNIT: [DURATION_UNITS[a.unit]] if temporary else []})

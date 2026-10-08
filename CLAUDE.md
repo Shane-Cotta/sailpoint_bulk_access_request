@@ -120,4 +120,23 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
     (`{id,type}`); identities missing from the search index get no warning. Pending = `GET /v3/access-request-status?requested-for=<id>&request-state=EXECUTING`
     (the row `id` is the item's ID).
   - There's no v3 identities API; use `/v2025/identities`.
+- **What a non-admin's own ISC session may call** (verified 2026-10-08 with two `sp:user` test users; the plugin branches on
+  `capabilities.isOrgAdmin`):
+
+  | Call | Non-admin | The plugin |
+  |---|---|---|
+  | `GET /v3/requestable-objects?types=…` without `identity-id` (also `/v2025/…`) | **403** | always sends `identity-id=<me>` (200) |
+  | `GET /v3/requestable-objects?identity-id=<someone else>&…&filters=id in (…)` | 200, with that person's `requestStatus` (ASSIGNED seen) | "already has it" for access profiles and roles |
+  | `GET /v2025/entitlements?filters=requestable eq true` | 200 | catalog entitlements |
+  | `GET /v2025/identities` (list), `/v2025/identities/{other}`, `POST /v3/search`, `GET /v3/accounts` | **403** | admins only |
+  | `GET /v3/public-identities` (also `/v2025/…`) | 200 | people search and pasted lists for non-admins |
+  | `GET /v3/access-request-status?requested-for=<someone else>` | **400** "must be the current user" | entitlement "already has it": admins only |
+  | `GET /v3/access-request-status?requested-by=<me>`, `generic-approvals?filters=requesterId eq "<me>"` | 200 | My bulk requests |
+  | `POST /v2025/launchers/{id}/launch`, `GET /beta/interactive-processes/{id}/blocks`, `GET`/`PATCH /v2025/form-instances/{id}` | 200 (with Launcher Access) | submit (launcher mode) |
+
+  `/v3/public-identities` rows: `id, name, alias, email, status, identityState, manager, attributes[{key,name,value}]` (no
+  display name; `department` is in `attributes`). Filters: `id` eq/in (50 IDs fine); `alias`, `email`, `firstname`,
+  `lastname`, `displayName` eq/sw, case-insensitive, combinable with `or`/`and`; `in` only on `id`; `name`, `status` and `co`
+  → 400. `sorters=name` (`alias` → 400), `limit` ≤ 250. No `/{id}` (404). It lists only what the tenant's public identity
+  config shows: unlike the admin path there's no accounts fallback for identities not listed.
   - Some tenants sit behind Cloudflare, which rejects Python's default User-Agent; the client sends its own.

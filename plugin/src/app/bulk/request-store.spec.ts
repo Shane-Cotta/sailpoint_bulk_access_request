@@ -6,7 +6,7 @@ import { crowdPeople, DEMO_ME, DEMO_NEW_EXECUTION, demoExecutionId, demoPerson }
 import { providePluginTesting } from '../testing/plugin.testing';
 import { BulkApiService } from './bulk-api.service';
 import { BulkConfigService } from './bulk-config.service';
-import { describeError } from './errors';
+import { describeError, describeSubmitError } from './errors';
 import { NavService } from './nav';
 import { overallState, partsSummary, RequestStore, type PartState } from './request-store';
 
@@ -262,6 +262,15 @@ describe('RequestStore', () => {
       expect(store.submission()?.message).toContain(message);
     });
 
+    it('refuses to start without a Launcher ID (the committed neutral runtime config)', async () => {
+      applyScenario('review', store, TestBed.inject(NavService));
+      TestBed.inject(BulkConfigService).config.update((c) => ({ ...c, launcherId: null }));
+      const post = vi.spyOn(TestBed.inject(SailpointPluginService), 'post');
+      await store.submit();
+      expect(post).not.toHaveBeenCalled();
+      expect(store.startFailed()[0].message).toContain('plugin/install.py');
+    });
+
     it('shows the form\'s own errors when it refuses the request', async () => {
       applyScenario('review', store, TestBed.inject(NavService));
       vi.spyOn(TestBed.inject(BulkApiService), 'submitLauncherForm').mockResolvedValue({
@@ -332,8 +341,23 @@ describe('RequestStore', () => {
     expect(partsSummary(of('approved', 'start-failed'))).toBe('1 of 2 approved · 1 not started');
   });
 
-  it('explains permission errors in terms of ORG_ADMIN and the Launcher', () => {
-    expect(describeError({ status: 403 })).toContain('ORG_ADMIN');
+  it('words a refused call for what was being done and for the submit mode', () => {
+    const cfg = { submit: 'launcher' as const, launcherName: 'ACME Bulk Access Request',
+      launcherAccessName: 'ACME Bulk Access Request - Launcher Access' };
+    // Reads (people, catalog, history) say what couldn't be loaded, never blame ORG_ADMIN.
+    const read = describeError({ status: 403 }, 'read', 'the catalog');
+    expect(read).toContain("so the catalog couldn't be loaded");
+    expect(read).not.toContain('ORG_ADMIN');
     expect(describeError({ status: 400, body: { messages: [{ text: 'bad input' }] } })).toBe('bad input');
+    // Launcher mode: the missing access, by its configured name.
+    expect(describeSubmitError({ status: 403 }, cfg))
+      .toBe('You need the ACME Bulk Access Request - Launcher Access access to submit; request it in the Request Center.');
+    expect(describeSubmitError({ status: 500, body: { messages: [{ text: 'insufficient authorization' }] } }, cfg))
+      .toContain('Launcher Access access');
+    expect(describeSubmitError({ status: 500, body: { messages: [{ text: 'boom' }] } }, cfg)).toBe('boom');
+    // Test-endpoint mode: ORG_ADMIN, pointing to the configured Launcher.
+    const te = describeSubmitError({ status: 403 }, { ...cfg, submit: 'test-endpoint', launcherName: 'XYZ Launcher' });
+    expect(te).toContain('ORG_ADMIN');
+    expect(te).toContain('Use the XYZ Launcher Launcher in the Launchpad');
   });
 });

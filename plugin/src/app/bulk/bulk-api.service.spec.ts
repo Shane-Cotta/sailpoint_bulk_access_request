@@ -8,8 +8,8 @@ import {
   type LauncherFormData,
 } from './bulk-api.service';
 
-function setup(routes: Record<string, unknown>) {
-  const plugin = routedPlugin(routes);
+function setup(routes: Record<string, unknown>, isOrgAdmin = true) {
+  const plugin = routedPlugin(routes, { id: 'me', displayName: 'Me', isOrgAdmin });
   TestBed.configureTestingModule({ providers: [{ provide: SailpointPluginService, useValue: plugin }] });
   return { api: TestBed.inject(BulkApiService), plugin };
 }
@@ -169,7 +169,7 @@ describe('BulkApiService', () => {
     expect(options.map((o) => o.subLabel)).toEqual(['Access profile · ACME SaaS', 'Entitlement · Active Directory', 'Role']);
     expect(options[1].value).toEqual({ id: 'e', type: 'ENTITLEMENT', name: 'ACME Group' });
     const [objects, entitlements] = plugin.get.mock.calls.map((c) => decodeURIComponent(c[0] as string));
-    expect(objects).toContain('/v3/requestable-objects?types=ACCESS_PROFILE&types=ROLE&');
+    expect(objects).toContain('/v3/requestable-objects?identity-id=me&types=ACCESS_PROFILE&types=ROLE&');
     expect(objects).not.toContain('ENTITLEMENT');
     expect(objects).toContain('name sw "ACME"');
     expect(entitlements).toContain('/v2025/entitlements?filters=requestable eq true and name sw "ACME"');
@@ -222,6 +222,67 @@ describe('BulkApiService', () => {
     const search = plugin.post.mock.calls[0][1] as { indices: string[]; query: { query: string } };
     expect(search.indices).toEqual(['identities']);
     expect(search.query.query).toBe('id:(p1 OR p2 OR p3)');
+  });
+
+  describe('as a non-admin (only calls an sp:user session may make; verified live)', () => {
+    const urls = (plugin: ReturnType<typeof routedPlugin>) =>
+      [...plugin.get.mock.calls, ...plugin.post.mock.calls].map((c) => String(c[0]));
+    const publicRow = (id: string, name: string, email: string, department = 'Radiology') =>
+      ({ id, name, alias: name, email, attributes: [{ key: 'department', name: 'Department', value: department }] });
+
+    it('searches people through public identities (search and accounts are 403)', async () => {
+      const { api, plugin } = setup({ '/v3/public-identities': [publicRow('id-1', 'Mei.Lin', 'mei@example.edu')] }, false);
+      expect(await api.searchPeople('mei"')).toEqual([{ id: 'id-1', name: 'Mei.Lin', email: 'mei@example.edu', detail: 'Radiology' }]);
+      expect(urls(plugin)).toHaveLength(1);
+      const params = new URLSearchParams(urls(plugin)[0].split('?')[1]);
+      expect(params.get('filters')).toBe('displayName sw "mei\\"" or alias sw "mei\\"" or email sw "mei\\"" or firstname sw "mei\\"" '
+        + 'or lastname sw "mei\\""');
+      expect(params.get('sorters')).toBe('name');
+    });
+
+    it('resolves pasted IDs, usernames and emails through public identities, with no admin-only fallbacks', async () => {
+      const { api, plugin } = setup({
+        '/v3/public-identities': (path: string) => {
+          const f = new URLSearchParams(path.split('?')[1]).get('filters') ?? '';
+          return f.startsWith('id in') ? [publicRow(ALAN, 'Alan.Bradley', 'alan@example.edu')]
+            : [publicRow('id-mei', 'mei.lin', 'Mei.Lin@example.edu')];
+        },
+      }, false);
+      const result = await api.resolvePeople([ALAN, 'MEI.LIN@example.edu', 'nobody']);
+      expect(result.resolved.map((p) => p.id)).toEqual([ALAN, 'id-mei']);
+      expect(result.unresolved).toEqual(['nobody']);
+      expect(urls(plugin).every((u) => u.startsWith('/v3/public-identities?'))).toBe(true);
+      const filters = urls(plugin).map((u) => new URLSearchParams(u.split('?')[1]).get('filters'));
+      expect(filters).toContain(`id in ("${ALAN}")`);
+      expect(filters).toContain('alias eq "MEI.LIN@example.edu" or email eq "MEI.LIN@example.edu" or alias eq "nobody" or email eq "nobody"');
+    });
+
+    it('asks for the catalog as the signed-in user (403 without identity-id) and skips source names (search)', async () => {
+      const { api, plugin } = setup({
+        '/v3/requestable-objects': [{ id: 'ap-1', name: 'ACME Bulk Test Access', type: 'ACCESS_PROFILE' }],
+        '/v2025/entitlements': [],
+      }, false);
+      const options = await api.catalog({ ...DEMO_CONFIG, nameStartsWith: null });
+      expect(options.map((o) => o.value.id)).toEqual(['ap-1']);
+      expect(urls(plugin)[0]).toMatch(/^\/v3\/requestable-objects\?identity-id=me&types=ACCESS_PROFILE&types=ROLE&/);
+      expect(urls(plugin).some((u) => u.startsWith('/v3/search'))).toBe(false);
+    });
+
+    it('checks access profiles for other people, and leaves entitlements out', async () => {
+      const { api, plugin } = setup({ '/v3/requestable-objects?identity-id=p1': [{ id: 'ap', requestStatus: 'ASSIGNED' }] }, false);
+      const found = await api.existingAccess(['p1'], [
+        { id: 'ap', type: 'ACCESS_PROFILE', name: 'X' }, { id: 'ent', type: 'ENTITLEMENT', name: 'Group' }]);
+      expect(found).toEqual([{ personId: 'p1', itemId: 'ap', status: 'ASSIGNED' }]);
+      expect(api.entitlementsChecked()).toBe(false);
+      expect(urls(plugin).every((u) => u.startsWith('/v3/requestable-objects?identity-id=p1'))).toBe(true);
+    });
+  });
+
+  it('asks for the catalog with the signed-in admin\'s identity-id too', async () => {
+    const { api, plugin } = setup({ '/v3/requestable-objects': [], '/v2025/entitlements': [] });
+    await api.catalog({ ...DEMO_CONFIG, nameStartsWith: null });
+    expect(String(plugin.get.mock.calls[0][0])).toContain('/v3/requestable-objects?identity-id=me&');
+    expect(api.entitlementsChecked()).toBe(true);
   });
 
   describe('submitting through the Launcher (CONTRACTS §9)', () => {

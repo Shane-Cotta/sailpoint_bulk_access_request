@@ -249,6 +249,10 @@ When dry-run behaves, set `"mode": "live"` in the config and run `install.py` ag
   as `alias eq "…" or email eq "…"` (that API only allows `eq` on alias and email; both are case-insensitive). Entries that
   list misses, such as identities not indexed yet, are then looked up through identity search and accounts
   (`name in`, `nativeIdentity in`, `identityId in`), and IDs one by one as a last resort. A progress bar shows how far it got.
+  **Without ORG_ADMIN** those identity, search and accounts calls are refused (403), so search and pasted lists use
+  `/v3/public-identities` instead (same `id in` / `alias eq` / `email eq` batches; type-ahead by display name, username, email,
+  first or last name). It has no fallbacks, so someone it doesn't list stays unresolved; and the "already has it" check
+  covers access profiles and roles only (entitlements need admin rights; the review step says so).
   The chosen people show as a filtered, paged list.
 - **My bulk requests.** This tab shows your requests grouped by INC: the approvals (who decides, the decision, when; the parts of a
   split request together, with "2 of 3 approved") and, once approved in live mode, every access request with its status and,
@@ -278,7 +282,9 @@ cd .. && python -m pytest plugin/tests -q    # installer tests (dry-run payloads
 ```
 
 **Demo mode.** `?demo=<scenario>` runs the page on its own with made-up data. The scenarios are `new`, `people` (600 people:
-3 parts), `items`, `approver`, `approver-error`, `temporary`, `review`, `parts-review`, `submitted`, `parts-submitted`, `history`,
+3 parts), `items`, `approver`, `approver-error`, `temporary`, `review`, `parts-review`, `submitted`, `parts-submitted` (both submit
+through the Launcher, the default), `submitted-test-endpoint` (the same through the workflow test endpoint), `launcher-denied`
+(a user without the Launcher Access profile submits), `history`,
 `approvals` (a non-admin item approver with 300 + 40 approvals from two bulk requests, and 3 others) and `approvals-partial`
 (the same, but some calls are throttled or fail, a colleague decides some first, and a few stay pending). Demo mode is ignored inside ISC, where the page always runs in an iframe, and its code
 loads only when `?demo=` is in the URL (`src/main.ts` imports it on demand). The screenshots above

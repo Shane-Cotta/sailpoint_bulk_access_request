@@ -32,7 +32,7 @@ export class CatalogStore {
     try {
       this.options.set(await this.api.catalog(this.cfg()));
     } catch (err) {
-      this.error.set(describeError(err));
+      this.error.set(describeError(err, 'read', 'the catalog'));
       this.options.set([]);
     } finally {
       this.loading.set(false);

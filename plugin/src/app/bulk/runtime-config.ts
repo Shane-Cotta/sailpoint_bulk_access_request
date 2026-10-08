@@ -37,10 +37,11 @@ export interface TemporaryConfig {
  *    holding the Launcher Access profile can submit (CONTRACTS §9);
  *  - test-endpoint: it starts the disabled plugin workflow through the workflow test endpoint (ORG_ADMIN only).
  */
-export type SubmitMode = 'launcher' | 'test-endpoint';
-export const SUBMIT_MODES: readonly SubmitMode[] = ['launcher', 'test-endpoint'];
+type SubmitMode = 'launcher' | 'test-endpoint';
+const SUBMIT_MODES: readonly SubmitMode[] = ['launcher', 'test-endpoint'];
 export const MSG_SUBMIT = 'submit must be "launcher" or "test-endpoint".';
-export const MSG_LAUNCHER_ID = 'launcherId is missing: plugin/install.py writes it when submit is "launcher". Re-run it.';
+export const MSG_LAUNCHER_ID = 'This page doesn\'t know which Launcher to use yet (launcherId is missing): run plugin/install.py, '
+  + 'which writes it when submit is "launcher".';
 
 /** How the Approvals tab sends decisions (config.BULK_ENDPOINT_MODES). */
 export type BulkEndpointMode = 'auto' | 'always' | 'never';
@@ -147,8 +148,9 @@ export function parseRuntimeConfig(raw: unknown): RuntimeConfig {
     if (!SUBMIT_MODES.includes(data['submit'] as SubmitMode)) throw new RuntimeConfigError(MSG_SUBMIT);
     cfg.submit = data['submit'] as SubmitMode;
   }
+  // Launcher mode without an ID (the committed neutral file) still loads, so the page can be browsed; submitting
+  // then stops with MSG_LAUNCHER_ID. plugin/install.py always writes the ID in launcher mode.
   cfg.launcherId = str('launcherId') || null;
-  if (cfg.submit === 'launcher' && !cfg.launcherId) throw new RuntimeConfigError(MSG_LAUNCHER_ID);
   cfg.launcherAccessName = str('launcherAccessName') || cfg.launcherAccessName;
   cfg.workflowName = str('workflowName') || cfg.workflowName;
   cfg.workflowId = str('workflowId') || null;

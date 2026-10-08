@@ -161,7 +161,7 @@ def part_label(i: int, n: int) -> str:
 
 
 # ── temporary access ──────────────────────────────────────────────────────────
-PERMANENT, DURATION, END_DATE = "permanent", "duration", "endDate"
+PERMANENT, DURATION = "permanent", "duration"
 ROUTES = ("launcher", "plugin")
 UNIT_WORDS = {"HOURS": "hour", "DAYS": "day", "WEEKS": "week", "MONTHS": "month"}
 
@@ -268,7 +268,7 @@ def _resolve_access(cfg: Config, mode: str, n: Any, unit: Any, end_date: Any, ro
         if max_days is not None and count * UNIT_MAX_DAYS[unit] > max_days:
             return None, [msg_max_days(max_days)]
         return AccessChoice(f"{count}{DURATION_UNITS[unit]}", duration_label(count, unit)), []
-    # END_DATE
+    # endDate
     d = _parse_date(end_date)
     now = _local(now or datetime.now(tz), tz)
     today = today or now.date()

@@ -979,3 +979,11 @@ def test_show_config_says_who_can_submit_from_the_plugin(tmp_path, capsys):
     assert cli.main(["show-config", "--config", str(path)]) == 0
     out = capsys.readouterr().out
     assert "plugin.submit \"test-endpoint\"" in out and "only ORG_ADMIN users can submit" in out
+
+
+def test_clip_flattens_whitespace_and_cuts_with_an_ellipsis():
+    # Mirrors rules.ts clip (the plugin clips the justification it sends; rules.spec.ts has the same cases).
+    assert rules.clip("  a\n b\t c  ", 10) == "a b c"
+    assert rules.clip("abcdefghij", 10) == "abcdefghij"
+    assert rules.clip("abcdefghijk", 10) == "abcdefghi…"
+    assert len(rules.clip("x" * 500, 145)) == 145

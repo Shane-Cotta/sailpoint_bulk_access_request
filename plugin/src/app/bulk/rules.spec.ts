@@ -94,8 +94,9 @@ describe('runtime config', () => {
     expect(parseRuntimeConfig(old).submit).toBe('test-endpoint');
     expect(cfgWith({ submit: 'test-endpoint', launcherId: null }).submit).toBe('test-endpoint');
     expect(() => cfgWith({ submit: 'backend' })).toThrow(MSG_SUBMIT);
-    // The committed neutral file (launcherId null) refuses to submit until install.py fills it in.
-    expect(() => cfgWith({ launcherId: null })).toThrow(MSG_LAUNCHER_ID);
+    // The committed neutral file (launcherId null) loads; submitting stops until install.py fills it in.
+    expect(cfgWith({ launcherId: null })).toMatchObject({ submit: 'launcher', launcherId: null });
+    expect(MSG_LAUNCHER_ID).toContain('plugin/install.py');
   });
 
   it('leaves temporary access off for a config file from an older install (no `temporary` block)', () => {
