@@ -87,7 +87,11 @@
               <p class="muted">
                 @switch (g.status) {
                   @case ('PENDING') { None yet: access is requested once {{ g.submissions[0]?.approver }} approves. }
-                  @case ('APPROVED') { None: approved while the installation was in dry-run mode, or still being filed. }
+                  @case ('APPROVED') {
+                    @if (cfg().mode === 'dry-run') { None: this installation is in dry-run mode, so nothing was requested. }
+                    @else if (isAdmin()) { None yet: still being filed. }
+                    @else { Filed by the workflow on everyone's behalf, so only administrators can list them. The item owners decide them in their Approvals; check back here for the overall status. }
+                  }
                   @default { None: nothing is requested unless the request is approved. }
                 }
               </p>
