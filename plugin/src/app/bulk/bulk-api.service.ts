@@ -812,12 +812,13 @@ export class BulkApiService {
 
   /**
    * The generic approvals `requesterId` requested (the workflow files the bulk approval in the name of whoever
-   * submitted), newest first. Filtering on `requesterId` (verified to work) keeps an admin to their own instead
-   * of the tenant's latest 250.
+   * submitted), newest first. It's the `requesterId` *query parameter*: verified live, it returns a non-admin's own
+   * approvals (another ID → 400) and keeps an admin to that requester, while `filters=requesterId eq …` returns
+   * nothing for a non-admin.
    */
   async approvals(requesterId: string): Promise<GenericApproval[]> {
-    const filters = encodeURIComponent(`requesterId eq ${quoted(requesterId)}`);
-    return (await this.plugin.get<GenericApproval[]>(`/v2025/generic-approvals?limit=250&sorters=-createdDate&filters=${filters}`)) ?? [];
+    return (await this.plugin.get<GenericApproval[]>(
+      `/v2025/generic-approvals?limit=250&sorters=-createdDate&requesterId=${encodeURIComponent(requesterId)}`)) ?? [];
   }
 
   /**

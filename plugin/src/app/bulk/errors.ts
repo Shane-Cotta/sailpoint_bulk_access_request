@@ -57,7 +57,7 @@ type SubmitConfig = Pick<RuntimeConfig, 'submit' | 'launcherName' | 'launcherAcc
 export function describeSubmitError(err: unknown, cfg: SubmitConfig): string {
   if (cfg.submit === 'launcher') {
     if (isLauncherAccessDenied(err)) {
-      return `You need the ${cfg.launcherAccessName} access to submit; request it in the Request Center.`;
+      return `To submit, you need '${cfg.launcherAccessName}'. Request it in the Request Center.`;
     }
   } else if (refused(err)) {
     return `SailPoint refused the call (HTTP ${(err as ApiErrorLike).status}). Submitting from this page needs ORG_ADMIN `

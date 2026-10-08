@@ -117,9 +117,9 @@ The Launcher's workflow then runs exactly as from the Launchpad, and the approva
 takes it from the session, so it can't be faked). The 30-person and catalog limits of the Launchpad's form are its pickers'
 only: through the API a part carries up to 250 people (verified live). An end date is sent as a number of hours in the form's
 duration fields, so the approver sees `Temporary: 720h` rather than `Temporary: until …`. Following a part uses only what the
-user may read: their generic approvals (`requesterId eq <me>`) and the process's messages; no workflow executions.
+user may read: their generic approvals (`?requesterId=<me>`) and the process's messages; no workflow executions.
 
-Someone without the profile gets **"You need the *<prefix> Bulk Access Request - Launcher Access* access to submit; request
+Someone without the profile gets **"To submit, you need '*<prefix> Bulk Access Request - Launcher Access*'. Request
 it in the Request Center."** (SailPoint answers the launch with 401/403, or 500 "insufficient authorization").
 This was verified live on 2026-10-08 as a real non-admin user with Launcher Access (see `docs/dev/CONTRACTS.md` §9).
 
@@ -304,7 +304,7 @@ catalog filter, `splitIntoParts` / `partLabel`, temporary-access checks and the 
 | The workflow run **Failed** and no approval appeared | The workflow's own checks stopped it: the INC was invalid or the approver was the requester. The requester gets an email (test-endpoint mode); through the Launcher, the page shows the Launcher's message. |
 | `sail` prints "Secrets storage is not currently functional" | This is harmless. The scripts pass the PAT through environment variables. |
 | "Part 2 didn't start" after submitting a big request | That part's launch or form submission (or test-endpoint call) failed; the message says why. The other parts are unaffected; press **Retry part 2**. |
-| "You need the … Launcher Access access to submit" | The user doesn't hold the Launcher Access profile (yet). They request it in the Request Center; once it's provisioned (about a minute), submit again. |
+| "To submit, you need '… Launcher Access'" | The user doesn't hold the Launcher Access profile (yet). They request it in the Request Center; once it's provisioned (about a minute), submit again. |
 | "The Launcher form refused the request (…)" | The Launcher form's own checks refused a value (e.g. the INC). Nothing was sent for approval; fix it and submit again. |
 | "…its form didn't appear within 30 seconds" | The Launcher started but its workflow didn't show the form. Check that the Launcher's workflow is enabled (`bulkaccess.py status`). |
 | "Configuration problem: launcherId is missing" | The runtime config was not written by `plugin/install.py` (the committed copy has no Launcher ID). Run `bulkaccess.py apply`. |

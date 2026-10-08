@@ -359,11 +359,13 @@ describe('BulkApiService', () => {
       ])).toBe('Choose a different approver: Not you .');
     });
 
-    it("lists the caller's own approvals with a requesterId filter", async () => {
+    it("lists the caller's own approvals with the requesterId query parameter (the filter is empty for non-admins)", async () => {
       const { api, plugin } = setup({ '/v2025/generic-approvals?': [] });
       await api.approvals('me-1');
-      const url = String(plugin.get.mock.calls[0][0]);
-      expect(new URLSearchParams(url.split('?')[1]).get('filters')).toBe('requesterId eq "me-1"');
+      const params = new URLSearchParams(String(plugin.get.mock.calls[0][0]).split('?')[1]);
+      expect(params.get('requesterId')).toBe('me-1');
+      expect(params.get('filters')).toBeNull();
+      expect(params.get('sorters')).toBe('-createdDate');
     });
   });
 

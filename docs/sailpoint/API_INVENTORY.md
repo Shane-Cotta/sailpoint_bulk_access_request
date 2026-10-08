@@ -106,7 +106,7 @@ All calls go through `SailpointPluginService.get/post` → `@sailpoint/ui-plugin
 | Submit (test-endpoint mode) | `GET /v2025/workflows?limit=250` | Find the workflow by name (only when the runtime config has no ID) | ORG_ADMIN | `sp:workflow:read` | GA [L]; no deprecation header (v3 sent `Deprecation: 31 Mar 2027`) |
 | Submit (test-endpoint mode) | `POST /v2025/workflows/{id}/test` `{input}` | **Start one run per part** (the workflow must be disabled) | ORG_ADMIN | `sp:workflow-execute:external` | GA [S] (same contract as v3; not called live, it starts a run) |
 | Submit (test-endpoint mode) | `GET /v2025/workflow-executions/{id}` | Follow each run (not used in launcher mode) | ORG_ADMIN | `sp:workflow-execution:read` | GA [L]; same keys as v3, no deprecation header |
-| Submit, My bulk requests | `GET /v2025/generic-approvals?limit=250&sorters=-createdDate&filters=requesterId eq "<me>"`, `GET /v2025/generic-approvals/{id}` | Find the part's approval (by `workflowExecutionId`, or by name), approver and decider | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] (filter and sort verified with the admin PAT) |
+| Submit, My bulk requests | `GET /v2025/generic-approvals?limit=250&sorters=-createdDate&requesterId=<me>` (query parameter; the `filters=` form is empty for non-admins), `GET /v2025/generic-approvals/{id}` | Find the part's approval (by `workflowExecutionId`, or by name), approver and decider | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] (filter and sort verified with the admin PAT) |
 | My bulk requests | `GET /v3/access-request-status?requested-by=<me>&limit=250&offset=N&sorters=-created` | Requests carrying an INC | ORG_ADMIN; any user for their own [D] | `idn:access-request-status:read` | GA (legacy v3) [L] |
 | **Approvals** | `GET /v2025/generic-approvals?mine=true&include-comments=true&limit=250&offset=N&sorters=createdDate&filters=status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"` | The caller's pending access-request approvals, with the item comment holding the INC | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] (as a non-admin) |
 | **Approvals** | `POST /v2025/generic-approvals/{id}/approve` and `…/reject` `{comment}` | Decide as the caller (default path, ≤ 8 per second) | APPROVAL_OWNER | `idn:access-request-approvals:manage` | GA [L] (as a non-admin) |
@@ -123,7 +123,7 @@ All calls go through `SailpointPluginService.get/post` → `@sailpoint/ui-plugin
 | People search, pasted lists | ✔ | `/v3/public-identities` (identities, search and accounts are 403) |
 | Catalog | ✔ | `requestable-objects?identity-id=<me>` (403 without it), `/v2025/entitlements` |
 | "Already has it" | access profiles and roles ✔; entitlements skipped (said on the review step) | `requestable-objects?identity-id=<person>`; search is 403 and another person's `access-request-status` is 400 |
-| My bulk requests | ✔ | `generic-approvals?filters=requesterId eq "<me>"`, `access-request-status?requested-by=<me>` |
+| My bulk requests | ✔ | `generic-approvals?requesterId=<me>` (query parameter); `access-request-status?requested-by=<me>` is empty for bulk requests (filed by the workflow owner) |
 | Approvals tab | ✔ | `generic-approvals` (APPROVAL_OWNER) |
 
 With `plugin.submit: "test-endpoint"`, submitting needs ORG_ADMIN and the *New request* tab says so.

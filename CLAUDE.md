@@ -110,7 +110,9 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
   - **`test-endpoint`**: `POST /v2025/workflows/{id}/test`, then `GET /v2025/workflow-executions/{id}`. That requires a disabled
     workflow and an ORG_ADMIN user. The `/v3/workflows…` and `/v3/workflow-executions…` paths answer the same but send
     `Deprecation: 31 Mar 2027`; v2025 sends none.
-  - `GET /v2025/generic-approvals?filters=requesterId eq "<id>"&sorters=-createdDate` works (`requester.id` is a 400).
+  - The caller's own generic approvals: the **`requesterId=<me>` query parameter** (with `sorters=-createdDate`). For a
+    non-admin `filters=requesterId eq "<me>"` (and `filters=name sw …`) returns `[]`; the parameter returns their approvals,
+    and another person's ID is 400. An admin gets exactly that requester's approvals with it. (`filters=requester.id …` is a 400.)
 - **APIs:**
   - `/v3/requestable-objects` only lists **access profiles and roles** (its `types` enum). `types=ENTITLEMENT` alone returns 400,
     and next to another type (repeated `types=`) it is silently dropped. Never call it without `types` (that means every type).
@@ -131,7 +133,10 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
   | `GET /v2025/identities` (list), `/v2025/identities/{other}`, `POST /v3/search`, `GET /v3/accounts` | **403** | admins only |
   | `GET /v3/public-identities` (also `/v2025/…`) | 200 | people search and pasted lists for non-admins |
   | `GET /v3/access-request-status?requested-for=<someone else>` | **400** "must be the current user" | entitlement "already has it": admins only |
-  | `GET /v3/access-request-status?requested-by=<me>`, `generic-approvals?filters=requesterId eq "<me>"` | 200 | My bulk requests |
+  | `GET /v2025/generic-approvals?requesterId=<me>` (query parameter) | 200, their approvals | My bulk requests, following a submission |
+  | `GET /v2025/generic-approvals?filters=requesterId eq "<me>"` | 200 but **always `[]`** | not used |
+  | `GET /v3/access-request-status?requested-by=<me>` | 200, but `[]` for bulk requests (filed by the workflow owner) | My bulk requests (best effort) |
+  | `GET /v2025/interactive-processes`, `/beta/interactive-processes` | 200, their own Launcher runs | not used yet |
   | `POST /v2025/launchers/{id}/launch`, `GET /beta/interactive-processes/{id}/blocks`, `GET`/`PATCH /v2025/form-instances/{id}` | 200 (with Launcher Access) | submit (launcher mode) |
 
   `/v3/public-identities` rows: `id, name, alias, email, status, identityState, manager, attributes[{key,name,value}]` (no

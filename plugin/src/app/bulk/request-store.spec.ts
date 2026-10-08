@@ -257,7 +257,7 @@ describe('RequestStore', () => {
       expect(post).toHaveBeenCalledTimes(1);
       expect(store.submission()?.state).toBe('error');
       expect(store.startFailed()).toHaveLength(3);
-      const message = 'You need the ACME Bulk Access Request - Launcher Access access to submit; request it in the Request Center.';
+      const message = "To submit, you need 'ACME Bulk Access Request - Launcher Access'. Request it in the Request Center.";
       expect(store.startFailed().map((p) => p.message)).toEqual([message, message, message]);
       expect(store.submission()?.message).toContain(message);
     });
@@ -351,9 +351,9 @@ describe('RequestStore', () => {
     expect(describeError({ status: 400, body: { messages: [{ text: 'bad input' }] } })).toBe('bad input');
     // Launcher mode: the missing access, by its configured name.
     expect(describeSubmitError({ status: 403 }, cfg))
-      .toBe('You need the ACME Bulk Access Request - Launcher Access access to submit; request it in the Request Center.');
+      .toBe("To submit, you need 'ACME Bulk Access Request - Launcher Access'. Request it in the Request Center.");
     expect(describeSubmitError({ status: 500, body: { messages: [{ text: 'insufficient authorization' }] } }, cfg))
-      .toContain('Launcher Access access');
+      .toContain("you need 'ACME Bulk Access Request - Launcher Access'");
     expect(describeSubmitError({ status: 500, body: { messages: [{ text: 'boom' }] } }, cfg)).toBe('boom');
     // Test-endpoint mode: ORG_ADMIN, pointing to the configured Launcher.
     const te = describeSubmitError({ status: 403 }, { ...cfg, submit: 'test-endpoint', launcherName: 'XYZ Launcher' });

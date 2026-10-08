@@ -220,7 +220,14 @@ export class DemoPluginService {
     }
     // Like the real API, the list leaves out approvers and deciders; the detail call has them.
     if (route === '/v2025/generic-approvals') {
-      return delay(approvals.map(({ approvers: _a, approvedBy: _b, rejectedBy: _r, ...row }) => row) as T);
+      // Like the real API: the requesterId query parameter must be the caller's own unless they're an admin
+      // (verified live: 400), and it narrows the list to that requester.
+      const requester = params.get('requesterId');
+      if (requester && requester !== DEMO_ME.id && !admin) {
+        return Promise.reject(apiError(400, "requesterId must match the calling user's identity ID"));
+      }
+      return delay(approvals.filter((a) => !requester || a.requester?.identityID === requester)
+        .map(({ approvers: _a, approvedBy: _b, rejectedBy: _r, ...row }) => row) as T);
     }
     if (route.startsWith('/v2025/generic-approvals/')) {
       const hit = [...this.pending, ...approvals].find((a) => a.id === route.split('/').pop());

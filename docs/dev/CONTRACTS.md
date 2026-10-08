@@ -259,14 +259,14 @@ is the Launcher's own (`Temporary: 720h` for an end date, not `Temporary: until 
 spoofed). With the admin PAT, 250 people in one form reached the workflow intact ✔ PAT (an approver placed at #250 was caught by
 *Approver In People?*).
 
-**Following a part** (only what a non-admin can read; no `workflow-executions`): `GET /v2025/generic-approvals?limit=250&sorters=-createdDate&filters=requesterId eq "<me>"`
+**Following a part** (only what a non-admin can read; no `workflow-executions`): `GET /v2025/generic-approvals?limit=250&sorters=-createdDate&requesterId=<me>` (the **query parameter**: `filters=requesterId eq …` returns `[]` for a non-admin ✔ non-admin)
 (filter and newest-first sort work ✔ PAT; not yet checked with a non-admin session), matched by `workflowExecutionId` or by name
 `Bulk access {inc}{partLabel}`; decided → done. Until the approval exists, the process's blocks are read again: a non-FORM block
 with category `ERROR` (the workflow's *Reject …* interactive messages; shape assumed from the FORM block) → "The workflow stopped
 before the approval: {title}: {message}". After 10 minutes, "still waiting".
 
 **Errors:** a 401/403, or a 500 whose message says "insufficient authorization", on any of these calls →
-`You need the {launcherAccessName} access to submit; request it in the Request Center.` (`errors.ts` `describeSubmitError`),
+`To submit, you need '{launcherAccessName}'. Request it in the Request Center.` (`errors.ts` `describeSubmitError`),
 and the remaining parts are not tried.
 
 ## Test data and safety (live tests in a test or shared tenant)
