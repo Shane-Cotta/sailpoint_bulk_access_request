@@ -34,6 +34,7 @@ FORMS = "/v2025/form-definitions"
 WORKFLOWS = "/v2025/workflows"
 LAUNCHERS = "/v2025/launchers"
 ACCESS_PROFILES = "/v3/access-profiles"
+ENTITLEMENTS = "/v2025/entitlements"
 
 
 def launcher_entitlement(tenant: Tenant, launcher_id: str, attempts: int = 10) -> dict:
@@ -41,7 +42,7 @@ def launcher_entitlement(tenant: Tenant, launcher_id: str, attempts: int = 10) -
     import time
     q = urllib.parse.quote(f'value eq "{launcher_id}"')
     for _ in range(attempts):   # created asynchronously right after the Launcher
-        rows = tenant.call("GET", f"/v2025/entitlements?filters={q}&limit=5") or []
+        rows = tenant.call("GET", f"{ENTITLEMENTS}?filters={q}&limit=5") or []
         hit = next((e for e in rows if e.get("attribute") == "assignedLaunchers"), None)
         if hit:
             return hit
@@ -54,17 +55,31 @@ def find_access_profile(tenant: Tenant, name: str) -> dict | None:
     return next((a for a in tenant.call("GET", f"{ACCESS_PROFILES}?filters={q}&limit=5") or [] if a.get("name") == name), None)
 
 
-def requestable_objects(tenant: Tenant, cfg: config_mod.Config) -> list[dict]:
-    """The Request Center catalog, paged, limited to the configured types."""
+def _paged(tenant: Tenant, path: str) -> list[dict]:
     out, offset = [], 0
-    # Repeat the parameter: a comma list that includes ENTITLEMENT is rejected with a 400.
-    types = "&".join(f"types={t}" for t in cfg.catalog_types)
     while True:
-        page = tenant.call("GET", f"/v3/requestable-objects?{types}&limit=250&offset={offset}")
+        page = tenant.call("GET", f"{path}&limit=250&offset={offset}")
         out.extend(page or [])
         if not page or len(page) < 250:
             return out
         offset += 250
+
+
+def requestable_objects(tenant: Tenant, cfg: config_mod.Config) -> list[dict]:
+    """The Request Center catalog, paged, limited to the configured types.
+
+    Access profiles and roles come from /v3/requestable-objects, which can't list entitlements
+    (CONTRACTS §8); requestable entitlements come from /v2025/entitlements, tagged ENTITLEMENT.
+    """
+    out = []
+    types = rules.requestable_object_types(cfg)
+    if types:   # without `types` the API would return every type
+        out += _paged(tenant, "/v3/requestable-objects?" + "&".join(f"types={t}" for t in types))
+    flt = rules.entitlement_filter(cfg)
+    if flt:
+        out += [{**e, "type": "ENTITLEMENT"}
+                for e in _paged(tenant, f"{ENTITLEMENTS}?filters={urllib.parse.quote(flt)}&sorters=name")]
+    return out
 
 
 def find_form(tenant: Tenant, name: str) -> dict | None:

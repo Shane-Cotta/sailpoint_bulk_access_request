@@ -99,7 +99,7 @@ user who can see the plugin; see above.) The reason is how the page
 starts the workflow:
 
 - A browser plugin can't safely hold the OAuth client secret that a workflow's external trigger needs.
-- So the page starts the workflow through SailPoint's **workflow test endpoint** (`POST /v3/workflows/{id}/test`), using
+- So the page starts the workflow through SailPoint's **workflow test endpoint** (`POST /v2025/workflows/{id}/test`), using
   the signed-in user's own session. Only users with the right to test workflows can call that endpoint.
 - The test endpoint only runs **disabled** workflows. The installer creates the plugin's workflow disabled, so leave it
   that way.

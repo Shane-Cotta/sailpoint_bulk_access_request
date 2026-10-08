@@ -140,13 +140,21 @@ export class DemoPluginService {
     const [route] = path.split('?');
     const params = new URLSearchParams(path.split('?')[1] ?? '');
     if (route === '/v3/requestable-objects') {
+      // Like the real API: access profiles and roles only, never entitlements.
+      const types = params.getAll('types');
+      const rows = DEMO_CATALOG.filter((c) => c.row['type'] !== 'ENTITLEMENT' && (!types.length || types.includes(String(c.row['type']))));
       const who = params.get('identity-id');
       if (who) {
         const held = DEMO_HELD[who] ?? {};
-        return delay(DEMO_CATALOG.filter((c) => held[String(c.row['id'])])
+        return delay(rows.filter((c) => held[String(c.row['id'])])
           .map((c) => ({ ...c.row, requestStatus: held[String(c.row['id'])] })) as T, 400);
       }
-      return delay(DEMO_CATALOG.map((c) => c.row) as T);
+      return delay(rows.map((c) => c.row) as T);
+    }
+    if (route === '/v2025/entitlements') {
+      // Entitlement rows carry their source and no `type`.
+      return delay(DEMO_CATALOG.filter((c) => c.row['type'] === 'ENTITLEMENT')
+        .map(({ row: { type: _t, requestStatus: _s, ...row }, source }) => ({ ...row, requestable: true, source: { name: source } })) as T);
     }
     if (route.startsWith('/v2025/identities/')) {
       const id = route.split('/').pop();
@@ -163,8 +171,8 @@ export class DemoPluginService {
           attributes: { displayName: d.displayName, department: d.attributes.department } })) as T);
     }
     if (route === '/v3/accounts') return delay([] as T);
-    if (route === '/v3/workflows') return delay([{ id: 'demo-workflow', name: DEMO_CONFIG.workflowName }] as T);
-    if (route.startsWith('/v3/workflow-executions/')) return delay({ id: route.split('/').pop(), status: 'Running' } as T);
+    if (route === '/v2025/workflows') return delay([{ id: 'demo-workflow', name: DEMO_CONFIG.workflowName }] as T);
+    if (route.startsWith('/v2025/workflow-executions/')) return delay({ id: route.split('/').pop(), status: 'Running' } as T);
     const approvals = [...this.submitted, ...DEMO_APPROVALS];
     if (route === '/v2025/generic-approvals' && params.get('mine') === 'true') {
       // The Approvals tab: the user's pending item approvals, oldest first, a page at a time.
@@ -186,6 +194,12 @@ export class DemoPluginService {
       const hit = [...this.pending, ...approvals].find((a) => a.id === route.split('/').pop());
       return hit ? delay(hit as T) : Promise.reject(Object.assign(new Error('Not found'), { status: 404 }));
     }
+    if (route === '/v3/access-request-status' && params.get('requested-for')) {
+      // Open entitlement requests of one person (the existing-access check).
+      const held = DEMO_HELD[params.get('requested-for')!] ?? {};
+      return delay(DEMO_CATALOG.filter((c) => c.row['type'] === 'ENTITLEMENT' && held[String(c.row['id'])] === 'PENDING')
+        .map((c) => ({ id: c.row['id'], name: c.row['name'], type: 'ENTITLEMENT', state: 'EXECUTING', requestType: 'GRANT_ACCESS' })) as T, 300);
+    }
     if (route === '/v3/access-request-status') {
       const offset = Number(params.get('offset') ?? 0);
       return delay(DEMO_REQUESTS.slice(offset, offset + Number(params.get('limit') ?? 250)) as T);
@@ -198,6 +212,14 @@ export class DemoPluginService {
     if (path.startsWith('/v3/search')) {
       const indices = (body['indices'] as string[]) ?? [];
       const q = String((body['query'] as { query: string }).query);
+      if (indices.includes('identities') && q.startsWith('id:(')) {
+        // Held entitlements of the chosen people (the existing-access check).
+        return delay(Object.entries(DEMO_HELD).filter(([id]) => q.includes(id)).map(([id, held]) => ({
+          id,
+          access: DEMO_CATALOG.filter((c) => c.row['type'] === 'ENTITLEMENT' && held[String(c.row['id'])] === 'ASSIGNED')
+            .map((c) => ({ id: c.row['id'], type: 'ENTITLEMENT' })),
+        })) as T, 300);
+      }
       if (indices.includes('identities')) {
         const term = q.replace(/\\/g, '').replace(/\*$/, '').toLowerCase();
         const exact = [...q.matchAll(/"([^"]+)"/g)].map((m) => m[1].toLowerCase());
@@ -219,7 +241,7 @@ export class DemoPluginService {
       }
       return delay({} as T, 300);
     }
-    if (/^\/v3\/workflows\/[^/]+\/test$/.test(path)) {
+    if (/^\/v2025\/workflows\/[^/]+\/test$/.test(path)) {
       const input = body['input'] as { inc: string; approverId: string; partLabel?: string; accessLabel?: string };
       const approver = DEMO_IDENTITIES.find((d) => d.id === input.approverId)?.displayName ?? 'the approver';
       const k = this.runs++;

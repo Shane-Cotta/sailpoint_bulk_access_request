@@ -87,7 +87,7 @@ export function demoPerson(displayName: string, nth = 0) {
   return { id: doc.id, name: doc.displayName, email: doc.email, detail: doc.attributes.department };
 }
 
-/** GET /v3/requestable-objects rows, plus the source each one comes from (search). */
+/** Catalog rows (GET /v3/requestable-objects, or /v2025/entitlements for entitlements), plus each one's source. */
 export const DEMO_CATALOG: { row: Record<string, unknown>; source: string | null }[] = [
   ['ACME Bulk Test Access', 'ACCESS_PROFILE', 'ACME SaaS', 'Read-only group on the ACME SaaS demo source.'],
   ['PACS Radiologist Workstation', 'ACCESS_PROFILE', 'PACS', 'View and report on imaging studies.'],
@@ -116,10 +116,16 @@ export function demoItem(name: string) {
   };
 }
 
-/** Who already holds what (requestable-objects?identity-id=…). */
+/** Who already holds what (requestable-objects?identity-id=…; entitlements: identity search and access-request-status). */
 export const DEMO_HELD: Record<string, Record<string, 'ASSIGNED' | 'PENDING'>> = {
-  [demoPerson('Alan Bradley').id]: { [demoItem('ACME Bulk Test Access').value.id]: 'ASSIGNED' },
-  [demoPerson('Beatriz Santos').id]: { [demoItem('PACS Radiologist Workstation').value.id]: 'PENDING' },
+  [demoPerson('Alan Bradley').id]: {
+    [demoItem('ACME Bulk Test Access').value.id]: 'ASSIGNED',
+    [demoItem('Zoom - Licensed User').value.id]: 'ASSIGNED',
+  },
+  [demoPerson('Beatriz Santos').id]: {
+    [demoItem('PACS Radiologist Workstation').value.id]: 'PENDING',
+    [demoItem('Box - Imaging Research Share').value.id]: 'PENDING',
+  },
 };
 
 export const DEMO_NEW_EXECUTION = 'e0000000-0000-4000-8000-000000000099';
