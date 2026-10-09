@@ -24,7 +24,7 @@ and deprecation details are in [API_CONTRACT_ALIGNMENT.md](API_CONTRACT_ALIGNMEN
 | ☐ | **Request Center** has requestable, **enabled** access profiles or roles, or **requestable entitlements** | A, B | `GET /v3/requestable-objects?types=ACCESS_PROFILE&types=ROLE&limit=5` is not empty · entitlements: `GET /v2025/entitlements?filters=requestable eq true&limit=5` is not empty (`requestable-objects` never returns entitlements [L], so the tool reads them here) · UI: Request Center |
 | ☐ | **Item approval schemes** are known (they still apply after the bulk approval; one approval per person and item) | A, B | `GET /v3/access-profiles/{id}` → `accessRequestConfig.approvalSchemes` · UI: Admin → Access Profiles → Access Request settings |
 | ☐ | **Workflow test endpoint** allowed for disabled workflows (only with `plugin.submit: "test-endpoint"`: the plugin starts runs this way) | B | After install, a dry-run submit from the plugin creates an execution · UI: Admin → Workflows → "<prefix> Bulk Access Request (Plugin)" → Execution History |
-| ☐ | **Email** delivery works for workflow emails (approved, denied, rejected) | A, B | UI: Admin → Global → Email configuration (or the tenant's custom sender) · a dry-run with `notifications.overrideRecipients` set to a test inbox |
+| ☐ | **Email** delivery works for workflow emails (pending, approved, denied, rejected; both deployments) | A, B | UI: Admin → Global → Email configuration (or the tenant's custom sender) · a dry-run with `notifications.overrideRecipients` set to a test inbox |
 | ☐ | Identities have an **email** attribute (requester, plus the approver for cc) | A, B | `GET /v2025/identities/{id}` → `attributes.email` |
 
 ## 2. Identities and user levels

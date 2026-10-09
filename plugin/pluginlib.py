@@ -108,33 +108,7 @@ def plugin_workflow(cfg: Config, owner_id: str, owner_name: str | None,
                     links: definitions.EmailLinks | None = None) -> dict[str, Any]:
     """The plugin workflow body, always DISABLED (it only runs through the test endpoint). `links`: where its
     emails point (the tenant's UI and the plugin page)."""
-    body = definitions.bulk_workflow(cfg, variant="plugin", owner_id=owner_id, owner_name=owner_name, links=links)
-    body["enabled"] = False
-    # SailPoint's validator rejects failure end steps without failureName/description
-    # (error e300). Newer core versions set them; fill them in for older ones.
-    for step in body["definition"]["steps"].values():
-        if step.get("type") == "failure":
-            step.setdefault("failureName", "Bulk request rejected")
-            step.setdefault("description", "Stopped before approval: the approver was the requester, "
-                                           "or the INC number was invalid.")
-    _loop_sees_workflow_state(body)
-    return body
-
-
-def _loop_sees_workflow_state(body: dict[str, Any]) -> None:
-    """Steps inside a SailPoint loop only see `$.loop.*`. Templates such as
-    "{{$.trigger.inc}}" in Manage Access's comment stay literal unless the loop's
-    context is the whole workflow state ("$") and the paths go through it.
-    Verified live; a no-op once core/definitions.py builds the loop this way."""
-    loop = body["definition"]["steps"].get("Request Access")
-    if not loop or loop["attributes"].get("context.$") == "$":
-        return
-    attrs = loop["attributes"]
-    manage = attrs["steps"]["Manage Access"]["attributes"]
-    items_path = attrs["context.$"]                    # e.g. "$.trigger.items"
-    attrs["context.$"] = "$"
-    manage["requestedItems.$"] = "$.loop.context" + items_path[1:]
-    manage["comments"] = manage["comments"].replace("{{$.", "{{$.loop.context.")
+    return definitions.bulk_workflow(cfg, variant="plugin", owner_id=owner_id, owner_name=owner_name, links=links)
 
 
 def owned_by_us(cfg: Config, name: str | None) -> bool:

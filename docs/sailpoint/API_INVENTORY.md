@@ -184,7 +184,7 @@ Built by `core/bulkaccess/definitions.py`. **Library status** comes from `GET /v
 | `sp:generic-approval` v1 | both: *Bulk Approval* | **One approval** (`approvalType SINGLE`, `singleApproverCategory IDENTITY`), with a timeout, the action at timeout and a priority | v1, not deprecated |
 | `sp:loop:iterator` v1 | both (live mode only): *Request Access* | One iteration per person (≤ 250), `context.$: "$"` | v1, not deprecated |
 | `sp:access:manage` **v2** (inside the loop) | both: *Manage Access* | `GRANT_ACCESS`, all items, `removeDuration` (`""` = permanent), comment `INC… \| Bulk access request by … \| Approved by … \| … \| …` | v2 current |
-| `sp:send-email` **v2** | both: approved, denied; plugin rejects | Requester (cc the approver), or `overrideRecipients` | v2 current (**v1 deprecated**, not used) |
+| `sp:send-email` **v2** | both: pending, approved, denied, rejected | Requester (cc the approver), or `overrideRecipients` | v2 current (**v1 deprecated**, not used) |
 | `sp:operator-success` and `sp:operator-failure` | both | End steps (failure carries `failureName` and `description`) | present |
 
 **Deliberately not used:** `sp:create-approval-request` (the library now marks it **deprecated** [L], and it breaks

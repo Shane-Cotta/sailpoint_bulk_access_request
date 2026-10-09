@@ -322,8 +322,8 @@ const TITLE_CARD = card(`
   <div class="grid">
     <div class="box"><h2>Launcher + Form + Workflows</h2><p>Any user starts a bulk request from the Launchpad: an ISC Form collects
       people, items, approver and INC; ISC Workflows run the approval and request the access.</p></div>
-    <div class="box"><h2>UI plugin: New request</h2><p>Admins search or paste any number of people, pick items, set temporary
-      access, and follow every request on <em>My bulk requests</em>.</p></div>
+    <div class="box"><h2>UI plugin: New request</h2><p>Anyone with Launcher Access searches or pastes any number of people, picks
+      items, sets temporary access, and follows every request on <em>My bulk requests</em>.</p></div>
     <div class="box"><h2>UI plugin: Approvals tab</h2><p>Item approvers (owners, managers) decide a whole bulk request at once,
       grouped by INC, instead of one approval per person and item.</p></div>
   </div>
@@ -342,7 +342,8 @@ const CLOSING_CARD = card(`
       <li>Launcher on the Launchpad, gated by a requestable “Launcher Access” profile</li></ul></div>
     <div class="box"><h2>UI Plugins</h2><ul>
       <li>Angular + PrimeNG page inside ISC</li>
-      <li>Starts the workflow via the workflow test endpoint (ORG_ADMIN)</li>
+      <li>Each part launches the Launcher and submits its form as the signed-in user</li>
+      <li>ORG_ADMIN alternative: the workflow test endpoint</li>
       <li>Deployed with the <code>sail</code> CLI</li></ul></div>
     <div class="box"><h2>Unified Approvals API</h2><ul>
       <li><code>/v2025/generic-approvals</code> (mine, comments)</li>
@@ -350,7 +351,7 @@ const CLOSING_CARD = card(`
       <li>bulk-approve / bulk-reject for admins (≤ 50 IDs)</li></ul></div>
     <div class="box"><h2>Request status</h2><ul>
       <li><code>/v3/access-request-status</code> for <em>My bulk requests</em></li>
-      <li><code>/v3/requestable-objects</code> catalog</li></ul></div>
+      <li><code>/v3/requestable-objects</code> + <code>/v2025/entitlements</code> catalog</li></ul></div>
     <div class="box"><h2>Install</h2><ul>
       <li><code>bulkaccess.py apply</code> from one config file</li>
       <li>New installs start in dry-run mode</li></ul></div>
@@ -464,7 +465,7 @@ const SESSIONS = [
     await pause(page, 3500);
     await bring(page, page.locator('.parts-card'));
     await pause(page, 3500);
-    await caption(page, 5, 'Submit: the plugin starts the ISC workflow once per part',
+    await caption(page, 5, 'Submit: each part launches the Launcher and submits its form as you',
       'Demo mode: the workflow and the approver are simulated in the browser; nothing reaches a tenant.');
     await click(page, page.getByRole('button', { name: 'Submit 3 approvals' }), 600);
     await scrollTop(page);
