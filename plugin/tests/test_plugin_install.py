@@ -53,6 +53,10 @@ class FakeTenant:
     def token(self) -> str:
         return _jwt({"identity_id": ME["id"]})
 
+    def plugin_instance_id(self, alias):
+        self.calls.append(("GET", f"/ui-plugins/v1/resolve-alias?alias={alias}", None))
+        return None
+
     def call(self, method, path, body=None, **_):
         self.calls.append((method, path, body))
         if method == "GET" and path.startswith("/v2025/identities/"):

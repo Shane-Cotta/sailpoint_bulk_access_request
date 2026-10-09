@@ -25,7 +25,10 @@ one request per person -- each with all the chosen items -- has no limits).
 
 from __future__ import annotations
 
+import html
 import json
+import re
+from dataclasses import dataclass
 from typing import Any
 
 from .config import DURATION_UNITS, Config
@@ -192,8 +195,143 @@ def _failure() -> dict[str, Any]:
                            "or the temporary access duration was invalid."}
 
 
-def _email(cfg: Config, subject: str, body: str, *, cc_approver: bool) -> dict[str, Any]:
-    attrs: dict[str, Any] = {"subject": subject, "body": body, "context": {}}
+# ─────────────────────────────────────────────────────────────── emails ──
+# Verified live (send-email v2, 2026-10-09; docs/dev/CONTRACTS.md section 10):
+# * The body goes to SailPoint's notification service as a Velocity template, and `context` holds its
+#   variables. A body that isn't valid Velocity (e.g. a justification containing "#if(" templated in) is
+#   refused with "400 Bad Request" and FAILS the run. So the body here is constant markup, and every value --
+#   the requester's text, names, config text -- goes in `context`, whose values are data and never parsed.
+# * Context values are JSONPath ("key.$"), never "{{$.x}}" templates: a template is spliced into the request
+#   as raw text, so a value with a newline, a quote or a backslash (any multi-line justification) makes it
+#   invalid and fails the run with the same 400. A "key.$" value travels intact. A one-item list arrives
+#   unwrapped (the item itself), so lists are normalised in Velocity before #foreach; "$.list.length()"
+#   counts right either way. A missing path leaves the variable unset, and "$!{key}" prints nothing.
+# * "##" starts a Velocity comment and "#word" can read as a directive, so the markup has no "#" outside
+#   directives (colours are rgb()) and no "$" outside "$!{...}" references and directives.
+UI_APPROVALS_OTHER = "/ui/d/approvals/other/requested-items"            # ISC Approvals > Other (generic approvals)
+UI_APPROVALS_ACCESS = "/ui/d/approvals/access-request/requested-items"  # ISC Approvals > Access Requests
+UI_LAUNCHPAD = "/ui/d/launchpad"
+UI_PLUGIN = "/ui/plugin/{id}"
+ITEM_TYPE_WORDS = {"ACCESS_PROFILE": "access profile", "ROLE": "role", "ENTITLEMENT": "entitlement"}
+DEFAULT_HELP = "Contact your SailPoint administrator."
+EMAIL_STEPS = ("Email Pending", "Email Approved", "Email Denied")
+
+_FONT = "font-family:Arial,Helvetica,sans-serif"
+_TEXT, _MUTED, _RULE, _WHITE = "rgb(31,41,55)", "rgb(107,114,128)", "rgb(229,231,235)", "rgb(255,255,255)"
+ACCENTS = {"pending": "rgb(29,78,216)", "approved": "rgb(21,128,61)", "denied": "rgb(185,28,28)",
+           "rejected": "rgb(180,83,9)"}
+
+
+@dataclass(frozen=True)
+class EmailLinks:
+    """Where the emails point. `ui` is the tenant's UI address (config.ui_base_url); `plugin_id` the plugin
+    instance, looked up by alias at install time (None while the plugin isn't uploaded). Without `ui` the
+    emails still name every page, just without links."""
+    ui: str | None = None
+    plugin_id: str | None = None
+
+    def url(self, path: str) -> str | None:
+        return f"{self.ui}{path}" if self.ui else None
+
+    def plugin(self, cfg: Config) -> str | None:
+        return self.url(UI_PLUGIN.format(id=self.plugin_id)) if cfg.deploy_plugin and self.plugin_id else None
+
+
+def _ref(name: str) -> str:
+    """A context variable in the body; prints nothing when it is unset."""
+    return "$!{" + name + "}"
+
+
+def _is(name: str, value: str, html_yes: str, html_no: str = "") -> str:
+    """Velocity: `html_yes` when the context variable equals `value` (as text), else `html_no`."""
+    return f'#if("{_ref(name)}" == "{value}"){html_yes}' + (f"#{{else}}{html_no}" if html_no else "") + "#{end}"
+
+
+def _when(name: str, html_yes: str, html_no: str = "") -> str:
+    """Velocity: `html_yes` when the context variable is set and not empty (the same in Velocity 1.7 and 2.x)."""
+    return f'#if("{_ref(name)}" != ""){html_yes}' + (f"#{{else}}{html_no}" if html_no else "") + "#{end}"
+
+
+def _link(url: str | None, text: str, accent: str) -> str:
+    return f'<a href="{url}" style="color:{accent};font-weight:bold">{text}</a>' if url else f"<b>{text}</b>"
+
+
+def _rows(rows: list[tuple[str, str]]) -> str:
+    cell = "padding:4px 0;vertical-align:top"
+    return ('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+            'style="border-collapse:collapse">'
+            + "".join(f'<tr><td style="{cell};padding-right:12px;width:104px;color:{_MUTED}">{label}</td>'
+                      f'<td style="{cell}">{value}</td></tr>' for label, value in rows)
+            + "</table>")
+
+
+def _list(lines: list[str]) -> str:
+    return ('<ul style="margin:0;padding-left:20px">'
+            + "".join(f'<li style="margin:0 0 6px">{line}</li>' for line in lines) + "</ul>")
+
+
+def _section(heading: str, content: str) -> str:
+    return (f'<tr><td style="padding:14px 18px 2px;font-size:12px;font-weight:bold;letter-spacing:0.5px;'
+            f'text-transform:uppercase;color:{_MUTED}">{heading}</td></tr>'
+            f'<tr><td style="padding:2px 18px 6px">{content}</td></tr>')
+
+
+def _items_html() -> str:
+    """Each access item on its own line as "name (type)". A one-item list arrives as the item itself."""
+    kinds = "".join(f'#elseif("$!{{i.type}}" == "{t}"){w}' for t, w in ITEM_TYPE_WORDS.items())
+    kinds = kinds.replace("#elseif", "#if", 1) + "#{else}$!{i.type}#{end}"
+    return ("#if($items.name)#set($bulkItems = [$items])#{else}#set($bulkItems = $items)#{end}"
+            f'#foreach($i in $bulkItems)<div>$!{{i.name}} <span style="color:{_MUTED}">({kinds})</span></div>#{{end}}')
+
+
+def _comments_html() -> str:
+    """The decision's comment: the approval's comments after the first (the first is the request's own
+    "INC: justification"). A one-item list arrives as the comment itself."""
+    return ("#if($comments.comment)#set($bulkComments = [$comments])#{else}#set($bulkComments = $comments)#{end}"
+            '#set($bulkFirst = "yes")#set($bulkSaid = "")'
+            '#foreach($c in $bulkComments)#if("$!{bulkFirst}" == "yes")#set($bulkFirst = "")'
+            '#{else}<div style="white-space:pre-wrap">$!{c.comment}</div>#set($bulkSaid = "yes")#{end}#{end}'
+            f'#if("$!{{bulkSaid}}" == "")<span style="color:{_MUTED}">No comment</span>#{{end}}')
+
+
+def _layout(cfg: Config, kind: str, title: str, intro: str, sections: list[tuple[str, str]]) -> str:
+    """One email: a coloured title bar, an intro, labelled sections and a footer, as one plain table with
+    inline styles (phone and Outlook friendly: no CSS classes, images or external files)."""
+    dry = ("" if cfg.live else
+           '<tr><td style="padding:8px 18px;background:rgb(254,243,199);color:rgb(120,53,15);font-size:13px">'
+           "<b>DRY RUN.</b> This installation is in dry-run mode: the approval and the emails run, but no access "
+           "is ever requested.</td></tr>")
+    return ('<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" '
+            f'style="width:100%;max-width:640px;border-collapse:collapse;{_FONT};font-size:14px;line-height:1.5;'
+            f'color:{_TEXT};background:{_WHITE};border:1px solid {_RULE}">'
+            f'<tr><td style="padding:14px 18px;background:{ACCENTS[kind]};color:{_WHITE};font-size:18px;'
+            f'font-weight:bold">{title}</td></tr>{dry}'
+            f'<tr><td style="padding:14px 18px 4px">{intro}</td></tr>'
+            + "".join(_section(h, c) for h, c in sections)
+            + _section("Need help?", _ref("help"))
+            + f'<tr><td style="padding:12px 18px;border-top:1px solid {_RULE};font-size:12px;color:{_MUTED}">'
+            f"Sent by {_ref('tool')} in SailPoint. Search SailPoint for the INC number to find every part of this "
+            "request.</td></tr></table>")
+
+
+_LINKABLE = re.compile(r"https?://[^\s<>\"']*[^\s<>\"'.,;:!?)]|[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def help_html(cfg: Config) -> str:
+    """`notifications.helpContact` as HTML (escaped; web and email addresses become links), or the default.
+    It travels in the email context, so it's never read as a template."""
+    text = cfg.help_contact or DEFAULT_HELP
+    out, last = [], 0
+    for m in _LINKABLE.finditer(text):
+        target = m.group(0)
+        href = target if target.startswith("http") else f"mailto:{target}"
+        out += [html.escape(text[last:m.start()]), f'<a href="{html.escape(href)}">{html.escape(target)}</a>']
+        last = m.end()
+    return "".join(out) + html.escape(text[last:])
+
+
+def _email(cfg: Config, subject: str, body: str, context: dict[str, Any], *, cc_approver: bool) -> dict[str, Any]:
+    attrs: dict[str, Any] = {"subject": subject, "body": body, "context": context}
     if cfg.override_recipients:
         attrs["recipientEmailList"] = list(cfg.override_recipients)   # demo/test tenants: never mail real people
     else:
@@ -203,25 +341,158 @@ def _email(cfg: Config, subject: str, body: str, *, cc_approver: bool) -> dict[s
     return {"actionId": "sp:send-email", "type": "action", "versionNumber": 2, "attributes": attrs}
 
 
+def email_context(cfg: Config, p: dict[str, str], *, decision: bool = False) -> dict[str, Any]:
+    """What every email shows, read from the run (`p`: the variant's paths) as JSONPath values (never
+    templates, see above), plus config text as plain values."""
+    ctx: dict[str, Any] = {
+        "inc.$": p["inc"], "part.$": p["partLabel"], "items.$": p["items"], "people.$": p["people"] + ".length()",
+        "access.$": p["accessLabel"], "justification.$": p["justification"],
+        "requester.$": "$.getRequester.attributes.displayName", "approver.$": "$.getApprover.attributes.displayName",
+        "tool": f"the '{cfg.base_name}' workflow", "pluginName": cfg.plugin_display_name,
+        "launcherName": cfg.launcher_name, "help": help_html(cfg)}
+    if decision:
+        ctx.update({"status.$": "$.bulkApproval.status", "comments.$": "$.bulkApproval.comments",
+                    "approvedBy.$": "$.bulkApproval.approvedBy[0].name",
+                    "rejectedBy.$": "$.bulkApproval.rejectedBy[0].name"})
+    return ctx
+
+
+def _decider(fallback: str) -> str:
+    """Who decided: the approver, or an admin acting on their behalf (approvedBy / rejectedBy)."""
+    return (f'#if("$!{{approvedBy}}" != ""){_ref("approvedBy")}#elseif("$!{{rejectedBy}}" != ""){_ref("rejectedBy")}'
+            f"#{{else}}{fallback}#{{end}}")
+
+
+def _what(*, access: bool = True) -> tuple[str, str]:
+    part = _when("part", f" {_ref('part')}: one part of a larger request with the same INC")
+    rows = [("INC", f"<b>{_ref('inc')}</b>{part}"), ("Access", _items_html()),
+            ("For", _is("people", "1", "1 person", f"{_ref('people')} people"))]
+    if access:
+        rows.append(("How long", _is("access", "Permanent", "Permanent (no end date)",
+                                     f"{_ref('access')} (removed automatically when it ends)")))
+    return "What", _rows(rows)
+
+
+def _why() -> tuple[str, str]:
+    return "Why", _rows([("Justification", f'<span style="white-space:pre-wrap">{_ref("justification")}</span>'),
+                         ("Requested by", _ref("requester"))])
+
+
+def _decision() -> tuple[str, str]:
+    by = _is("status", "EXPIRED", "Nobody (it expired)", _decider(f'<span style="color:{_MUTED}">(not recorded)</span>'))
+    return "Decision", _rows([("Approver", _ref("approver")), ("Decided by", by), ("Comment", _comments_html())])
+
+
+def _resubmit(cfg: Config, links: EmailLinks, accent: str) -> str:
+    """Where to submit again: the plugin's New request tab and/or the Launchpad, whichever is installed."""
+    ways = []
+    if cfg.deploy_plugin:
+        ways.append(_link(links.plugin(cfg), f"'{_ref('pluginName')}'", accent) + " (New request tab)")
+    if cfg.deploy_launcher:
+        ways.append(_link(links.url(UI_LAUNCHPAD), "Launchpad", accent) + f" → '{_ref('launcherName')}'")
+    return " or ".join(ways)
+
+
+def _track(cfg: Config, links: EmailLinks, accent: str) -> str:
+    if not cfg.deploy_plugin:
+        return ""
+    return "Track it in " + _link(links.plugin(cfg), f"'{_ref('pluginName')}' → My bulk requests", accent) + "."
+
+
+def pending_email(cfg: Config, p: dict[str, str], links: EmailLinks, subject_id: str) -> dict[str, Any]:
+    """Sent once the request waits for the bulk approver: what was asked, and where the approver decides."""
+    accent = ACCENTS["pending"]
+    approver = _ref("approver")
+    at_timeout = ("it is approved automatically" if cfg.approval_action_at_timeout == "APPROVED"
+                  else "it expires and nothing is requested")
+    effect = ("every person listed is requested every item" if cfg.live
+              else "in this dry-run installation nothing is requested")
+    nxt = [f"{approver} decides in SailPoint: " + _link(links.url(UI_APPROVALS_OTHER), "Approvals → Other", accent)
+           + f", task <b>Grant: Bulk access {_ref('inc')}{_ref('part')}</b>. Approving there takes effect at once: "
+           f"{effect}.",
+           f"If nobody decides within {cfg.approval_timeout_days} days, {at_timeout}.",
+           _track(cfg, links, accent), "You'll get another email when it's decided."]
+    body = _layout(cfg, "pending", "Waiting for approval",
+                   f"Your bulk access request <b>{_ref('inc')}{_ref('part')}</b> was sent to <b>{approver}</b> for "
+                   "approval. Nothing is requested until it's approved.",
+                   [_what(), _why(), ("What happens next", _list([x for x in nxt if x]))])
+    return _email(cfg, f"Waiting for approval: bulk access {subject_id}{'' if cfg.live else ' (DRY RUN)'}", body,
+                  email_context(cfg, p), cc_approver=True)
+
+
+def approved_email(cfg: Config, p: dict[str, str], links: EmailLinks, subject_id: str) -> dict[str, Any]:
+    accent = ACCENTS["approved"]
+    intro = (f"<b>{_decider(_ref('approver'))}</b> approved your bulk access request "
+             f"<b>{_ref('inc')}{_ref('part')}</b>. ")
+    if cfg.live:
+        intro += "Access was requested for every person and item on it."
+        item_approvers = ("Items with their own approval (the item's owner, the person's manager, …) still need it "
+                          "for each person. Those approvers decide in SailPoint: "
+                          + _link(links.url(UI_APPROVALS_ACCESS), "Approvals → Access Requests", accent))
+        if cfg.plugin_approvals_enabled:
+            item_approvers += (", or all at once on the Approvals tab of "
+                               + _link(links.plugin(cfg), f"'{_ref('pluginName')}'", accent))
+        nxt = [item_approvers + ".",
+               "The access requests are filed by the workflow on everyone's behalf, so they don't appear in your "
+               "Request Center → My Requests. " + _track(cfg, links, accent),
+               _is("access", "Permanent", "Each person keeps the access until it's removed.",
+                   "Temporary access is removed automatically when it ends, counted from when it was requested.")]
+    else:
+        intro += "Nothing was requested, because this installation is in dry-run mode."
+        nxt = ["Nothing to do: dry-run mode only tries out the approval and the emails. An administrator switches it "
+               "to live (<b>mode: live</b>) when it's ready.", _track(cfg, links, accent)]
+    body = _layout(cfg, "approved", "Bulk access request approved", intro,
+                   [_what(), _why(), _decision(), ("What happens next", _list([x.strip() for x in nxt if x]))])
+    return _email(cfg, f"Approved: bulk access {subject_id}{'' if cfg.live else ' (DRY RUN: nothing was requested)'}",
+                  body, email_context(cfg, p, decision=True), cc_approver=True)
+
+
+def denied_email(cfg: Config, p: dict[str, str], links: EmailLinks, subject_id: str) -> dict[str, Any]:
+    """Sent when the bulk approval ends any other way than APPROVED: denied (REJECTED) or EXPIRED."""
+    accent = ACCENTS["denied"]
+    request = f"bulk access request <b>{_ref('inc')}{_ref('part')}</b>"
+    title = _is("status", "EXPIRED", "Bulk access request expired", "Bulk access request not approved")
+    intro = _is("status", "EXPIRED",
+                f"Nobody decided your {request} within {cfg.approval_timeout_days} days, so it expired. "
+                "Nothing was requested.",
+                f"<b>{_decider(_ref('approver'))}</b> did not approve your {request} "
+                f"(status: {_ref('status')}). Nothing was requested.")
+    nxt = [_is("status", "EXPIRED",
+               f"Check with {_ref('approver')} or choose another approver, then submit it again: ",
+               "Read the comment above, fix what it asks for (people, items, how long or the justification) and "
+               "submit a new request (the same INC is fine): ") + _resubmit(cfg, links, accent) + ".",
+           f"Questions about the decision? Ask {_ref('approver')}."]
+    body = _layout(cfg, "denied", title, intro, [_what(), _why(), _decision(), ("What to do now", _list(nxt))])
+    return _email(cfg, f"Not approved: bulk access {subject_id}", body, email_context(cfg, p, decision=True),
+                  cc_approver=True)
+
+
+def rejected_email(cfg: Config, p: dict[str, str], links: EmailLinks, *, title: str, field: str, problem: str,
+                   entered: tuple[str, ...] = (), access: bool = False) -> dict[str, Any]:
+    """Sent when the workflow stops a request before any approval: which field to fix, and where to submit
+    again. `entered` are the paths of the refused value (e.g. a duration and its unit), shown back to the requester."""
+    accent = ACCENTS["rejected"]
+    ctx = {**email_context(cfg, p), "field": field, "problem": problem}
+    rows = [("Field", f"<b>{_ref('field')}</b>"), ("Problem", _ref("problem"))]
+    if entered:
+        refs = "".join(_ref(f"entered{i}") for i in range(len(entered)))
+        ctx.update({f"entered{i}.$": path for i, path in enumerate(entered)})
+        rows.append(("You entered", f'#if("{refs}" != ""){refs}#{{else}}<span style="color:{_MUTED}">(nothing)</span>#{{end}}'))
+    nxt = [f"Nothing was sent for approval and nothing was requested. Fix <b>{_ref('field')}</b> and submit the "
+           "request again: " + _resubmit(cfg, links, accent) + "."]
+    body = _layout(cfg, "rejected", f"Fix your bulk access request: {_ref('field')}",
+                   f"Your bulk access request <b>{_ref('inc')}{_ref('part')}</b> was stopped before approval. "
+                   "Fix the field below and submit it again.",
+                   [("What to fix", _rows(rows)), _what(access=access), _why(), ("What to do now", _list(nxt))])
+    # No INC in the subject: on these paths it may be the refused value itself.
+    return _email(cfg, f"Not sent for approval: {title} ({cfg.base_name})", body, ctx, cc_approver=False)
+
+
 def _choice(display: str, comparator: str, a: str, b: Any, yes: str, no: str, *,
             action: str = "sp:compare-strings") -> dict[str, Any]:
     return {"actionId": action, "type": "choice", "displayName": display,
             "choiceList": [{"comparator": comparator, "variableA.$": a, "variableB": b, "nextStep": yes}],
             "defaultStep": no}
-
-
-def item_approvals_note(cfg: Config) -> str:
-    """
-    The "Email Approved" sentence (live mode) saying that each item's own approval scheme still applies to the
-    requests the workflow files, and where those approvers can decide them at once. (Not in the bulk approval's
-    description: with the requester's name and the access label templated in, it could pass 150 characters.)
-    """
-    note = ("Approved here means approved by the bulk approver. Items with their own approval (for example by the "
-            "item owner or the person's manager) still need that approval in SailPoint for each person.")
-    if cfg.plugin_approvals_enabled:
-        note += (f" Those approvers can decide the whole request at once on the Approvals tab of "
-                 f"'{cfg.plugin_display_name}'.")
-    return note
 
 
 def plugin_duration_regex(cfg: Config) -> str:
@@ -235,14 +506,18 @@ def plugin_duration_regex(cfg: Config) -> str:
 
 
 def bulk_workflow(cfg: Config, *, variant: str, owner_id: str, owner_name: str | None = None,
-                  form_id: str | None = None, workflow_id: str | None = None) -> dict[str, Any]:
-    """The bulk-request workflow. `workflow_id` (known after creation) scopes the launcher trigger."""
+                  form_id: str | None = None, workflow_id: str | None = None,
+                  links: EmailLinks | None = None) -> dict[str, Any]:
+    """The bulk-request workflow. `workflow_id` (known after creation) scopes the launcher trigger; `links`
+    (the tenant's UI address and the plugin instance, looked up at install time) are used in the emails."""
     p = _paths(variant)
+    links = links or EmailLinks()
     inc, who, appr = _t(p["inc"]), _t("$.getRequester.attributes.displayName"), _t("$.getApprover.attributes.displayName")
     part = _t(p["partLabel"])     # "" or " (2/3)"; on the Launcher only the plugin sets it (hidden field)
     label = _t(p["accessLabel"])
     live = cfg.live
     mode_note = "" if live else " (DRY RUN: nothing was requested)"
+    approval_start = "Email Pending" if cfg.pending_email else "Bulk Approval"
     temporary_units = launcher_workflow_units(cfg) if variant == "launcher" else ()
 
     steps: dict[str, Any] = {}
@@ -282,21 +557,29 @@ def bulk_workflow(cfg: Config, *, variant: str, owner_id: str, owner_name: str |
     after_inc = DEFINE_ACCESS if variant == "launcher" else "Access Valid?"
     steps["INC Valid?"] = _choice("INC number valid?", "StringMatches", p["inc"], cfg.inc_pattern, after_inc, "Reject Bad INC")
 
-    def stop(name: str, title: str, message: str) -> None:
+    def stop(name: str, title: str, field: str, message: str, *, entered: tuple[str, ...] = (),
+             access: bool = False) -> None:
+        """Stop before the approval. The Launcher shows `title` and `message` in the Launchpad (the plugin reads
+        them back when it submitted through the Launcher) and then emails; the plugin workflow emails."""
+        email = {**rejected_email(cfg, p, links, title=title, field=field, problem=message, entered=entered,
+                                  access=access),
+                 "displayName": f"Email: {title}", "nextStep": "End Step - Rejected"}
         if variant == "launcher":
             steps[name] = {"actionId": "sp:interactive-message", "type": "action", "versionNumber": 1, "displayName": title,
                            "attributes": {"category": "ERROR", "interactiveProcessId.$": "$.trigger.interactiveProcessId",
-                                          "ownerId.$": "$.trigger.launchedBy.id", "title": title, "message": f"<p>{message}</p>"},
-                           "nextStep": "End Step - Rejected"}
+                                          "ownerId.$": "$.trigger.launchedBy.id", "title": title,
+                                          "message": f"<p>{field}: {message}</p><p>Nothing was sent for approval. "
+                                                     "Fix it and submit again; you'll also get this by email.</p>"},
+                           "nextStep": f"Email {name}"}
+            steps[f"Email {name}"] = email
         else:
-            steps[name] = {**_email(cfg, f"{cfg.base_name}: {title}", f"<p>{message}</p>", cc_approver=False),
-                           "displayName": title, "nextStep": "End Step - Rejected"}
+            steps[name] = email
 
-    stop("Reject Self Approval", "Choose a different approver",
-         "You can't approve your own bulk request. Start again and choose someone else as the approver.")
-    stop("Reject Approver In People", "Choose a different approver",
-         f"{MSG_APPROVER_IN_PEOPLE} Start again and choose an approver who isn't on the list.")
-    stop("Reject Bad INC", "Invalid INC number", cfg.inc_message)
+    stop("Reject Self Approval", "Choose a different approver", "Approver",
+         "You can't approve your own bulk request. Choose someone else as the approver.")
+    stop("Reject Approver In People", "Choose a different approver", "Approver",
+         f"{MSG_APPROVER_IN_PEOPLE} Choose an approver who isn't on the list, or take them off it.")
+    stop("Reject Bad INC", "Invalid INC number", "ServiceNow incident (INC) number", cfg.inc_message, entered=(p["inc"],))
 
     if variant == "launcher":
         # The access choice: permanent ("" / "Permanent") unless the form asks for temporary access;
@@ -343,24 +626,29 @@ def bulk_workflow(cfg: Config, *, variant: str, owner_id: str, owner_name: str |
                 steps["Within Limit?"] = _choice(f"At most {cfg.temporary_max_days} days?", "StringMatches",
                                                  p["removeDuration"], duration_regex(temporary_units, cfg.temporary_max_days),
                                                  "Notify Pending", "Reject Too Long")
-                stop("Reject Too Long", "Duration too long", msg_max_days(cfg.temporary_max_days))
-            stop("Reject Bad Duration", "Invalid duration", MSG_DURATION_NUMBER)
-            stop("Reject Bad Unit", "Choose a unit", MSG_DURATION_UNIT)
+                stop("Reject Too Long", "Duration too long", "Duration", msg_max_days(cfg.temporary_max_days),
+                     entered=(p["duration"], p["durationUnit"]))
+            stop("Reject Bad Duration", "Invalid duration", "Duration", MSG_DURATION_NUMBER, entered=(p["duration"],))
+            stop("Reject Bad Unit", "Choose a unit", "Unit", MSG_DURATION_UNIT, entered=(p["durationUnit"],))
     else:
         # The plugin validates the choice; an invalid removeDuration would only fail after approval.
         steps["Access Valid?"] = _choice("Temporary access valid?", "StringMatches", p["removeDuration"],
-                                         plugin_duration_regex(cfg), "Bulk Approval", "Reject Bad Duration")
-        stop("Reject Bad Duration", "Invalid temporary access",
-             "The temporary access duration was not valid, so nothing was sent for approval.")
+                                         plugin_duration_regex(cfg), approval_start, "Reject Bad Duration")
+        stop("Reject Bad Duration", "Invalid temporary access", "Temporary access (how long)",
+             "The temporary access duration was not valid.", entered=(p["removeDuration"],))
 
     if variant == "launcher":
         steps["Notify Pending"] = {
             "actionId": "sp:interactive-message", "type": "action", "versionNumber": 1, "displayName": "Submitted",
             "attributes": {"category": "INFO", "interactiveProcessId.$": "$.trigger.interactiveProcessId",
                            "ownerId.$": "$.trigger.launchedBy.id", "title": f"Sent to {appr} for approval",
-                           "message": f"<p>Your bulk request <b>{inc}</b>{part} ({label}) is waiting for {appr}. "
+                           "message": f"<p>Your bulk request <b>{inc}</b>{part} ({label}) is waiting for {appr}, "
+                                      "who decides it in SailPoint under Approvals → Other. "
                                       f"You'll get an email when it's decided{mode_note}.</p>"},
-            "nextStep": "Bulk Approval"}
+            "nextStep": approval_start}
+    if cfg.pending_email:
+        steps["Email Pending"] = {**pending_email(cfg, p, links, f"{inc}{part}"), "displayName": "Email: waiting for approval",
+                                  "nextStep": "Bulk Approval"}
 
     steps["Bulk Approval"] = {
         "actionId": "sp:generic-approval", "type": "action", "versionNumber": 1, "displayName": "One approval for the whole request",
@@ -406,20 +694,10 @@ def bulk_workflow(cfg: Config, *, variant: str, owner_id: str, owner_name: str |
                                "End Step - Success Item": {"type": "success"}}},
             "nextStep": "Email Approved"}
 
-    steps["Email Approved"] = {
-        **_email(cfg, f"Approved: bulk access {inc}{part}{mode_note}",
-                 f"<p>Your bulk access request <b>{inc}</b>{part} was approved by {appr}.</p>"
-                 f"<p>{'Access was requested for every person and item on the request.' if live else 'DRY RUN: this installation is in dry-run mode, so nothing was requested.'}</p>"
-                 + (f"<p>{item_approvals_note(cfg)}</p>" if live else "") +
-                 f"<p>Access: {label}</p>"
-                 f"<p>Justification: {_t(p['justification'])}</p>", cc_approver=True),
-        "displayName": "Email: approved", "nextStep": "End Step - Success"}
-    steps["Email Denied"] = {
-        **_email(cfg, f"Denied: bulk access {inc}{part}",
-                 f"<p>Your bulk access request <b>{inc}</b>{part} was not approved by {appr} "
-                 f"(status: {_t('$.bulkApproval.status')}). Nothing was requested.</p>"
-                 f"<p>Access asked for: {label}</p>", cc_approver=True),
-        "displayName": "Email: denied", "nextStep": "End Step - Success"}
+    steps["Email Approved"] = {**approved_email(cfg, p, links, f"{inc}{part}"), "displayName": "Email: approved",
+                               "nextStep": "End Step - Success"}
+    steps["Email Denied"] = {**denied_email(cfg, p, links, f"{inc}{part}"), "displayName": "Email: not approved",
+                             "nextStep": "End Step - Success"}
     steps["End Step - Success"] = _success()
     steps["End Step - Rejected"] = _failure()
 
@@ -483,6 +761,6 @@ def pretty(obj: Any) -> str:
     return json.dumps(obj, indent=2, sort_keys=False)
 
 
-__all__ = ["bulk_form", "bulk_workflow", "bulk_launcher", "VARIANTS", "APPROVAL_COMMENT_MAX", "PLUGIN_INPUT",
+__all__ = ["bulk_form", "bulk_workflow", "bulk_launcher", "VARIANTS", "APPROVAL_COMMENT_MAX", "PLUGIN_INPUT", "EmailLinks",
            "launcher_duration_units", "launcher_offers_temporary", "launcher_workflow_units", "plugin_duration_regex",
            "F_PART_LABEL", "PART_LABEL_REGEX"]

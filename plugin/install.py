@@ -61,7 +61,9 @@ def main(argv: list[str] | None = None) -> int:
     if not cfg.owner_id and not via_launcher:   # only the plugin workflow has an owner
         print(f"note: {config_mod.OWNER_NOTE}")
 
-    body = None if via_launcher else lib.plugin_workflow(cfg, owner_id, owner_name)
+    ui = config_mod.ui_base_url(cfg, tenant.base_url)
+    links = None if via_launcher else definitions.EmailLinks(ui=ui, plugin_id=tenant.plugin_instance_id(cfg.plugin_alias))
+    body = None if via_launcher else lib.plugin_workflow(cfg, owner_id, owner_name, links)
     existing = lib.find_workflow(tenant, cfg.plugin_workflow_name)
     launcher = lib.find_launcher(tenant, cfg.launcher_name) if via_launcher else None
     workdir = Path(a.workdir).resolve()
@@ -129,8 +131,9 @@ def main(argv: list[str] | None = None) -> int:
             print(lib.sail(cfg, ["ui-plugins", "create", *visibility], workdir).stdout.strip())
         print(lib.sail(cfg, ["ui-plugins", "upload"], workdir).stdout.strip())
         plugin = lib.find_plugin(cfg, workdir) or {}
-        ui = tenant.base_url.replace(".api.", ".")
-        print(f"Plugin deployed: {ui}/ui/plugin/{plugin.get('id', '<id>')}")
+        print(f"Plugin deployed: {ui or tenant.base_url.replace('.api.', '.')}/ui/plugin/{plugin.get('id', '<id>')}")
+        if links and not links.plugin_id:
+            print("note: the workflow's emails link the plugin from the next `apply` on (it had no plugin ID yet).")
 
     print("\nDone." + ("" if cfg.live else "  (dry-run mode: approvals run, nothing is requested)")
           + (f"\nAnyone holding '{cfg.launcher_access_profile_name}' can submit from the plugin "

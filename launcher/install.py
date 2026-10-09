@@ -117,6 +117,18 @@ def find_launcher(tenant: Tenant, name: str) -> dict | None:
     return next((l for l in items or [] if l.get("name") == name), None)
 
 
+def email_links(tenant: Tenant, cfg: config_mod.Config) -> definitions.EmailLinks:
+    """Where the workflow's emails point: the tenant's UI (config.ui_base_url) and, when the plugin deployment
+    is on and the plugin is already uploaded, its page. Printed, so a missing piece is visible."""
+    ui = config_mod.ui_base_url(cfg, tenant.base_url)
+    plugin_id = tenant.plugin_instance_id(cfg.plugin_alias) if cfg.deploy_plugin else None
+    print("Email links: " + (ui or "none (set notifications.uiBaseUrl to link the pages)")
+          + ("" if not cfg.deploy_plugin else
+             f"; plugin {plugin_id}" if plugin_id else
+             f"; plugin {cfg.plugin_alias!r} not uploaded yet, so no plugin links (run apply again after --deploy)"))
+    return definitions.EmailLinks(ui=ui, plugin_id=plugin_id)
+
+
 def put_workflow(tenant: Tenant, wid: str, body: dict, enable: bool) -> None:
     current = tenant.call("GET", f"{WORKFLOWS}/{wid}")
     if current.get("enabled"):
@@ -157,11 +169,13 @@ def main(argv: list[str] | None = None) -> int:
 
     form_body = definitions.bulk_form(cfg, owner_id, options)
     form = find_form(tenant, cfg.form_name)
+    links = email_links(tenant, cfg)
 
     if a.dry_run:
         print(f"\n== Form ({'update' if form else 'create'}) ==\n{definitions.pretty(form_body)}")
         wf_body = definitions.bulk_workflow(cfg, variant="launcher", owner_id=owner_id, owner_name=me.get("name"),
-                                            form_id=(form or {}).get("id", "<form-id>"), workflow_id="<workflow-id>")
+                                            form_id=(form or {}).get("id", "<form-id>"), workflow_id="<workflow-id>",
+                                            links=links)
         print(f"\n== Workflow ==\n{definitions.pretty(wf_body)}")
         print(f"\n== Launcher ==\n{definitions.pretty(definitions.bulk_launcher(cfg, '<workflow-id>'))}")
         print("\nDry run: nothing was changed.")
@@ -186,11 +200,11 @@ def main(argv: list[str] | None = None) -> int:
     wf = find_workflow(tenant, cfg.launcher_workflow_name)
     if not wf:
         draft = definitions.bulk_workflow(cfg, variant="launcher", owner_id=owner_id, owner_name=me.get("name"),
-                                          form_id=form["id"])
+                                          form_id=form["id"], links=links)
         wf = tenant.call("POST", WORKFLOWS, draft)
         print(f"Workflow created: {wf['id']}  {cfg.launcher_workflow_name}")
     body = definitions.bulk_workflow(cfg, variant="launcher", owner_id=owner_id, owner_name=me.get("name"),
-                                     form_id=form["id"], workflow_id=wf["id"])
+                                     form_id=form["id"], workflow_id=wf["id"], links=links)
     put_workflow(tenant, wf["id"], {k: body[k] for k in ("name", "description", "owner", "definition", "trigger")},
                  enable=True)
     print(f"Workflow ready:   {wf['id']}  (enabled, trigger scoped to this workflow, mode {cfg.mode})")

@@ -99,7 +99,8 @@ class Tenant:
         return self._token
 
     def call(self, method: str, path: str, body: Any = None, *,
-             content_type: str = "application/json", ok: tuple[int, ...] = (200, 201, 202, 204)) -> Any:
+             content_type: str = "application/json", ok: tuple[int, ...] = (200, 201, 202, 204),
+             headers: dict[str, str] | None = None) -> Any:
         """Call `path` (e.g. "/v2025/workflows") and return parsed JSON (or None)."""
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(f"{self.base_url}{path}", data=data, method=method, headers={
@@ -107,6 +108,7 @@ class Tenant:
             "Content-Type": content_type,
             "Accept": "application/json",
             "User-Agent": USER_AGENT,
+            **(headers or {}),
         })
         try:
             with self._open(req) as resp:
@@ -131,6 +133,18 @@ class Tenant:
         if not identity_id:
             return {}
         return self.call("GET", f"/v2025/identities/{identity_id}")   # there is no v3 identities API
+
+
+    def plugin_instance_id(self, alias: str) -> str | None:
+        """The UI plugin instance registered under `alias`, or None when there's none (or it can't be read).
+        Uses the endpoint the SailPoint CLI uses (`/ui-plugins/v1/resolve-alias`, preview: it needs the
+        X-SailPoint-Experimental header; 404 when the alias is unknown; verified with the PAT)."""
+        try:
+            found = self.call("GET", "/ui-plugins/v1/resolve-alias?alias=" + urllib.parse.quote(alias),
+                              headers={"X-SailPoint-Experimental": "true"})
+        except TenantError:
+            return None
+        return (found or {}).get("pluginInstanceId") if isinstance(found, dict) else None
 
 
 def _b64url(segment: str) -> str:

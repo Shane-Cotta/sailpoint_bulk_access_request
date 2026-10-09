@@ -43,6 +43,10 @@ it to the orchestrator instead of changing it alone.
 | `approvals_show_other` | `approvals.showOther` | bool, default false: also list approvals that aren't from a bulk request |
 | `approvals_deny_comment_required` | `approvals.denyCommentRequired` | bool, default true |
 | `plugin_approvals_enabled` | derived | `deploy_plugin and approvals_enabled` (the tab lives in the plugin) |
+| `pending_email` | `notifications.pendingEmail` | bool, default true: the *Waiting for approval* email (§10) |
+| `help_contact` | `notifications.helpContact` | null or text ≤ 300 characters (whitespace collapsed): the emails' *Need help?* line |
+| `ui_base_url_override` | `notifications.uiBaseUrl` | null or an http(s) URL without query, `#`, `$`, quotes or spaces (trailing `/` dropped) |
+| `config.ui_base_url(cfg, api_base_url)` | derived | the override, else the API host without its `api` label (`acme.api.identitynow.com` → `acme.identitynow.com`, same for `identitynow-demo.com`); `None` when neither gives one |
 
 The `approvals` block may be missing (older configs): every key takes its default. Problems (exact text, mirrored in
 `runtime-config.ts`):
@@ -113,9 +117,7 @@ All parts of one submission share the same INC, approver, items, justification a
   `removeDuration.$: "$.loop.context.trigger.removeDuration"`; the Launcher builds it from its form fields).
 - **Item comment:** `{inc} | Bulk access request by {requester} | Approved by {approver} | {accessLabel} | {justification}`. The
   INC stays first, because the plugin's My bulk requests reads it from there.
-- **Emails** (approved and denied) say which part (when parts > 1) and the access label. In live mode, "Email Approved"
-  also says that items with their own approval still need it for each person (`definitions.item_approvals_note`), and,
-  when `plugin_approvals_enabled`, that those approvers can use the Approvals tab of `plugin.displayName`.
+- **Emails:** see §10.
 - **Launcher form, new fields** (keys): `accessType` (Permanent or Temporary, default Permanent), `duration` (a whole number, only used
   when Temporary), `durationUnit` (from `temporary_units`). Only offered when `launcher_temporary_modes` contains `duration`. The
   Launcher's access label can be `Temporary: {n}{suffix}` (e.g. `Temporary: 30d`) if the unit word can't be templated.
@@ -268,6 +270,62 @@ before the approval: {title}: {message}". After 10 minutes, "still waiting".
 **Errors:** a 401/403, or a 500 whose message says "insufficient authorization", on any of these calls →
 `To submit, you need '{launcherAccessName}'. Request it in the Request Center.` (`errors.ts` `describeSubmitError`),
 and the remaining parts are not tried.
+
+## 10. Emails (`definitions.py`: `pending_email`, `approved_email`, `denied_email`, `rejected_email`)
+Verified live on 2026-10-09 (demo tenant, `sp:send-email` v2):
+- The body is a **Velocity** template, rendered by SailPoint's email service with the step's `context` map
+  (`#if`/`#elseif`/`#foreach`/`#set`, `$!{x}`, `#{else}`/`#{end}` and list literals work). Text that isn't valid Velocity
+  (e.g. a justification with `#if(` templated into the body) makes the send **400 Bad Request** and **fails the run**.
+- `context` values: `"key.$": "<JSONPath>"` arrives intact (newlines, quotes, `#`, `$`). A `"{{…}}"` template value is
+  spliced in raw, so a newline, `"` or `\` in it fails the send with the same 400. A missing JSONPath leaves the variable
+  unset (`$!{key}` prints nothing); a missing `{{…}}` path renders `""`. (In the body or subject, `{{…}}` with a newline
+  is fine.)
+- One-item lists arrive **unwrapped** in the context (the item itself); `$.list.length()` still counts right.
+  `{{$.list[*].name}}` renders Go-style (`["a" "b"]`), so lists go through the context and `#foreach`.
+- Undefined references don't fail (non-strict). The run history shows each send-email step's template and resolved
+  context, not the rendered mail. To check rendering, probes made the send fail only when the rendering matched an
+  expected string: `#define($block)…#end#if($expected == "$block")#evaluate($bad)#end` with `bad = "#if("` in the context.
+- The generic approval's output has `approvedBy[]` / `rejectedBy[]` (`name` = whoever acted, e.g. an admin on the
+  approver's behalf) and `comments[]`: the first is the one the workflow set, later ones are the decision's.
+
+What the emails do with that:
+- The body is a **Velocity** template rendered by SailPoint's email service with the step's `context`. So the body is
+  **constant markup** (no `{{…}}`, no `##`, no `#` outside directives, colours as `rgb()`), and every value travels in the
+  context as **JSONPath** (`"key.$"`), never as a `{{…}}` template: a template value with a newline, quote or backslash
+  fails the send. Config text goes in as plain context values. `core/tests/velocity_lite.py` renders a step the way
+  SailPoint does; 8 real bodies (one-item lists, a hostile multi-line justification, missing paths) were checked
+  byte-for-byte against SailPoint's rendering.
+- **Layout** (all four): a coloured title bar, a DRY RUN banner in `dry-run`, then sections **What** (INC and part,
+  each item as "name (access profile|role|entitlement)", "N people" / "1 person", how long), **Why** (justification,
+  requested by), **Decision** (approver, decided by = `approvedBy[0].name` or `rejectedBy[0].name`, i.e. an admin acting
+  for the approver too; "Nobody (it expired)"; the comments after the request's own first one, or "No comment"),
+  **What happens next** / **What to do now**, and **Need help?** (`help_html(cfg)`: `helpContact` escaped, web and email
+  addresses linked, default "Contact your SailPoint administrator."). One table, inline styles, max 640 px wide.
+- **Steps and recipients** (requester; cc the bulk approver when `ccApprover`; everything to `overrideRecipients` when set):
+  | Step | When | Subject | cc approver |
+  |---|---|---|---|
+  | `Email Pending` | before `Bulk Approval`, when `pending_email` (Launcher: after *Notify Pending*) | `Waiting for approval: bulk access {inc}{part}[ (DRY RUN)]` | yes |
+  | `Email Approved` | status APPROVED | `Approved: bulk access {inc}{part}[ (DRY RUN: nothing was requested)]` | yes |
+  | `Email Denied` | any other status (REJECTED, EXPIRED) | `Not approved: bulk access {inc}{part}` | yes |
+  | `Reject …` (plugin) / `Email Reject …` (Launcher, after its Launchpad message) | a check failed before the approval | `Not sent for approval: {title} ({base_name})` (no INC: it may be the bad value) | no |
+- **Rejections name the field:** Self approval and approver among the people → *Approver*; bad INC → *ServiceNow
+  incident (INC) number* (shows the value entered); Launcher duration → *Duration* / *Unit* (shows the value entered);
+  plugin `removeDuration` → *Temporary access (how long)*. The Launcher's ERROR message is now
+  `<p>{field}: {problem}</p><p>Nothing was sent for approval. Fix it and submit again; you'll also get this by email.</p>`
+  (the plugin shows it as "The workflow stopped before the approval: {title}: {message}", §9).
+- **Links** (`definitions.EmailLinks(ui, plugin_id)`, built by the installers): Approvals → Other
+  `/ui/d/approvals/other/requested-items`, Approvals → Access Requests `/ui/d/approvals/access-request/requested-items`,
+  Launchpad `/ui/d/launchpad` (paths read from the live UI's navigation), the plugin `/ui/plugin/{pluginInstanceId}`
+  (only with `deploy_plugin`). The plugin ID comes from `GET /ui-plugins/v1/resolve-alias?alias=<plugin.alias>` with
+  `X-SailPoint-Experimental: true` (the CLI's endpoint; 200 with `pluginInstanceId`, 404 for an unknown alias; works with
+  the PAT). The Launcher installs first, so its emails get plugin links from the `apply` after the plugin's first upload;
+  without a UI address the emails name the pages without links. The plugin has no per-tab URL, so the emails name the tab.
+- What each email says next: *Pending*: the approver decides in Approvals → Other (task *Grant: Bulk access {inc}{part}*),
+  Approve acts at once, the timeout and its outcome, track it in *My bulk requests*. *Approved* (live): item approvers
+  decide in Approvals → Access Requests (or the plugin's Approvals tab when `plugin_approvals_enabled`), the item requests
+  are filed by the workflow so they're not in the requester's Request Center; temporary access ends by itself. *Approved*
+  (dry-run): nothing was requested. *Not approved*: read the comment (or check with the approver when expired) and
+  resubmit in the plugin (New request tab) or the Launchpad. *Not sent for approval*: fix the named field and resubmit.
 
 ## Test data and safety (live tests in a test or shared tenant)
 - Only touch objects named with the config's prefix. Use a harmless test access profile as the only catalog item

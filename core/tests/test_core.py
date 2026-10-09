@@ -95,7 +95,11 @@ def test_both_workflows_stop_when_the_approver_is_one_of_the_people():
         assert all(c["comparator"] == "StringEquals" and c["nextStep"] == "Reject Approver In People"
                    for c in check["choiceList"])
         assert check["defaultStep"] == "INC Valid?"
-        assert steps["Reject Approver In People"]["nextStep"] == "End Step - Rejected"
+        # The Launcher shows the problem in the Launchpad, then emails it; the plugin workflow emails it.
+        stop = "Email Reject Approver In People" if variant == "launcher" else "Reject Approver In People"
+        assert steps["Reject Approver In People"]["nextStep"] == ("End Step - Rejected" if stop == "Reject Approver In People"
+                                                                 else stop)
+        assert steps[stop]["actionId"] == "sp:send-email" and steps[stop]["nextStep"] == "End Step - Rejected"
 
 
 def test_catalog_options_carry_full_access_objects_and_respect_filters():
@@ -167,23 +171,21 @@ def test_show_config_recommends_a_service_identity_when_owner_is_null(tmp_path, 
     assert "Owner:       2c9180835d2e5168015d32f890ca1581" in out and config.OWNER_NOTE not in out
 
 
-def _approved_body(cfg, variant="plugin"):
-    return _steps(definitions.bulk_workflow(cfg, variant=variant, owner_id="o", form_id="f"))["Email Approved"]["attributes"]["body"]
-
-
 def test_approved_email_says_item_approvals_still_apply_and_points_to_the_approvals_tab():
     for variant in ("launcher", "plugin"):
-        body = _approved_body(cfg_with(mode="live"), variant)
-        assert "still need that approval in SailPoint for each person" in body
-        assert "on the Approvals tab of 'ACME Bulk Access Request'" in body
+        _, body = _render_email(cfg_with(mode="live"), "Email Approved", variant, decision="APPROVED")
+        assert "still need it for each person" in body
+        assert f"{UI}/ui/d/approvals/access-request/requested-items" in body
+        assert f'all at once on the Approvals tab of <a href="{UI}/ui/plugin/pid-1"' in body
     # No Approvals tab: the sentence stays, the pointer goes.
     for overrides in ({"approvals__enabled": False}, {"deployments__plugin": False}):
-        body = _approved_body(cfg_with(mode="live", **overrides), "launcher")
-        assert "still need that approval" in body and "Approvals tab" not in body
+        _, body = _render_email(cfg_with(mode="live", **overrides), "Email Approved", "launcher", decision="APPROVED")
+        assert "still need it for each person" in body and "Approvals tab" not in body
     # Dry run requests nothing, so there is nothing for item approvers to decide.
-    assert "still need that approval" not in _approved_body(cfg_with())
-    assert "still need" not in json.dumps(_steps(definitions.bulk_workflow(cfg_with(mode="live"), variant="plugin",
-                                                                           owner_id="o"))["Email Denied"])
+    _, body = _render_email(cfg_with(), "Email Approved", "launcher", decision="APPROVED")
+    assert "still need it" not in body and "Nothing was requested, because this installation is in dry-run mode" in body
+    _, body = _render_email(cfg_with(mode="live"), "Email Denied", "plugin", decision="REJECTED")
+    assert "still need it" not in body
 
 
 def test_bulk_approval_description_stays_short_enough():
@@ -504,10 +506,16 @@ def test_item_comment_keeps_the_inc_first_and_adds_the_access_label():
 
 def test_emails_say_which_part_and_the_access_label():
     steps = _steps(definitions.bulk_workflow(config.load(EXAMPLE), variant="plugin", owner_id="o"))
-    for name in ("Email Approved", "Email Denied"):
+    for name in definitions.EMAIL_STEPS:
         attrs = steps[name]["attributes"]
-        assert "{{$.trigger.partLabel}}" in attrs["subject"] and "{{$.trigger.partLabel}}" in attrs["body"]
-        assert "{{$.trigger.accessLabel}}" in attrs["body"]
+        assert "{{$.trigger.partLabel}}" in attrs["subject"]
+        assert attrs["context"]["part.$"] == "$.trigger.partLabel" and attrs["context"]["access.$"] == "$.trigger.accessLabel"
+        subject, body = _render_email(config.load(EXAMPLE), name, "plugin", decision="APPROVED" if name != "Email Denied" else "REJECTED",
+                                part=" (2/3)", access="Temporary: until 2026-11-07")
+        assert subject.startswith(("Waiting for approval: bulk access INC0012345 (2/3)", "Approved: bulk access INC0012345 (2/3)",
+                                   "Not approved: bulk access INC0012345 (2/3)"))
+        assert "(2/3): one part of a larger request with the same INC" in body
+        assert "Temporary: until 2026-11-07 (removed automatically when it ends)" in body
 
 
 def test_plugin_trigger_lists_every_input_field():
@@ -517,9 +525,10 @@ def test_plugin_trigger_lists_every_input_field():
         assert field in description, field
     steps = _steps(wf)
     assert steps["INC Valid?"]["choiceList"][0]["nextStep"] == "Access Valid?"
+    assert steps["Email Pending"]["nextStep"] == "Bulk Approval"
     check = steps["Access Valid?"]
     assert check["choiceList"][0]["variableA.$"] == "$.trigger.removeDuration"
-    assert check["choiceList"][0]["nextStep"] == "Bulk Approval" and check["defaultStep"] == "Reject Bad Duration"
+    assert check["choiceList"][0]["nextStep"] == "Email Pending" and check["defaultStep"] == "Reject Bad Duration"
 
 
 def test_launcher_form_offers_temporary_access_only_when_configured():
@@ -561,12 +570,17 @@ def test_launcher_checks_the_duration_before_the_approval():
     assert limit["variableA.$"] == "$.defineVariableAccess.removeDuration"
     assert re.match(limit["variableB"], "168h") and not re.match(limit["variableB"], "8d")
     messages = {name: steps[name]["attributes"]["message"] for name in ("Reject Bad Duration", "Reject Bad Unit", "Reject Too Long")}
-    assert messages == {"Reject Bad Duration": "<p>Enter the duration as a whole number of 1 or more.</p>",
-                        "Reject Bad Unit": "<p>Choose a unit for the duration.</p>",
-                        "Reject Too Long": "<p>Temporary access can last at most 7 days.</p>"}
-    # Every path to the approval passes the checks: nothing reaches "Bulk Approval" except via Notify Pending.
+    after = "<p>Nothing was sent for approval. Fix it and submit again; you'll also get this by email.</p>"
+    assert messages == {"Reject Bad Duration": "<p>Duration: Enter the duration as a whole number of 1 or more.</p>" + after,
+                        "Reject Bad Unit": "<p>Unit: Choose a unit for the duration.</p>" + after,
+                        "Reject Too Long": "<p>Duration: Temporary access can last at most 7 days.</p>" + after}
+    # Every path to the approval passes the checks: nothing reaches "Bulk Approval" except via Notify Pending
+    # and the pending email.
     into_approval = [n for n, s in steps.items() if s.get("nextStep") == "Bulk Approval"]
-    assert into_approval == ["Notify Pending"]
+    assert into_approval == ["Email Pending"] and steps["Notify Pending"]["nextStep"] == "Email Pending"
+    no_pending = _steps(definitions.bulk_workflow(cfg_with(notifications__pendingEmail=False), variant="launcher",
+                                                  owner_id="o", form_id="f"))
+    assert "Email Pending" not in no_pending and no_pending["Notify Pending"]["nextStep"] == "Bulk Approval"
 
 
 def test_launcher_without_max_days_or_temporary_access_has_no_extra_checks():
@@ -987,3 +1001,235 @@ def test_clip_flattens_whitespace_and_cuts_with_an_ellipsis():
     assert rules.clip("abcdefghij", 10) == "abcdefghij"
     assert rules.clip("abcdefghijk", 10) == "abcdefghi…"
     assert len(rules.clip("x" * 500, 145)) == 145
+
+
+# ── emails (what / why / what happens next, links, Velocity safety) ───────────
+import velocity_lite  # noqa: E402  (renders a send-email step the way SailPoint does; checked live, CONTRACTS §10)
+
+UI = "https://acme.identitynow.com"
+LINKS = definitions.EmailLinks(UI, "pid-1")
+HOSTILE = 'Costs $5 #if( ## $foo ${bar} #end\nline 2 "quoted" back\\slash <b>x</b>'
+
+
+def _state(variant, *, decision=None, part="", access="Permanent", people=("p1", "p2", "p3"), inc="INC0012345",
+           justification="Quarter-end audit", comments=("OK for the audit.",), decided_by="Aisha Bello", **form_extra):
+    items = [{"id": "a", "type": "ACCESS_PROFILE", "name": "ACME Finance Read"},
+             {"id": "e", "type": "ENTITLEMENT", "name": "ACME-AP-Clerk"}]
+    state = {"getRequester": {"attributes": {"displayName": "Rae Quester"}},
+             "getApprover": {"id": "ap", "attributes": {"displayName": "Aisha Bello"}}}
+    if variant == "plugin":
+        state["trigger"] = {"people": list(people), "items": items, "approverId": "ap", "requesterId": "rq", "inc": inc,
+                            "justification": justification, "partLabel": part, "accessLabel": access,
+                            "removeDuration": "" if access == "Permanent" else "30d", **form_extra}
+    else:
+        state["interactiveForm"] = {"formData": {"people": list(people), "items": items, "approver": ["ap"], "inc": inc,
+                                                 "justification": justification, **form_extra}}
+        state["defineVariableAccess"] = {"partLabel": part, "accessLabel": access}
+    if decision:
+        key = "approvedBy" if decision == "APPROVED" else "rejectedBy"
+        state["bulkApproval"] = {"status": decision, "comments": [{"comment": f"{inc}: {justification}"}]
+                                 + [{"comment": c} for c in comments],
+                                 **({key: [{"name": decided_by}]} if decided_by and decision != "EXPIRED" else {})}
+    return state
+
+
+def _render_email(cfg, step, variant, *, links=LINKS, state=None, **kw):
+    wf = definitions.bulk_workflow(cfg, variant=variant, owner_id="o", form_id="f", links=links)
+    return velocity_lite.render_step(_steps(wf)[step], state or _state(variant, **kw))
+
+
+def _email_steps(wf):
+    return {n: s for n, s in _steps(wf).items() if s.get("actionId") == "sp:send-email"}
+
+
+def test_ui_base_url_comes_from_the_api_host_unless_configured():
+    cfg = config.load(EXAMPLE)
+    assert config.ui_base_url(cfg, "https://acme.api.identitynow.com") == "https://acme.identitynow.com"
+    assert config.ui_base_url(cfg, "https://acme.api.identitynow.com/") == "https://acme.identitynow.com"
+    assert config.ui_base_url(cfg, "https://demo-1.api.identitynow-demo.com") == "https://demo-1.identitynow-demo.com"
+    for unknown in (None, "", "https://acme.identitynow.com", "https://api.acme.com", "ftp://acme.api.identitynow.com"):
+        assert config.ui_base_url(cfg, unknown) is None, unknown
+    custom = cfg_with(notifications__uiBaseUrl="https://iam.acme.com/")
+    assert custom.ui_base_url_override == "https://iam.acme.com"
+    assert config.ui_base_url(custom, "https://acme.api.identitynow.com") == "https://iam.acme.com"
+
+
+@pytest.mark.parametrize("key,value,message", [
+    ("notifications__uiBaseUrl", "acme.identitynow.com", config.MSG_UI_BASE_URL),
+    ("notifications__uiBaseUrl", "https://acme.identitynow.com/#x", config.MSG_UI_BASE_URL),
+    ("notifications__uiBaseUrl", "https://acme.identitynow.com/$x", config.MSG_UI_BASE_URL),
+    ("notifications__uiBaseUrl", 42, config.MSG_UI_BASE_URL),
+    ("notifications__helpContact", "x" * (config.HELP_CONTACT_MAX + 1), config.MSG_HELP_CONTACT),
+    ("notifications__helpContact", ["a"], config.MSG_HELP_CONTACT),
+    ("notifications__pendingEmail", "yes", config.MSG_PENDING_EMAIL),
+])
+def test_notification_settings_are_checked(key, value, message):
+    with pytest.raises(config.ConfigError) as err:
+        cfg_with(**{key: value})
+    assert str(err.value) == message
+
+
+def test_notification_defaults():
+    cfg = config.load(EXAMPLE)
+    assert cfg.help_contact is None and cfg.ui_base_url_override is None and cfg.pending_email is True
+    assert cfg_with(notifications__helpContact="  Service   Desk  ").help_contact == "Service Desk"
+
+
+@pytest.mark.parametrize("variant", definitions.VARIANTS)
+@pytest.mark.parametrize("mode", ["dry-run", "live"])
+def test_every_email_says_what_why_and_where_to_go(variant, mode):
+    cfg = cfg_with(mode=mode)
+    steps = _email_steps(definitions.bulk_workflow(cfg, variant=variant, owner_id="o", form_id="f", links=LINKS))
+    expected = {"Email Pending", "Email Approved", "Email Denied", "Reject Self Approval", "Reject Approver In People",
+                "Reject Bad INC", "Reject Bad Duration"}
+    if variant == "launcher":
+        expected = {f"Email {n}" if n.startswith("Reject") else n for n in expected} | {"Email Reject Bad Unit"}
+    assert set(steps) == expected
+    for name in steps:
+        decision = {"Email Approved": "APPROVED", "Email Denied": "REJECTED"}.get(name)
+        subject, body = _render_email(cfg, name, variant, decision=decision)
+        headings = ["What", "Why", "Need help?"]
+        headings += ["What to fix"] if "Reject" in name else ["Decision"] if decision else []
+        headings += ["What happens next"] if name in ("Email Pending", "Email Approved") else ["What to do now"]
+        for heading in headings:
+            assert f">{heading}</td>" in body, (name, heading)
+        for text in ("INC0012345", "ACME Finance Read", "(access profile)", "ACME-AP-Clerk", "(entitlement)", "3 people",
+                     "Quarter-end audit", "Rae Quester", "Contact your SailPoint administrator."):
+            assert text in body, (name, text)
+        # Nothing unrendered or empty-looking reaches the reader.
+        for leftover in ("None", "$!{", "{{", "null", "undefined", "  ("):
+            assert leftover not in body and leftover not in subject, (name, leftover)
+        assert ("DRY RUN" in body) == (mode == "dry-run")
+
+
+def test_the_pending_email_says_where_the_approver_decides():
+    _, body = _render_email(cfg_with(), "Email Pending", "launcher")
+    assert f'<a href="{UI}/ui/d/approvals/other/requested-items"' in body and "Approvals → Other</a>" in body
+    assert "<b>Grant: Bulk access INC0012345</b>" in body and "Approving there takes effect at once" in body
+    assert "If nobody decides within 7 days, it expires and nothing is requested." in body
+    assert f'<a href="{UI}/ui/plugin/pid-1"' in body and "My bulk requests" in body
+    _, body = _render_email(cfg_with(approval__actionAtTimeout="APPROVED"), "Email Pending", "plugin", part=" (2/3)")
+    assert "it is approved automatically" in body and "<b>Grant: Bulk access INC0012345 (2/3)</b>" in body
+
+
+def test_the_approved_email_says_where_to_track_it():
+    _, body = _render_email(cfg_with(mode="live"), "Email Approved", "launcher", decision="APPROVED", access="Temporary: 30d")
+    assert "don't appear in your Request Center → My Requests" in body
+    assert (f'<a href="{UI}/ui/plugin/pid-1" style="color:rgb(21,128,61);font-weight:bold">'
+            "'ACME Bulk Access Request' → My bulk requests</a>") in body
+    assert "Temporary access is removed automatically when it ends" in body
+    # The decision's comment is shown, not the request's own first comment.
+    assert "OK for the audit." in body and "INC0012345: Quarter-end audit" not in body
+    # An admin acting for the approver is named as the decider.
+    _, body = _render_email(cfg_with(mode="live"), "Email Approved", "plugin", decision="APPROVED", decided_by="Ada Admin",
+                      comments=())
+    assert "<b>Ada Admin</b> approved" in body and ">No comment</span>" in body
+
+
+def test_the_denied_email_gives_the_reason_and_where_to_resubmit():
+    _, body = _render_email(cfg_with(), "Email Denied", "launcher", decision="REJECTED", comments=("Too broad.", "Use the role."))
+    assert "Bulk access request not approved" in body and "<b>Aisha Bello</b> did not approve" in body
+    assert "Too broad." in body and "Use the role." in body
+    assert f'<a href="{UI}/ui/plugin/pid-1"' in body and "(New request tab)" in body
+    assert f'<a href="{UI}/ui/d/launchpad"' in body and "→ 'ACME Bulk Access Request'" in body
+    _, body = _render_email(cfg_with(), "Email Denied", "launcher", decision="EXPIRED", comments=())
+    assert "Bulk access request expired" in body and "within 7 days, so it expired" in body
+    assert "Nobody (it expired)" in body and "did not approve" not in body
+
+
+@pytest.mark.parametrize("step,field,problem,state_kw,shown", [
+    ("Reject Self Approval", "Approver", "You can't approve your own bulk request.", {}, None),
+    ("Reject Approver In People", "Approver", rules.MSG_APPROVER_IN_PEOPLE, {}, None),
+    ("Reject Bad INC", "ServiceNow incident (INC) number", "Enter a ServiceNow incident number", {"inc": "INC12"}, "INC12"),
+    ("Reject Bad Duration", "Duration", rules.MSG_DURATION_NUMBER, {"duration": "0"}, "0"),
+    ("Reject Bad Unit", "Unit", rules.MSG_DURATION_UNIT, {"durationUnit": ["x"]}, "x"),
+])
+def test_rejection_emails_name_the_field_to_fix(step, field, problem, state_kw, shown):
+    subject, body = _render_email(cfg_with(), f"Email {step}", "launcher", **state_kw)
+    assert subject.startswith("Not sent for approval: ") and "INC0" not in subject
+    assert f"Fix your bulk access request: {field}</td>" in body
+    assert f"<b>{field}</b>" in body and problem in body
+    assert "Nothing was sent for approval and nothing was requested." in body
+    assert f'<a href="{UI}/ui/d/launchpad"' in body
+    if shown is not None:
+        assert f'>You entered</td><td style="padding:4px 0;vertical-align:top">{shown}</td>' in body
+
+
+def test_plugin_rejections_are_emails_too():
+    _, body = _render_email(cfg_with(), "Reject Bad Duration", "plugin", removeDuration="abc")
+    assert "Temporary access (how long)" in body and ">abc</td>" in body
+    assert f'<a href="{UI}/ui/plugin/pid-1"' in body
+
+
+def test_emails_without_links_still_name_every_page():
+    for links in (definitions.EmailLinks(), definitions.EmailLinks(UI)):
+        _, pending = _render_email(cfg_with(), "Email Pending", "launcher", links=links)
+        _, denied = _render_email(cfg_with(), "Email Denied", "launcher", links=links, decision="REJECTED")
+        assert "Approvals → Other" in pending and "My bulk requests" in pending
+        assert "plugin/" not in pending + denied                            # no plugin ID: no plugin link
+        assert "<b>'ACME Bulk Access Request'</b> (New request tab)" in denied
+        if not links.ui:
+            assert 'href="http' not in pending + denied
+    # Without the plugin deployment, no plugin pages are mentioned at all.
+    _, body = _render_email(cfg_with(deployments__plugin=False), "Email Pending", "launcher")
+    assert "My bulk requests" not in body and "plugin/" not in body
+    _, body = _render_email(cfg_with(deployments__launcher=False, plugin__submit="test-endpoint"), "Email Denied", "plugin",
+                      decision="REJECTED")
+    assert "Launchpad" not in body and "(New request tab)" in body
+
+
+def test_email_bodies_are_constant_velocity_and_values_travel_in_the_context():
+    for variant in definitions.VARIANTS:
+        wf = definitions.bulk_workflow(cfg_with(mode="live", temporaryAccess__maxDays=30), variant=variant,
+                                       owner_id="o", form_id="f", links=LINKS)
+        for name, step in _email_steps(wf).items():
+            attrs = step["attributes"]
+            body = attrs["body"]
+            # "##" is a Velocity comment; "{{…}}" would splice run data into the template.
+            assert "##" not in body and "{{" not in body, name
+            # Every "$" is a "$!{…}" reference or a directive's variable, every "#" a directive.
+            stripped = re.sub(r"\$!\{[\w.]+\}", "", body)
+            stripped = re.sub(r"#\{?(?:if|elseif|foreach|set|else|end)\b\}?", "", stripped)
+            assert "#" not in stripped, name
+            assert all(re.match(r"\$\w", stripped[i:i + 2]) for i, c in enumerate(stripped) if c == "$"), name
+            # Context values are JSONPath or plain text, never templates: a template value containing a newline,
+            # a quote or a backslash fails the send (verified live).
+            assert not any("{{" in str(v) for v in attrs["context"].values()), name
+            assert all(isinstance(v, str) for v in attrs["context"].values()), name
+
+
+def test_requester_text_is_shown_verbatim_and_never_read_as_a_template():
+    for variant in definitions.VARIANTS:
+        _, body = _render_email(cfg_with(), "Email Pending", variant, justification=HOSTILE)
+        assert f'<span style="white-space:pre-wrap">{HOSTILE}</span>' in body
+
+
+def test_one_item_lists_arrive_unwrapped_and_still_render():
+    # The workflow engine unwraps one-item lists: one person, and a decision without a comment.
+    _, body = _render_email(cfg_with(), "Email Denied", "plugin", decision="REJECTED", people=("p1",), comments=())
+    assert "1 person" in body and ">No comment</span>" in body
+    state = _state("launcher")
+    state["interactiveForm"]["formData"]["items"] = state["interactiveForm"]["formData"]["items"][:1]
+    _, body = _render_email(cfg_with(), "Email Pending", "launcher", state=state)
+    assert "ACME Finance Read" in body and "ACME-AP-Clerk" not in body
+
+
+def test_help_contact_is_escaped_and_linked():
+    cfg = cfg_with(notifications__helpContact="IAM <desk>: iam@acme.com or https://help.acme.com/iam.")
+    assert definitions.help_html(cfg) == ('IAM &lt;desk&gt;: <a href="mailto:iam@acme.com">iam@acme.com</a> or '
+                                          '<a href="https://help.acme.com/iam">https://help.acme.com/iam</a>.')
+    assert definitions.help_html(config.load(EXAMPLE)) == definitions.DEFAULT_HELP
+    _, body = _render_email(cfg, "Email Pending", "plugin")
+    assert '<a href="mailto:iam@acme.com">iam@acme.com</a>' in body
+
+
+def test_who_gets_which_email():
+    steps = _email_steps(definitions.bulk_workflow(config.load(EXAMPLE), variant="launcher", owner_id="o", form_id="f"))
+    for name in ("Email Pending", "Email Approved", "Email Denied"):
+        attrs = steps[name]["attributes"]
+        assert attrs["recipientEmailList.$"] == "$.getRequester.attributes.email"
+        assert attrs["carbonCopy.$"] == "$.getApprover.attributes.email"
+    rejected = steps["Email Reject Bad INC"]["attributes"]
+    assert rejected["recipientEmailList.$"] == "$.getRequester.attributes.email" and "carbonCopy.$" not in rejected
+    no_cc = _email_steps(definitions.bulk_workflow(cfg_with(notifications__ccApprover=False), variant="plugin", owner_id="o"))
+    assert all("carbonCopy.$" not in s["attributes"] for s in no_cc.values())

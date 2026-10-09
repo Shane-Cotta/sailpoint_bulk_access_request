@@ -293,13 +293,14 @@ def offline_objects(cfg: Config, only: str | None = None) -> dict[str, dict]:
             out["launcher/form.json"] = definitions.bulk_form(cfg, _PLACEHOLDER["owner"], [])
             out["launcher/workflow.json"] = definitions.bulk_workflow(
                 cfg, variant="launcher", owner_id=_PLACEHOLDER["owner"], form_id=_PLACEHOLDER["form"],
-                workflow_id=_PLACEHOLDER["workflow"])
+                workflow_id=_PLACEHOLDER["workflow"], links=definitions.EmailLinks(ui=cfg.ui_base_url_override))
             out["launcher/launcher.json"] = definitions.bulk_launcher(cfg, _PLACEHOLDER["workflow"])
             out["launcher/access-profile.json"] = definitions.launcher_access_profile(
                 cfg, _PLACEHOLDER["owner"], {"id": _PLACEHOLDER["entitlement"], "name": cfg.launcher_name,
                                              "source": {"id": _PLACEHOLDER["source"], "name": "IdentityNow"}})
         elif cfg.plugin_needs_workflow:   # plugin.submit "launcher" uses the Launcher's workflow instead
-            out["plugin/workflow.json"] = definitions.bulk_workflow(cfg, variant="plugin", owner_id=_PLACEHOLDER["owner"])
+            out["plugin/workflow.json"] = definitions.bulk_workflow(cfg, variant="plugin", owner_id=_PLACEHOLDER["owner"],
+                                                                    links=definitions.EmailLinks(ui=cfg.ui_base_url_override))
     return out
 
 

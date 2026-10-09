@@ -104,9 +104,11 @@ def manifest(cfg: Config) -> dict[str, Any]:
     }
 
 
-def plugin_workflow(cfg: Config, owner_id: str, owner_name: str | None) -> dict[str, Any]:
-    """The plugin workflow body, always DISABLED (it only runs through the test endpoint)."""
-    body = definitions.bulk_workflow(cfg, variant="plugin", owner_id=owner_id, owner_name=owner_name)
+def plugin_workflow(cfg: Config, owner_id: str, owner_name: str | None,
+                    links: definitions.EmailLinks | None = None) -> dict[str, Any]:
+    """The plugin workflow body, always DISABLED (it only runs through the test endpoint). `links`: where its
+    emails point (the tenant's UI and the plugin page)."""
+    body = definitions.bulk_workflow(cfg, variant="plugin", owner_id=owner_id, owner_name=owner_name, links=links)
     body["enabled"] = False
     # SailPoint's validator rejects failure end steps without failureName/description
     # (error e300). Newer core versions set them; fill them in for older ones.
