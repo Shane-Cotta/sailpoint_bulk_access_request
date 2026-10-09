@@ -57,8 +57,6 @@ export type ResolveProgress = (done: number, total: number) => void;
 export interface Execution {
   id: string;
   status: 'Running' | 'Completed' | 'Failed' | 'Canceled' | string;
-  startTime?: string;
-  closeTime?: string;
 }
 
 /**
@@ -171,7 +169,6 @@ export interface GenericApproval {
   /** The item's approval scheme(s), e.g. ACCESS_PROFILE_OWNER or MANAGER. */
   approvalConfig?: { serialChain?: { tier?: number; identityType?: string }[] | null } | null;
   dueDate?: string | null;
-  priority?: string | null;
 }
 
 /** Approve or deny (the generic-approvals verbs are approve and reject). */
@@ -204,13 +201,11 @@ const PENDING_FILTER = 'status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL
 
 /** The fields of a /v3/access-request-status row the page reads. */
 export interface AccessRequestStatus {
-  accessRequestId?: string;
   id: string;
   name: string;
   type: string;
   state: string;
   created?: string;
-  modified?: string;
   requestedFor?: { id: string; name?: string };
   requester?: { id: string; name?: string };
   requesterComment?: { comment?: string } | null;

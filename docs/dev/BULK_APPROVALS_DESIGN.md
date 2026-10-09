@@ -113,12 +113,12 @@ required to deny.
   - **new:** `bulk/approvals.ts` (pure grouping and filters), `bulk/approvals-store.ts` (modelled on `request-store.ts`:
     signals, polling, generation guard) and `features/approvals/*`;
   - **changed:** `bulk/nav.ts` (`TabId` + `'approvals'`), `app.ts` and `app.html` (third tab, banner only on *New
-    request*), `bulk/bulk-api.service.ts` (`pendingAccessApprovals()` and `decide()`), `bulk/errors.ts` (wording by
+    request*), `bulk/bulk-api.service.ts` (`pendingAccessApprovals()` and `decideApprovals()`), `bulk/errors.ts` (wording by
     context), `bulk/rules.ts`, `bulk/runtime-config.ts` and `demo/*`.
 - **Core:** `rules.py` (`parse_bulk_comment`, `COMMENT_SEPARATOR`, and `definitions.py` builds the comment with that
   separator), `config.py` (the `approvals` block and derived values) and the example config.
-- **Install:** `plugin/pluginlib.py` (runtime config, manifest description, `restrictToUsers`) and `plugin/install.py`
-  (visibility warning).
+- **Install:** `plugin/pluginlib.py` (runtime config, manifest description, `restrictToUsers`); the visibility warning
+  lives in `bulkaccess.py` (`show-config`).
 - **Tests:**
   - **new:** `approvals.spec.ts` and `approvals-store.spec.ts`;
   - **extended:** `bulk-api.service.spec.ts`, `rules.spec.ts` / `rules.py` mirror cases, `core/tests/test_core.py`

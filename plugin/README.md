@@ -327,7 +327,7 @@ catalog filter, `splitIntoParts` / `partLabel`, temporary-access checks and the 
 | "The workflow … is not installed" (test-endpoint mode) | Run `install.py` against this tenant. The page finds the workflow by ID (from the runtime config) or by name. |
 | Someone can't be found by search | New identities can take a while to reach the search index. The page also looks people up through their accounts. If that fails too, paste their identity ID. |
 | An access request shows **Cancelled: "Already has a pending request for this item"** | That person already had an open request for the item. SailPoint skips duplicates. |
-| The workflow run **Failed** and no approval appeared | The workflow's own checks stopped it: the INC was invalid or the approver was the requester. The requester gets an email (test-endpoint mode); through the Launcher, the page shows the Launcher's message. |
+| The workflow run **Failed** and no approval appeared | The workflow's own checks stopped it: the INC was invalid or the approver was the requester. The requester gets an email in both submit modes (through the Launcher, after the page shows the Launcher's message on the Launchpad). |
 | `sail` prints "Secrets storage is not currently functional" | This is harmless. The scripts pass the PAT through environment variables. |
 | "Part 2 didn't start" after submitting a big request | That part's launch or form submission (or test-endpoint call) failed; the message says why. The other parts are unaffected; press **Retry part 2**. |
 | "To submit, you need '… Launcher Access'" | The user doesn't hold the Launcher Access profile (yet). They request it in the Request Center; once it's provisioned (about a minute), submit again. |

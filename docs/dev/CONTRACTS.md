@@ -147,6 +147,7 @@ python bulkaccess.py show-config --config config/<tenant>.json
 python bulkaccess.py apply       --config … [--dry-run] [--only launcher|plugin] [--deploy] [--grant me|<ids>]
 python bulkaccess.py status      --config … [--only …]
 python bulkaccess.py uninstall   --config … [--only …] [--yes]
+python bulkaccess.py export      --config … [--only …] [--offline] [--out DIR]
 ```
 `apply` runs the Launcher before the plugin: in launcher submit mode `plugin/install.py` looks the Launcher up by name and stops
 with a clear error when it's missing. It runs each enabled deployment by calling the existing `launcher/*.py` and `plugin/*.py` `main(argv)` functions. They're loaded
@@ -262,7 +263,7 @@ spoofed). With the admin PAT, 250 people in one form reached the workflow intact
 *Approver In People?*).
 
 **Following a part** (only what a non-admin can read; no `workflow-executions`): `GET /v2025/generic-approvals?limit=250&sorters=-createdDate&requesterId=<me>` (the **query parameter**: `filters=requesterId eq …` returns `[]` for a non-admin ✔ non-admin)
-(filter and newest-first sort work ✔ PAT; not yet checked with a non-admin session), matched by `workflowExecutionId` or by name
+(filter and newest-first sort work ✔ PAT), matched by `workflowExecutionId` or by name
 `Bulk access {inc}{partLabel}`; decided → done. Until the approval exists, the process's blocks are read again: a non-FORM block
 with category `ERROR` (the workflow's *Reject …* interactive messages; shape assumed from the FORM block) → "The workflow stopped
 before the approval: {title}: {message}". After 10 minutes, "still waiting".
@@ -289,8 +290,7 @@ Verified live on 2026-10-09 (demo tenant, `sp:send-email` v2):
   approver's behalf) and `comments[]`: the first is the one the workflow set, later ones are the decision's.
 
 What the emails do with that:
-- The body is a **Velocity** template rendered by SailPoint's email service with the step's `context`. So the body is
-  **constant markup** (no `{{…}}`, no `##`, no `#` outside directives, colours as `rgb()`), and every value travels in the
+- Because the body is Velocity (above), it is **constant markup** (no `{{…}}`, no `##`, no `#` outside directives, colours as `rgb()`), and every value travels in the
   context as **JSONPath** (`"key.$"`), never as a `{{…}}` template: a template value with a newline, quote or backslash
   fails the send. Config text goes in as plain context values. `core/tests/velocity_lite.py` renders a step the way
   SailPoint does; 8 real bodies (one-item lists, a hostile multi-line justification, missing paths) were checked

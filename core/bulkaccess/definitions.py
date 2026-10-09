@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import DURATION_UNITS, Config
-from .rules import (APPROVAL_COMMENT_MAX, APPROVAL_DESCRIPTION_MAX, APPROVER_LABEL, COMMENT_SEPARATOR, MSG_APPROVER_IN_PEOPLE,
+from .rules import (APPROVAL_DESCRIPTION_MAX, APPROVER_LABEL, COMMENT_SEPARATOR, MSG_APPROVER_IN_PEOPLE,
                     MSG_DURATION_NUMBER, MSG_DURATION_UNIT, REQUESTER_LABEL, duration_regex, msg_max_days, unit_max_count)
 
 VARIANTS = ("launcher", "plugin")
@@ -52,6 +52,8 @@ PART_LABEL_REGEX = r"^ \([1-9][0-9]*/[1-9][0-9]*\)$"
 # Plugin trigger input (CONTRACTS section 3); every field is always present.
 PLUGIN_INPUT = ("people", "items", "approverId", "requesterId", "inc", "justification",
                 "part", "parts", "partLabel", "removeDuration", "accessLabel")
+# How the plugin trigger's description shows some of them.
+PLUGIN_INPUT_HINTS = {"people": "people[]", "items": "items[]", "removeDuration": 'removeDuration ("" = permanent)'}
 
 
 def launcher_duration_units(cfg: Config) -> tuple[str, ...]:
@@ -712,8 +714,7 @@ def bulk_workflow(cfg: Config, *, variant: str, owner_id: str, owner_name: str |
     else:
         trigger = {"type": "EXTERNAL", "attributes": {
             "name": f"{cfg.plugin_alias}-workflow",
-            "description": "Input: people[], items[], approverId, requesterId, inc, justification, part, parts, "
-                           "partLabel, removeDuration (\"\" = permanent), accessLabel"}}
+            "description": "Input: " + ", ".join(PLUGIN_INPUT_HINTS.get(f, f) for f in PLUGIN_INPUT)}}
         description = (f"{cfg.prefix} Bulk Access Request for the UI plugin ({cfg.mode}). Started through the "
                        "workflow test endpoint, once per part of up to 250 people, so it must stay DISABLED. "
                        "Installed by bulk-access-request/plugin/install.py.")
@@ -761,6 +762,6 @@ def pretty(obj: Any) -> str:
     return json.dumps(obj, indent=2, sort_keys=False)
 
 
-__all__ = ["bulk_form", "bulk_workflow", "bulk_launcher", "VARIANTS", "APPROVAL_COMMENT_MAX", "PLUGIN_INPUT", "EmailLinks",
+__all__ = ["bulk_form", "bulk_workflow", "bulk_launcher", "VARIANTS", "PLUGIN_INPUT", "EmailLinks",
            "launcher_duration_units", "launcher_offers_temporary", "launcher_workflow_units", "plugin_duration_regex",
            "F_PART_LABEL", "PART_LABEL_REGEX"]
