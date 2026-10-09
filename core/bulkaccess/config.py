@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,18 @@ MSG_PLUGIN_SUBMIT_LAUNCHER = ('`plugin.submit` "launcher" needs the Launcher dep
                               'to true, or use "test-endpoint".')
 
 
+# Emails (`notifications`): links point at the tenant's UI, derived from the API host of SAIL_BASE_URL
+# ("https://acme.api.identitynow.com" -> "https://acme.identitynow.com") unless `uiBaseUrl` overrides it.
+# The URL is written into the email markup, so it may not carry characters the email template engine
+# (Velocity) or HTML would read: no "#", "$", quotes, "<", ">" or whitespace.
+UI_BASE_URL_RE = r"https?://[^\s#$\"'<>?]+"
+MSG_UI_BASE_URL = ('`notifications.uiBaseUrl` must be null or an http(s) URL such as "https://acme.identitynow.com" '
+                   '(no query string, "#", "$", quotes or spaces).')
+HELP_CONTACT_MAX = 300
+MSG_HELP_CONTACT = f"`notifications.helpContact` must be null or text of at most {HELP_CONTACT_MAX} characters."
+MSG_PENDING_EMAIL = "`notifications.pendingEmail` must be true or false."
+
+
 def msg_approvals_flag(key: str) -> str:
     return f"`approvals.{key}` must be true or false."
 
@@ -113,6 +126,9 @@ class Config:
     approvals_max_rows: int = 5000
     approvals_show_other: bool = False
     approvals_deny_comment_required: bool = True
+    help_contact: str | None = None
+    ui_base_url_override: str | None = None
+    pending_email: bool = True
     source_path: str | None = field(default=None, compare=False)
     # Old key names that were mapped to new ones; shown by `bulkaccess.py show-config`.
     deprecations: tuple[str, ...] = field(default=(), compare=False)
@@ -200,6 +216,24 @@ class Config:
     def plugin_approvals_enabled(self) -> bool:
         """The Approvals tab lives in the plugin, so it needs the plugin deployment too."""
         return self.deploy_plugin and self.approvals_enabled
+
+
+def ui_base_url(cfg: Config, api_base_url: str | None) -> str | None:
+    """The tenant's UI address for email links: `notifications.uiBaseUrl`, else derived from the API host
+    (".api." dropped: acme.api.identitynow.com -> acme.identitynow.com, and the same for identitynow-demo.com).
+    None when neither gives one (the emails then name the pages without linking them)."""
+    if cfg.ui_base_url_override:
+        return cfg.ui_base_url_override
+    if not api_base_url:
+        return None
+    parts = urllib.parse.urlsplit(api_base_url.strip())
+    host = parts.hostname or ""
+    labels = host.split(".")
+    if parts.scheme not in ("http", "https") or "api" not in labels[1:-1]:
+        return None
+    ui_host = ".".join(label for i, label in enumerate(labels) if not (label == "api" and i > 0))
+    url = f"{parts.scheme}://{ui_host}" + (f":{parts.port}" if parts.port else "")
+    return url if re.fullmatch(UI_BASE_URL_RE, url) else None
 
 
 def _unit_fits(unit: str, max_days: int | None) -> bool:
@@ -306,6 +340,18 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
 
     recipients = tuple(notes.get("overrideRecipients") or ())
     _require(all("@" in r for r in recipients), "`notifications.overrideRecipients` must be email addresses.")
+    ui_url = notes.get("uiBaseUrl")
+    if isinstance(ui_url, str):
+        ui_url = ui_url.strip().rstrip("/") or None
+    _require(ui_url is None or (isinstance(ui_url, str) and re.fullmatch(UI_BASE_URL_RE, ui_url) is not None),
+             MSG_UI_BASE_URL)
+    help_contact = notes.get("helpContact")
+    if isinstance(help_contact, str):
+        help_contact = " ".join(help_contact.split()) or None
+    _require(help_contact is None or (isinstance(help_contact, str) and len(help_contact) <= HELP_CONTACT_MAX),
+             MSG_HELP_CONTACT)
+    pending_email = notes.get("pendingEmail", True)
+    _require(isinstance(pending_email, bool), MSG_PENDING_EMAIL)
 
     access_approval = access.get("launcherApproval")
     old_launcher = data.get("launcher") or {}
@@ -363,6 +409,9 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
         approvals_max_rows=approvals["maxRows"],
         approvals_show_other=approvals["showOther"],
         approvals_deny_comment_required=approvals["denyCommentRequired"],
+        help_contact=help_contact,
+        ui_base_url_override=ui_url,
+        pending_email=pending_email,
         source_path=source_path,
         deprecations=tuple(deprecations),
     )

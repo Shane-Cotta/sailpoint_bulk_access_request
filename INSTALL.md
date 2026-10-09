@@ -65,7 +65,10 @@ deployment, so the Launcher and the plugin behave the same way. Where SailPoint 
 | `approval.actionAtTimeout` | `EXPIRED` | What happens at the timeout: `EXPIRED` (nothing is requested) or `APPROVED`. | both |
 | `approval.priority` | `MEDIUM` | The approval task's priority: `LOW`, `MEDIUM` or `HIGH`. | both |
 | `notifications.overrideRecipients` | `[]` | Send **all** emails to these addresses instead of to the real people. Use this in test tenants. | both |
-| `notifications.ccApprover` | `true` | Copy the approver on the outcome email. | both |
+| `notifications.ccApprover` | `true` | Copy the bulk approver on the *Waiting for approval*, *Approved* and *Not approved* emails. | both |
+| `notifications.pendingEmail` | `true` | Also email when a request starts waiting for the bulk approver (it says where the approver decides). `false` = outcome emails only. | both |
+| `notifications.helpContact` | `null` | The emails' *Need help?* line, up to 300 characters; web and email addresses in it become links. `null` = "Contact your SailPoint administrator." | both |
+| `notifications.uiBaseUrl` | `null` | Your tenant's UI address, for the links in the emails. `null` = derived from `SAIL_BASE_URL` (`https://acme.api.identitynow.com` → `https://acme.identitynow.com`). Set it if your users reach ISC at another address (a vanity domain). No query string, `#`, `$`, quotes or spaces. | both |
 | `owner` | `null` | Owner identity ID for the objects created. `null` = the PAT user. **Recommended: a dedicated service identity.** The workflow owner is the *requester* of every access request the workflows file, and ISC escalates to an admin any item approval that would go to the requester (e.g. when the owner also owns or manages an item). With `null`, `show-config` and the installers print a note saying so (not an error). | both |
 | `access.launcherApproval` | `MANAGER` | Who approves requests for the *Launcher Access* profile: `MANAGER` (the requester's manager) or `NONE` (auto-approved). The old key `launcher.accessApproval` still works; `show-config` reminds you to rename it. | A |
 | `plugin.alias` | `<prefix in lowercase>-bulk-access` | The plugin's alias: lowercase letters, digits and dashes. | B |
@@ -186,9 +189,10 @@ option that `bulkaccess.py` doesn't offer:
 Launchpad ─► Launcher ─► Workflow "<prefix> Bulk Access Request"
                            1. Interactive Form   people · items · access type and duration · approver · INC · justification
                            2. checks             approver ≠ requester · INC matches the pattern · duration is valid
-                           3. Generic Approval   ONE task, assigned to the chosen approver
+                                                 (a failed check: Launchpad message + "Not sent for approval" email)
+                           3. Generic Approval   ONE task, assigned to the chosen approver ("Waiting for approval" email first)
                            4. if APPROVED (live) Loop over people → Manage Access (all items for that person, with the remove duration)
-                           5. email              approved / denied (dry-run says nothing was requested)
+                           5. email              approved / not approved (dry-run says nothing was requested)
 
 UI plugin, plugin.submit "launcher" (default with A)
           ─► per part (at most people.partSize people), as the signed-in user:
@@ -217,6 +221,12 @@ Some of this design comes from limits we hit on a live tenant:
   workflow filters on its own ID.
 - **The installer re-enables the Launcher.** Disabling a workflow, which happens during updates, switches its
   Launcher off a moment later; the installer checks and turns it back on.
+- **Emails are Velocity templates with their values in the context.** SailPoint's email service reads the body as a
+  Velocity template, so a justification containing `#if(` would break an email written into it, and a multi-line one
+  breaks a `{{…}}` value. The body is fixed markup and every value travels as a JSONPath context variable. Links point at
+  your tenant's UI (`notifications.uiBaseUrl`, or derived from `SAIL_BASE_URL`); the plugin's page is looked up by alias
+  at install time, so run `apply` once more after the plugin's first `--deploy` to add its links. USAGE.md section 6
+  shows what each email says.
 
 ## Troubleshooting
 | Symptom | Fix |

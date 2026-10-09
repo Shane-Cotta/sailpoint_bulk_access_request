@@ -48,7 +48,11 @@
   },
   "notifications": {
     "overrideRecipients": [],
-    "ccApprover": true
+    "ccApprover": true,
+    "pendingEmail": true,
+    "helpContact": null,
+    "uiBaseUrl": null,
+    "_comment": "Every email says what was asked, why, what was decided and where to go next, with links into the tenant. pendingEmail: also email when a request starts waiting for the bulk approver. helpContact: the 'Need help?' line (text; web and email addresses become links), null = 'Contact your SailPoint administrator.' uiBaseUrl: the tenant's UI address for the links, null = derived from SAIL_BASE_URL (https://acme.api.identitynow.com -> https://acme.identitynow.com)."
   },
   "owner": null,
   "access": {

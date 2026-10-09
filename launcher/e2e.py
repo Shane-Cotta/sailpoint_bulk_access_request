@@ -212,8 +212,11 @@ def main(argv=None) -> int:
         stops = ({"rejectSelfApproval"} if a.scenario == "self"
                  else {"rejectApproverInPeople"} if a.scenario == "approver-in-people"
                  else {"rejectBadDuration", "rejectBadUnit", "rejectTooLong"})
-        ok = bool(stops & set(done)) and "bulkApproval" not in done
+        # The Launchpad message, then the email naming the field to fix (a failed send fails the run).
+        emailed = {f"email{s[0].upper()}{s[1:]}" for s in stops} & set(done)
+        ok = bool(stops & set(done)) and bool(emailed) and "bulkApproval" not in done
         print(f"3. Run {run['id']}: {run['status']}; steps: {done}")
+        print(f"   rejection email sent: {sorted(emailed) or 'NO'}")
         pending = ours()
         if pending:
             ok = False
@@ -252,6 +255,11 @@ def main(argv=None) -> int:
     ok = run["status"] == "Completed" and label_ok
     expected = "emailApproved" if a.scenario == "approve" else "emailDenied"
     ok &= expected in done
+    # Emails: "waiting for approval" before the approval (unless notifications.pendingEmail is false), then the outcome.
+    pending_ok = ("emailPending" in done) == cfg.pending_email
+    ok &= pending_ok
+    print(f"   emails sent: {[s for s in done if s.startswith('email')]}"
+          + ("" if pending_ok else f" (pending email expected: {cfg.pending_email})"))
     if cfg.live and a.scenario == "approve":
         for person in people:
             def carrying():   # the status API lags the request by a few seconds

@@ -12,6 +12,7 @@ SailPoint screens from a test installation that used the prefix `UCSF` (yours sh
 | [3. Approve the bulk request](#3-the-bulk-approver-isc-approvals--other) | The one approver chosen | ISC **Approvals → Other** |
 | [4. Approve the items](#4-item-approvers-owners-managers) | Each item's approvers (owner, manager, …) | The plugin's **Approvals** tab, or ISC **Approvals → Access Requests** |
 | [5. Follow it](#5-tracking-my-bulk-requests-and-the-request-center) | Requester | The plugin's **My bulk requests** |
+| [6. Emails](#6-emails-youll-get) | Requester, copied to the bulk approver | Your inbox: each email says what, why, and where to go next |
 
 ## 1. Get access to the tool (once)
 Everyone who submits bulk requests, from the plugin or from the Launchpad, needs the access profile
@@ -102,7 +103,7 @@ are on. It's a *generic* approval, so in ISC it's under **Approvals → Other**,
 
   ![ISC Approvals → Other: the bulk approval](docs/screenshots/isc-21-approvals-other-bulk.png)
 - Opening it shows only the requester's comment, **"INC…: justification"**. ISC doesn't show the people, the items or
-  the access type here; ask the requester or check the INC if you need them.
+  the access type here; the *Waiting for approval* email you're copied on lists them (section 6).
 - Add a comment if you like, then **Approve** or **Deny**. **Approve acts immediately**: ISC asks for no confirmation.
 
   ![The bulk approval opened, with a comment typed](docs/screenshots/isc-22-approvals-bulk-drawer.png)
@@ -185,6 +186,23 @@ files them under the **workflow owner** (the admin account the tool was installe
 ![The workflow owner's My Requests: one Completed, one Pending](docs/screenshots/isc-51-admin-my-requests.png)
 
 Temporary access is removed by SailPoint on its remove date, with no further action.
+
+## 6. Emails you'll get
+Every email has the same layout: **What** (the INC and part, each item with its type, how many people, permanent or
+temporary), **Why** (the justification and who asked), the **Decision** once there is one (approver, who acted, their
+comment), and **What happens next** or **What to do now**, with links into your tenant. A **Need help?** line at the
+bottom says whom to ask (`notifications.helpContact`). The requester gets them; the bulk approver is copied on the first
+three (`notifications.ccApprover`).
+
+| Email | When | Where it points |
+|---|---|---|
+| **Waiting for approval** | The request reached the bulk approver (`notifications.pendingEmail`) | The approver decides in ISC **Approvals → Other** (task *Grant: Bulk access INC…*); Approve there acts immediately. Says when it expires. The requester follows it in the plugin's **My bulk requests**. |
+| **Approved** | The bulk approver approved | Items with their own approval still need it per person: item approvers use ISC **Approvals → Access Requests** or the plugin's **Approvals** tab. The item requests are filed by the workflow, so they're not in your Request Center; follow them in **My bulk requests**. |
+| **Not approved** | Denied, or expired after the configured days | The approver's comment, then how to resubmit: the plugin (New request tab) or **Launchpad → "<prefix> Bulk Access Request"**. The same INC is fine. |
+| **Not sent for approval** | The workflow stopped the request before any approval (you chose yourself or one of the people as approver, a bad INC, a bad duration or unit) | The field to fix, what was entered, and where to submit again. Nothing was requested. The Launchpad (or the plugin) shows the same message at once. |
+
+In `dry-run` mode every email carries a **DRY RUN** banner: nothing is ever requested. With
+`notifications.overrideRecipients` set (test tenants), all of them go to those addresses instead.
 
 ## Admins
 - **Install, update, uninstall:** see [INSTALL.md](INSTALL.md). Everything is set in one file, `config/<tenant>.json`.

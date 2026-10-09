@@ -173,6 +173,19 @@ the Request Center. For audit, search the INC: it's on the generic approval's na
 and in the workflow's execution history. A dedicated service identity as `owner` keeps the workflow owner's Request
 Center (and the item approvers' *Requested by*) separate from a real admin's.
 
+### The emails at each step
+The requester gets each email, and the bulk approver is copied on the first three (`notifications.ccApprover`). Each says
+what was asked (INC and part, every item with its type, how many people, how long), why (justification, requester), the
+decision when there is one, and where to go next, with links built at install time (`config.ui_base_url`: the
+`SAIL_BASE_URL` host without `.api.`, or `notifications.uiBaseUrl`; the plugin's ID from `GET /ui-plugins/v1/resolve-alias`).
+
+| Step | Email (`sp:send-email` v2) | Points to |
+|---|---|---|
+| 4, check failed | *Not sent for approval: …*: the field to fix and the value entered | Plugin (New request tab), or Launchpad `/ui/d/launchpad` |
+| 4, approval created | *Waiting for approval: bulk access INC…* (`notifications.pendingEmail`) | Approvals → Other `/ui/d/approvals/other/requested-items`; plugin *My bulk requests* `/ui/plugin/<id>` |
+| 6, approved | *Approved: bulk access INC…* | Approvals → Access Requests `/ui/d/approvals/access-request/requested-items` and the plugin's Approvals tab for item approvers; *My bulk requests* |
+| 5, denied or expired | *Not approved: bulk access INC…*, with the approver's comment | Plugin (New request tab), or Launchpad |
+
 ## 9. Temporary access ends on its own
 The requests carry `removeDate` (+1 day here). SailPoint removes the access then, with no further action; the plugin's
 *My bulk requests* shows **Temporary until …** on each request it can list.
