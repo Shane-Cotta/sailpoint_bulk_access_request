@@ -85,6 +85,15 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
   - No workflow transform turns a date into a duration, so the Launcher offers durations only; the plugin converts an end date to hours itself.
 - **`/v3/access-request-status` rows:** `requestedFor` is an object `{id,name,type}`, `name` is the item name, `removeDate` holds the
   expiry, and `requesterComment.comment` holds our comment. There's no `requestedObject`.
+- **Emails (`sp:send-email` v2):**
+  - The body is a **Velocity** template, rendered with the step's `context` map. Text that isn't valid Velocity
+    (e.g. a justification containing `#if(`) templated into the body makes the send 400 and **fails the run**.
+  - So bodies are fixed markup, and every value comes in through `context` as JSONPath (`"key.$"`), which arrives intact.
+    A `{{…}}` template value is spliced in raw: a newline, `"` or `\` in it fails the send too.
+  - One-item lists arrive unwrapped in the context. `{{$.list[*].name}}` renders Go-style (`["a" "b"]`), so lists go
+    through the context and `#foreach`.
+  - The execution history shows the context, not the rendered mail; `core/tests/velocity_lite.py` renders a step locally
+    (CONTRACTS §10 has the live probe technique).
 - **Workflow definitions:** failure end steps need top-level `failureName` / `description`. Launcher-triggered workflows must filter
   `$[?(@.workflowId == '<own id>')]`.
 - **Variables and operators:**
