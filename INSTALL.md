@@ -106,7 +106,11 @@ name and updates them.
 3. **Launcher** "<prefix> Bulk Access Request". Users see it in their **Launchpad**.
 4. **Access profile** "<prefix> Bulk Access Request - Launcher Access". SailPoint only shows a Launcher to people
    who hold its `assignedLaunchers` entitlement, so this profile controls who can use the tool. People request it
-   in the **Request Center**, approved by their manager if `access.launcherApproval` is `MANAGER`. Or grant it with `--grant`.
+   in the **Request Center**, approved by their manager if `access.launcherApproval` is `MANAGER` (auto-approved with
+   `NONE`). Or grant it with `--grant`. About a minute after it's granted, the Launcher appears in their Launchpad.
+   **The same profile lets them submit from the plugin** (`plugin.submit: "launcher"`, the default with both deployments).
+   Approvers need nothing: the bulk approver decides in ISC **Approvals → Other**, item approvers in **Approvals →
+   Access Requests** or the plugin's Approvals tab.
 
 **Deployment B** writes the plugin's runtime config and manifest. With `plugin.submit: "launcher"` (the default when A is
 on) it creates nothing else: it looks up A's Launcher by name and writes its ID into the runtime config (people who aren't
@@ -135,7 +139,8 @@ python launcher/e2e.py --config config/<tenant>.json \
 - **The safe sequence:** dry-run approve → dry-run deny → (`"mode": "live"`, `apply` again) live approve on test
   identities → back to dry-run until you're ready.
 
-For the plugin, submit a request from the page in `dry-run` mode and approve it in **Home → Approvals**. With
+For the plugin, submit a request from the page in `dry-run` mode and approve it in **Approvals → Other** (the bulk
+approval is a generic approval, so it isn't under *Access Requests*). With
 `plugin.submit: "launcher"`, try it as a user who isn't an admin but holds the *Launcher Access* profile: the request and its
 approval carry their name, and someone without the profile is told to request it.
 
@@ -185,8 +190,16 @@ Launchpad ─► Launcher ─► Workflow "<prefix> Bulk Access Request"
                            4. if APPROVED (live) Loop over people → Manage Access (all items for that person, with the remove duration)
                            5. email              approved / denied (dry-run says nothing was requested)
 
-UI plugin ─► one workflow test run per part (at most people.partSize people each) ─► the same steps 2–5
+UI plugin, plugin.submit "launcher" (default with A)
+          ─► per part (at most people.partSize people), as the signed-in user:
+             launch the Launcher ─► find its form (interactive-process blocks) ─► fill in and submit it ─► steps 2–5 above
+UI plugin, plugin.submit "test-endpoint" (without A)
+          ─► one test run per part of the disabled workflow "<prefix> Bulk Access Request (Plugin)" ─► the same steps 2–5
 ```
+Step 4 files the access requests as the **workflow owner** (`owner`, or the installer's PAT user). So item approvers see
+that account as *Requested by*, and the requests are in its Request Center → My Requests, not the requester's. The
+requester follows them in the plugin's **My bulk requests** (see [USAGE.md](USAGE.md#5-tracking-my-bulk-requests-and-the-request-center)).
+
 Some of this design comes from limits we hit on a live tenant:
 - **One request per person.** SailPoint caps a request at **10 recipients**, and **nested loops aren't allowed**.
   So the workflow loops over the people, and each request carries *all* the items.
@@ -211,6 +224,10 @@ Some of this design comes from limits we hit on a live tenant:
 | `apply` or `show-config` stops with a config message | It names the key and the allowed values. Fix the config and run it again. |
 | The Launcher isn't in someone's Launchpad | They need the *Launcher Access* profile. Request or grant it, wait about a minute, then refresh. |
 | `HTTP 401 insufficient authorization` when launching | Same as above: the user doesn't hold the launcher's entitlement yet. |
+| The plugin says "To submit, you need '<prefix> Bulk Access Request - Launcher Access'…" | Same: request it in the Request Center (or `--grant`), wait about a minute, and submit again. |
+| The bulk approver can't find the approval | It's a generic approval: ISC **Approvals → Other**, titled "Grant: Bulk access INC…" (not under *Access Requests*). |
+| The requester's Request Center doesn't show the item requests | Expected: the workflow files them as its owner. They're in the owner's My Requests; the requester uses the plugin's **My bulk requests**. |
+| An item approval is titled "Modify: …" | The person already had the item; the request only changes its end date. |
 | `HTTP 409 launcher is disabled` | Run `apply` again; it re-enables the Launcher. |
 | The form offers nothing to request | Check `catalog.types` / `catalog.nameStartsWith`, then run `apply` again. An entitlement only appears once it is marked requestable. |
 | "Temporary access isn't available." | `temporaryAccess.enabled` is `false`, or the chosen way (for example an end date on the Launcher) isn't allowed. |

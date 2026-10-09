@@ -6,8 +6,11 @@ It was compiled on 2026-10-08 by searching the code (`core/bulkaccess/*.py`, `la
 `bulkaccess.py` and `plugin/src/app/**/*.ts`, leaving out specs and demo code). It was then checked against the
 `sailpoint-oss/api-specs` OpenAPI files, developer.sailpoint.com, and a live test tenant (read-only GETs only).
 
+Updated on 2026-10-09 after a recorded end-to-end run on a live tenant with a non-admin requester and approver.
+
 Related: [API_CONTRACT_ALIGNMENT.md](API_CONTRACT_ALIGNMENT.md) (versions, deprecations, how to migrate) ·
-[REQUIREMENTS_CHECKLIST.md](REQUIREMENTS_CHECKLIST.md) (a checklist to run against a tenant).
+[REQUIREMENTS_CHECKLIST.md](REQUIREMENTS_CHECKLIST.md) (a checklist to run against a tenant) ·
+[END_TO_END_WALKTHROUGH.md](END_TO_END_WALKTHROUGH.md) (the lifecycle step by step, with the calls each step makes).
 
 **Evidence tags:**
 
@@ -127,6 +130,21 @@ All calls go through `SailpointPluginService.get/post` → `@sailpoint/ui-plugin
 | Approvals tab | ✔ | `generic-approvals` (APPROVAL_OWNER) |
 
 With `plugin.submit: "test-endpoint"`, submitting needs ORG_ADMIN and the *New request* tab says so.
+
+**Launcher submit, call by call** (`plugin.submit: "launcher"`; once per part, all as the signed-in user's session):
+
+| # | Call | Answer used | Notes |
+|---|---|---|---|
+| 1 | `GET /v3/public-identities?filters=…` (non-admins) or the admin lookups above | identity IDs for the people and the approver | People and approver steps |
+| 2 | `GET /v3/requestable-objects?identity-id=<me>&types=ACCESS_PROFILE&types=ROLE…`, `GET /v2025/entitlements?filters=requestable eq true…` | catalog items `{id, type, name}` | `identity-id` is required for non-admins (403 without it) |
+| 3 | `POST /v2025/launchers/{launcherId}/launch` `{}` | `interactiveProcessId` | Launcher ID from the runtime config. Without *Launcher Access*: 401/403 or 500 "insufficient authorization" → the page says to request the profile |
+| 4 | `GET /beta/interactive-processes/{interactiveProcessId}/blocks` (every 1 s, up to 30 s) | the `FORM` block's form instance ID | **Beta**; the same call ISC's Launchpad makes. Needs a user session (the admin PAT gets 401) |
+| 5 | `PATCH /v2025/form-instances/{id}` (`/formData`, then `/state` `SUBMITTED`), `GET /v2025/form-instances/{id}` | `state`, `formErrors` | Up to 3 PATCHes (ASSIGNED → IN_PROGRESS → SUBMITTED); sent with `fetch` and the SDK's token |
+| 6 | `GET /v2025/generic-approvals?requesterId=<me>&sorters=-createdDate&limit=250`, `GET /v2025/generic-approvals/{id}` | the part's `Bulk access <INC>` approval and its decision | `requesterId` as a **query parameter**: the `filters=requesterId eq …` form returns nothing for non-admins [L] |
+| 7 | `GET /beta/interactive-processes/{id}/blocks` again, while waiting | an `ERROR` message block means the workflow stopped (for example a rule check) | — |
+
+Not used: `GET /v2025/interactive-processes` exists and lists the caller's interactive processes [L], but the plugin
+already knows its process ID from the launch.
 
 ## 4. `sail` CLI (≥ 2.7.0)
 Run by `plugin/pluginlib.py` with `SAIL_BASE_URL`, `SAIL_CLIENT_ID` and `SAIL_CLIENT_SECRET` in its environment

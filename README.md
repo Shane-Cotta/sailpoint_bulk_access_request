@@ -10,7 +10,8 @@ Request access for **many people at once**, approved by **one person you choose*
 3. **Choose how long:** permanent, or temporary access that SailPoint removes automatically.
 4. **Pick one approver** for the whole request. It can't be you, or one of the people getting the access.
 5. **Enter the INC number** (checked for the right format) and a justification.
-6. **Submit.** The approver gets **one** approval task (one per 250 people in the plugin). If they approve, everyone is
+6. **Submit.** The approver gets **one** approval task (one per 250 people in the plugin), in SailPoint's own
+   **Approvals → Other**. If they approve, everyone is
    requested every item as a normal SailPoint access request, and each request's comment reads
    `INC… | Bulk access request by … | Approved by … | <Permanent or Temporary: …> | <justification>`.
    If they deny, nothing is requested. Either way, the requester gets an email.
@@ -28,8 +29,9 @@ and the [Approvals screenshots](#screenshots)).
 | Who can use it | **Any user** you give the *Launcher Access* profile to (they can request it in the Request Center) | **The same users**: with A installed (the default, `plugin.submit: "launcher"`), the plugin submits through the Launcher as the signed-in user. Without A, ORG_ADMIN only (see the plugin README) |
 | People | Form picker, **up to 30** (SailPoint's form limit) | Search or paste a list, **no limit**. Above 250 people, the request is sent as several approvals with the same INC (SailPoint's workflow loop limit). Warns about access people already have. |
 | Temporary access | By **duration**: hours, days, weeks or months | By **duration** or **end date** |
-| Status tracking | Approval email, plus the requests in Request Center → *Track My Requests* | **My bulk requests** tab, grouped by INC |
-| Item approvers | SailPoint's Approvals page, one card at a time | **Approvals** tab: a whole INC at once, for any approver who can see the plugin |
+| Bulk approver | ISC **Approvals → Other** ("Grant: Bulk access INC…"), plus an email | The same |
+| Status tracking | Approval email. The item requests are filed by the workflow, so they're in the *workflow owner's* Request Center, not the requester's | **My bulk requests** tab, grouped by INC (for everyone; listing the item requests needs admin rights) |
+| Item approvers | ISC **Approvals → Access Requests**, one card per person | The same, or the **Approvals** tab: a whole INC at once, for any approver who can see the plugin |
 | Docs | [INSTALL.md](INSTALL.md), [USAGE.md](USAGE.md) | [plugin/README.md](plugin/README.md) |
 
 **One settings file drives both.** You copy `config/bulk-access.example.json` to `config/<tenant>.json`, choose which
@@ -75,31 +77,37 @@ Before installing in a production tenant, check that the tenant offers everythin
 | [API inventory](docs/sailpoint/API_INVENTORY.md) | Every API call (method, path, version, caller, user level, scopes), workflow step, form feature and `sail` command |
 | [API contract alignment](docs/sailpoint/API_CONTRACT_ALIGNMENT.md) | How each call maps to v3, the dated versions, experimental APIs and the new `/<service>/v1` paths; known deviations from the spec; migration plan and risks |
 | [Requirements checklist](docs/sailpoint/REQUIREMENTS_CHECKLIST.md) | A tick-box list of features, user levels, scopes, settings, limits and tooling, each with a one-line check |
+| [End-to-end walkthrough](docs/sailpoint/END_TO_END_WALKTHROUGH.md) | The full lifecycle on a real tenant, step by step: who acts, where in ISC, what they see, and which API or ISC feature is used; plus what each person's Request Center shows before and after approval |
 
 ## Screenshots
-Real SailPoint screens (`docs/screenshots/`) from a test installation that used the prefix `UCSF`; yours show your own prefix:
+Real SailPoint screens (`docs/screenshots/`) from a test installation that used the prefix `UCSF`; yours show your own
+prefix. [USAGE.md](USAGE.md) walks through all of them in order.
 
-| Launcher (A) | |
+| 1. Get the tool (Request Center) | 2. Submit from the plugin |
 |---|---|
-| ![Request the tool in the Request Center](docs/screenshots/launcher-0-request-center-access.png) | ![Launchpad](docs/screenshots/launcher-1-launchpad.png) |
-| *Users request "Launcher Access" in the Request Center* | *…then launch it from the Launchpad* |
-| ![The form](docs/screenshots/launcher-4-form-filled.png) | ![INC validation](docs/screenshots/launcher-3-inc-validation.png) |
-| *People, items, one approver, INC, justification* | *A bad INC can't be submitted* |
+| ![Request Launcher Access in the Request Center](docs/screenshots/isc-01-request-launcher-access.png) | ![The plugin's review step](docs/screenshots/isc-13-plugin-review.png) |
+| *Requesters ask for "Launcher Access" once; it then shows in the Launchpad too* | *People, access, one approver and INC, review: submitted as the signed-in user* |
 
-| UI plugin (B), running inside SailPoint | |
+| 3. The bulk approver (Approvals → Other) | 4. Item approvers (plugin Approvals tab) |
 |---|---|
-| ![New request](docs/screenshots/plugin-in-isc-1-new-request.png) | ![My bulk requests](docs/screenshots/plugin-in-isc-2-my-bulk-requests.png) |
-| *Four steps: people, access, approver and INC, review* | *Everything you've submitted, by INC* |
+| ![The bulk approval in ISC Approvals, Other](docs/screenshots/isc-21-approvals-other-bulk.png) | ![The plugin's Approvals tab, one INC opened](docs/screenshots/isc-41-plugin-approvals-open.png) |
+| *One approval, "Grant: Bulk access INC…", decided in SailPoint's own Approvals* | *Item owners decide a whole INC at once (or one card per person in ISC)* |
 
-| UI plugin (B), Approvals tab (demo data) | |
+| 5. Track it (plugin My bulk requests) | The Launchpad form |
 |---|---|
-| ![Approvals grouped by INC](docs/screenshots/plugin-9-approvals-groups.png) | ![One INC opened](docs/screenshots/plugin-10-approvals-drilldown.png) |
-| *Item approvers see their pending approvals grouped by INC* | *Check the list, leave some out, approve or deny the rest at once* |
+| ![My bulk requests: approved](docs/screenshots/isc-50-plugin-my-bulk-requests-approved.png) | ![The Launcher form](docs/screenshots/launcher-4-form-filled.png) |
+| *Everything you've submitted, by INC* | *The same request as a native form, up to 30 people* |
 
-More plugin screens (made with sample data, one per step) are in [plugin/README.md](plugin/README.md) and [USAGE.md](USAGE.md).
+More plugin screens (made with sample data, including large requests sent in parts) are in [plugin/README.md](plugin/README.md).
 
-**Demo video.** A captioned walk-through of the UI plugin in demo mode (new request, My bulk requests, the Approvals tab)
-is attached to the GitHub release [**demo-2026-10-08**](https://github.com/Shane-Cotta/sailpoint_bulk_access_request/releases/tag/demo-2026-10-08) as `bulk-access-demo.mp4`. [tools/demo-capture](tools/demo-capture/README.md) records it.
+**Demo videos.** Attached to GitHub releases:
+- [**demo-2026-10-09**](https://github.com/Shane-Cotta/sailpoint_bulk_access_request/releases/tag/demo-2026-10-09):
+  `bulk-access-real-e2e.mp4` (5½ min), a real end-to-end run in a live ISC tenant with test identities: Launcher Access
+  from the Request Center, a submit from the plugin as a non-admin, the bulk approval in ISC Approvals, the item approvals
+  in ISC and in the plugin's Approvals tab, and what each person sees afterwards.
+- [**demo-2026-10-08**](https://github.com/Shane-Cotta/sailpoint_bulk_access_request/releases/tag/demo-2026-10-08):
+  `bulk-access-demo.mp4`, a captioned tour of the UI plugin in demo mode (new request, My bulk requests, the Approvals
+  tab, large requests). [tools/demo-capture](tools/demo-capture/README.md) records it.
 
 ## Folder layout
 ```
@@ -130,4 +138,6 @@ test access profile:
   - 5 people sent in parts of 2: three approvals `(1/3)`–`(3/3)` with one INC. The denied part requested nothing.
   - Temporary by end date and by duration, with `removeDate` on every request. An invalid duration is stopped before the approval.
   - 15 people in one live run.
+  - Submitted through the Launcher by a **non-admin** requester who got *Launcher Access* from the Request Center;
+    bulk approval in ISC Approvals, item approvals in ISC and in the Approvals tab (recorded: see *Demo videos*).
 - **Unit tests:** core 263, plugin installer 13, plugin UI 163 (`pytest`, `ng test`), none of them needing a tenant.

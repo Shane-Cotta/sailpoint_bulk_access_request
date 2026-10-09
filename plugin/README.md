@@ -88,6 +88,23 @@ approvers to the plugin's `restrictToUsers`. `show-config` warns when the tab is
 The same code installs into any tenant. Everything tenant-specific (names, INC rule, limits, catalog filter) comes
 from a config file, and nothing is hard-coded.
 
+## Screenshots
+
+### In ISC
+Real screens from a test tenant (prefix `UCSF`), submitted by a non-admin requester and decided by a non-admin approver.
+The whole lifecycle, with the ISC screens around the plugin, is in [USAGE.md](../USAGE.md) and
+[docs/sailpoint/END_TO_END_WALKTHROUGH.md](../docs/sailpoint/END_TO_END_WALKTHROUGH.md).
+
+| | |
+|---|---|
+| ![People: one found by search, one by a pasted email](../docs/screenshots/isc-10-plugin-people.png) | ![Access: an access profile from the catalog](../docs/screenshots/isc-11-plugin-access.png) |
+| ![Approver, INC, justification, 1 day](../docs/screenshots/isc-12-plugin-approver-inc.png) | ![Review: submitted through the Launcher as you](../docs/screenshots/isc-13-plugin-review.png) |
+| ![Waiting for the approver](../docs/screenshots/isc-14-plugin-waiting.png) | ![My bulk requests, filtered by INC: approved](../docs/screenshots/isc-50-plugin-my-bulk-requests-approved.png) |
+| ![Approvals tab: one INC waiting](../docs/screenshots/isc-40-plugin-approvals.png) | ![Approvals tab: approved, confirmed](../docs/screenshots/isc-43-plugin-approvals-result.png) |
+
+### With demo data
+Large requests, parts and partial results, made with the plugin's demo mode:
+
 | | |
 |---|---|
 | ![People step: 600 people, sent as 3 approvals](../docs/screenshots/plugin-1-people.png) | ![Access step](../docs/screenshots/plugin-2-items.png) |
@@ -100,6 +117,15 @@ from a config file, and nothing is hard-coded.
 | ![Approvals tab: partly done, with Retry](../docs/screenshots/plugin-13-approvals-partial-retry.png) | *(Screenshots use made-up demo data. To retake them, see [tools/demo-capture](../tools/demo-capture/README.md).)* |
 
 ## Who can use it: Launcher Access to submit, any approver for the Approvals tab
+
+| Who | Needs | Can use |
+|---|---|---|
+| **Requester** (any user) | The *"<prefix> Bulk Access Request - Launcher Access"* profile, requested in the Request Center (auto-approved with `access.launcherApproval: "NONE"`, else by their manager). It also puts the Launcher in their Launchpad | *New request*, *My bulk requests* (the approval's status; listing the item requests themselves needs admin rights), *Approvals* |
+| **Bulk approver** | Nothing extra | Decides in ISC **Approvals → Other** ("Grant: Bulk access INC…"); the plugin isn't needed |
+| **Item approver** (owner, manager, governance group) | Nothing extra, beyond seeing the plugin | *Approvals* tab, or ISC **Approvals → Access Requests** |
+| **ORG_ADMIN** | — | Everything, plus the item requests in *My bulk requests* when they are the workflow owner |
+
+Everyone must be able to see the plugin: make it public (`plugin.public: true`), or add them to its `restrictToUsers`.
 
 How the page submits is set by `plugin.submit` in the config (`show-config` says which applies):
 
@@ -259,7 +285,7 @@ When dry-run behaves, set `"mode": "live"` in the config and run `install.py` ag
   for temporary access, **Temporary until …**. It joins two lists: approvals named `Bulk access <INC>` (or `… (k/n)`) that you
   requested, and access requests you filed whose comment carries an INC number. Requests made through the Launcher show up here too.
 
-The approver decides in ISC as usual (**Home → Approvals**), or an admin can decide for them through `POST /v2025/generic-approvals/{id}/approve` or `/reject`.
+The approver decides in ISC as usual (**Approvals → Other**: it's a generic approval, not an access request), or an admin can decide for them through `POST /v2025/generic-approvals/{id}/approve` or `/reject`.
 - **Approvals.** Item owners and managers decide the per-person approvals a bulk request created, one INC at a time (see *Approvals tab*).
 
 ## Uninstall
