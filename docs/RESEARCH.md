@@ -11,19 +11,21 @@ specs, the developer community, and a live demo tenant. **Live** means checked a
 | Role | `owner {type,id,name}` | IDENTITY only | `GET /v3/roles?filters=owner.id eq "<id>"` (**live**) | `PATCH /v3/roles/{id}`, JSON Patch `replace /owner` (**live**) |
 | Access profile | `owner {type,id,name}` | IDENTITY only | `GET /v3/access-profiles?filters=owner.id eq "<id>"` (**live**) | `PATCH /v3/access-profiles/{id}` (**live**) |
 | Source | `owner {type,id,name}`; `managementWorkgroup` for a governance group | IDENTITY only | `GET /v3/sources?filters=owner.id eq "<id>"` (**live**) | `PATCH /v3/sources/{id}`: patch `/owner` only, never PUT a source (**live**) |
-| Entitlement | `owner` | IDENTITY only | `GET /v2025/entitlements?filters=owner.id eq "<id>"` (docs) | `PATCH /v2025/entitlements/{id}` (docs) |
-| Governance group | `owner` | IDENTITY | `GET /v2025/workgroups` (compare `owner.id`) | `PATCH /v2025/workgroups/{id}` (docs) |
-| Identity profile | `owner` | IDENTITY | `GET /v2025/identity-profiles` | `PATCH /v2025/identity-profiles/{id}` (docs, community) |
-| Workflow | `owner` | IDENTITY, which must be an admin | `GET /v2025/workflows` | `PATCH /v2025/workflows/{id}` (docs) |
-| App (source app) | `owner` | IDENTITY | `GET /beta/source-apps` | `PATCH /beta/source-apps/{id}` (docs) |
+| Entitlement | `owner {type,id,name}` (often null) | IDENTITY only | `GET /v2025/entitlements?filters=owner.id eq "<id>"` (**live**) | `PATCH /v2025/entitlements/{id}` (**live**) |
+| App (source app) | `owner {type,id,name}` | IDENTITY | `GET /v2025/source-apps/all?filters=owner.id eq "<id>"`, with `X-SailPoint-Experimental: true` (**live**). Plain `/source-apps` lists only the caller's assigned apps | `PATCH /v2025/source-apps/{id}` + the header (**live**) |
+| Governance group | `owner {type,id,name,displayName,emailAddress}` | IDENTITY | **No owner filter** (`owner.id` → 400): list `GET /v2025/workgroups` and compare `owner.id` (**live**) | `PATCH /v2025/workgroups/{id}` (**live**). An unknown identity ID **clears** the owner instead of failing (**live**) |
+| Identity profile | `owner {type,id,name}` | IDENTITY | **No owner filter** (400): list `GET /v2025/identity-profiles` and compare (**live**) | `PATCH /v2025/identity-profiles/{id}` (**live**) |
+| Workflow | `owner` | IDENTITY, which must be an admin | `GET /v2025/workflows` | `PATCH /v2025/workflows/{id}` (docs; not handled by this workflow) |
 
 - **The owner value is** `{"type": "IDENTITY", "id": "<id>"}`. Leave `name` out: if it doesn't match the identity's
   current name, the call returns 400 (`OwnerReference` schema, docs).
 - **A governance group can't be the primary owner** of roles, access profiles, sources or entitlements (400). It can
   only be an *additional* owner (`additionalOwners`) or a source's `managementWorkgroup` (docs). So the fallback owner
   is an identity.
-- **Filtering:** `owner.id` supports `eq` and `in`. `owner.name` is not filterable: 400 "Properties are not
-  queryable" (**live**).
+- **Filtering:** where it's supported, `owner.id` takes `eq` and `in`. `owner.name` is not filterable: 400
+  "Properties are not queryable" (**live**).
+- **Governance groups and identity profiles** can't be filtered by owner, so the workflow lists the first 250 and
+  picks the departed identity's with a JSONPath filter, `body[?(@.owner.id == $.trigger.identity.id)]` (**live**).
 - **Search:** `POST /v3/search` on the `roles` / `accessprofiles` indices with `owner.id:<id>` works (**live**). But
   there is **no sources index** (400, **live**), and the index lags behind changes. The identities index has an `owns`
   object (`sources`, `roles`, `accessProfiles`, `entitlements`, `apps`, `governanceGroups`, `fallbackApprover`). It's
@@ -101,10 +103,13 @@ specs, the developer community, and a live demo tenant. **Live** means checked a
   - Each list uses `limit=1`, a PATCH, and the workflow calling itself until nothing is left. That avoids loops and the
     search index.
   - [Post](https://developer.sailpoint.com/discuss/t/reassign-object-owners-using-identitynow-workflows/22371).
-- This design keeps one workflow with three loops (250 per type per run) and a final check. That trades unlimited
-  volume for a single, readable workflow that can be imported anywhere.
+- This design keeps one workflow with one loop per object type (250 per type per run), a check that the new owner
+  exists and is active, and a final check. That trades unlimited volume for a single, readable workflow that can be
+  imported anywhere.
 
 ## 6. Gotchas found while building it
+- A governance group's owner PATCHed to an identity that doesn't exist is **cleared** (no error). So check that the new
+  owner exists before changing anything (the workflow's *Get New Owner* step).
 - Never put a credential inline in an HTTP step created through the API (§3). Use Parameter Storage.
 - Create, then update: the first POST loses the parameter links (§3).
 - Uploading a workflow in the UI loses them too. Re-pick the parameter in each HTTP step.

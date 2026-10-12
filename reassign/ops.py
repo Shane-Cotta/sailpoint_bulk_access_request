@@ -73,18 +73,44 @@ def find_parameter(tenant: Tenant, ref: str) -> dict[str, Any]:
 
 
 # ── ownership ───────────────────────────────────────────────────────────────
+def headers(ot: ObjectType) -> dict[str, str] | None:
+    """The type's extra request headers ("Key:Value" lines, as the workflow sends them) as a dict."""
+    if not ot.headers:
+        return None
+    return dict(line.split(":", 1) for line in ot.headers.splitlines() if ":" in line)
+
+
+def _list_all(tenant: Tenant, ot: ObjectType, query: str = "") -> list[dict[str, Any]]:
+    rows, offset = [], 0
+    while True:
+        page = tenant.call("GET", f"{ot.path}?{query}limit=250&offset={offset}", headers=headers(ot)) or []
+        rows.extend(page)
+        if len(page) < 250:
+            return rows
+        offset += 250
+
+
 def owned(tenant: Tenant, ot: ObjectType, identity_id: str, limit: int = 250) -> list[dict[str, Any]]:
-    """The objects of type `ot` whose primary owner is `identity_id` (first `limit`, by the API's own filter)."""
+    """The objects of type `ot` whose primary owner is `identity_id`: through the API's owner.id filter where the
+    list has one (first `limit`), else every object listed and filtered here."""
+    if not ot.server_filter:
+        return [o for o in _list_all(tenant, ot) if (o.get("owner") or {}).get("id") == identity_id]
     f = q(f'owner.id eq "{identity_id}"')
-    return tenant.call("GET", f"{ot.path}?filters={f}&limit={limit}") or []
+    return tenant.call("GET", f"{ot.path}?filters={f}&limit={limit}", headers=headers(ot)) or []
 
 
 def owned_all(tenant: Tenant, identity_id: str, keys: tuple[str, ...] = tuple(OBJECT_TYPES)) -> dict[str, list[dict]]:
     return {k: owned(tenant, OBJECT_TYPES[k], identity_id) for k in keys}
 
 
+def count(tenant: Tenant, ot: ObjectType) -> int:
+    """How many objects of type `ot` exist (pages through the list)."""
+    return len(_list_all(tenant, ot))
+
+
 def owner_of(tenant: Tenant, ot: ObjectType, object_id: str) -> str | None:
-    return ((tenant.call("GET", f"{ot.path}/{object_id}") or {}).get("owner") or {}).get("id")
+    obj = tenant.call("GET", f"{ot.item_path}/{object_id}", headers=headers(ot)) or {}
+    return (obj.get("owner") or {}).get("id")
 
 
 # ── workflow ────────────────────────────────────────────────────────────────
@@ -144,26 +170,74 @@ def history_summary(events: list[dict[str, Any]]) -> list[str]:
 
 
 # ── throwaway test objects (ownership.py test) ─────────────────────────────
-def create_test_objects(tenant: Tenant, prefix: str, owner_id: str) -> dict[str, dict[str, Any]]:
-    """A flat-file source, an access profile on it and a role holding that profile, all owned by `owner_id`,
-    none requestable or enabled. Returned in creation order; `delete_test_objects` removes them in reverse."""
+TEST_SUFFIX = {"sources": "Source", "entitlements": "Entitlement", "accessProfiles": "Access Profile",
+               "roles": "Role", "governanceGroups": "Governance Group", "identityProfiles": "Identity Profile",
+               "apps": "App"}
+DELETE_ORDER = ("apps", "identityProfiles", "governanceGroups", "roles", "accessProfiles", "sources")
+ABOUT = "Throwaway object for ownership.py test; safe to delete."
+# A flat-file source needs its entitlement columns before it can load an entitlement CSV.
+GROUP_COLUMNS = ["id", "name", "displayName", "created", "description", "modified", "entitlements", "groups",
+                 "permissions"]
+
+
+def _set_owner(tenant: Tenant, ot: ObjectType, object_id: str, owner_id: str) -> None:
+    tenant.call("PATCH", f"{ot.item_path}/{object_id}",
+                [{"op": "replace", "path": "/owner", "value": {"type": "IDENTITY", "id": owner_id}}],
+                content_type="application/json-patch+json", headers=headers(ot))
+
+
+def _wait_for_entitlement(tenant: Tenant, source_id: str, name: str, timeout: float = 300) -> dict[str, Any]:
+    # The load also turns the CSV's header row into an entitlement (named "displayName"), so pick ours by name.
+    f = q(f'source.id eq "{source_id}"')
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rows = tenant.call("GET", f"/v2025/entitlements?filters={f}&limit=10") or []
+        hit = next((r for r in rows if r.get("name") == name), None)
+        if hit:
+            return hit
+        time.sleep(5)
+    raise TenantError(408, f"the test entitlement didn't appear within {timeout:.0f}s (entitlement aggregation)")
+
+
+def create_test_objects(tenant: Tenant, prefix: str, owner_id: str, log=print) -> dict[str, dict[str, Any]]:
+    """One object of every supported type, all owned by `owner_id`, none requestable or enabled: a flat-file source,
+    an entitlement loaded on it, an access profile with that entitlement, a role with that profile, a governance
+    group, an identity profile on the source and an app on it. Returned by object type."""
     owner = {"type": "IDENTITY", "id": owner_id}
     made: dict[str, dict[str, Any]] = {}
+    name = lambda key: f"{prefix} {TEST_SUFFIX[key]}"  # noqa: E731
     try:
         src = tenant.call("POST", "/v3/sources", {
-            "name": f"{prefix} Source", "description": "Throwaway object for ownership.py test; safe to delete.",
-            "owner": owner, "connector": "delimited-file"})
+            "name": name("sources"), "description": ABOUT, "owner": owner, "connector": "delimited-file",
+            "connectorAttributes": {"group.columnNames": GROUP_COLUMNS, "group.indexColumn": "id",
+                                    "group.delimiter": ","}})
         made["sources"] = src
-        ap = tenant.call("POST", "/v3/access-profiles", {
-            "name": f"{prefix} Access Profile", "description": "Throwaway object for ownership.py test; safe to delete.",
-            "owner": owner, "source": {"type": "SOURCE", "id": src["id"], "name": src["name"]},
-            "entitlements": [], "enabled": False, "requestable": False})
-        made["accessProfiles"] = ap
-        role = tenant.call("POST", "/v3/roles", {
-            "name": f"{prefix} Role", "description": "Throwaway object for ownership.py test; safe to delete.",
-            "owner": owner, "accessProfiles": [{"type": "ACCESS_PROFILE", "id": ap["id"], "name": ap["name"]}],
+        ref = {"type": "SOURCE", "id": src["id"], "name": src["name"]}
+        log("  loading the test entitlement (an entitlement aggregation; usually under a minute)…")
+        csv = (",".join(GROUP_COLUMNS) + "\n" + f"ownership-test,ownership-test,{name('entitlements')},,{ABOUT},,,,\n")
+        tenant.upload(f"/v2025/sources/{src['id']}/load-entitlements", "file", "entitlements.csv", csv.encode())
+        ent = _wait_for_entitlement(tenant, src["id"], name("entitlements"))
+        _set_owner(tenant, OBJECT_TYPES["entitlements"], ent["id"], owner_id)
+        made["entitlements"] = ent
+        made["accessProfiles"] = tenant.call("POST", "/v3/access-profiles", {
+            "name": name("accessProfiles"), "description": ABOUT, "owner": owner, "source": ref,
+            "entitlements": [{"type": "ENTITLEMENT", "id": ent["id"], "name": ent["name"]}],
             "enabled": False, "requestable": False})
-        made["roles"] = role
+        ap = made["accessProfiles"]
+        made["roles"] = tenant.call("POST", "/v3/roles", {
+            "name": name("roles"), "description": ABOUT, "owner": owner,
+            "accessProfiles": [{"type": "ACCESS_PROFILE", "id": ap["id"], "name": ap["name"]}],
+            "enabled": False, "requestable": False})
+        made["governanceGroups"] = tenant.call("POST", "/v2025/workgroups", {
+            "name": name("governanceGroups"), "description": ABOUT, "owner": owner})
+        made["identityProfiles"] = tenant.call("POST", "/v2025/identity-profiles", {
+            "name": name("identityProfiles"), "description": ABOUT, "owner": owner, "authoritativeSource": ref,
+            "identityAttributeConfig": {"enabled": True, "attributeTransforms": []}})
+        apps = OBJECT_TYPES["apps"]
+        app = tenant.call("POST", apps.item_path, {"name": name("apps"), "description": ABOUT, "accountSource": ref,
+                                                   "matchAllAccounts": False}, headers=headers(apps))
+        made["apps"] = app
+        _set_owner(tenant, apps, app["id"], owner_id)      # a new app is owned by its creator, whatever is sent
     except TenantError:
         delete_test_objects(tenant, made, prefix)
         raise
@@ -173,10 +247,15 @@ def create_test_objects(tenant: Tenant, prefix: str, owner_id: str) -> dict[str,
 def find_test_objects(tenant: Tenant, prefix: str) -> dict[str, dict[str, Any]]:
     """Leftovers from an earlier `test --keep` or an interrupted run, by their exact names."""
     found = {}
-    for key, suffix in (("sources", "Source"), ("accessProfiles", "Access Profile"), ("roles", "Role")):
-        name = f"{prefix} {suffix}"
-        f = q(f'name eq "{name}"')
-        rows = tenant.call("GET", f"{OBJECT_TYPES[key].path}?filters={f}&limit=2") or []
+    for key in DELETE_ORDER:
+        name, ot = f"{prefix} {TEST_SUFFIX[key]}", OBJECT_TYPES[key]
+        try:
+            by_name = q(f'name eq "{name}"')
+            rows = _list_all(tenant, ot, f"filters={by_name}&")
+        except TenantError as exc:     # a list that can't filter on name: these lists are short
+            if exc.status != 400:
+                raise
+            rows = _list_all(tenant, ot)
         hit = next((r for r in rows if r.get("name") == name), None)
         if hit:
             found[key] = hit
@@ -184,24 +263,25 @@ def find_test_objects(tenant: Tenant, prefix: str) -> dict[str, dict[str, Any]]:
 
 
 def delete_test_objects(tenant: Tenant, made: dict[str, dict[str, Any]], prefix: str) -> list[str]:
-    """Delete what `create_test_objects` made (role, then access profile, then source). Refuses anything whose
-    name doesn't start with the test prefix. Returns problems (empty when all went)."""
+    """Delete what `create_test_objects` made, dependents first; the entitlement goes with its source. Refuses
+    anything whose name doesn't start with the test prefix. Returns problems (empty when all went)."""
     problems = []
-    for key in ("roles", "accessProfiles", "sources"):
+    for key in DELETE_ORDER:
         obj = made.get(key)
         if not obj:
             continue
         if not str(obj.get("name", "")).startswith(prefix):
             problems.append(f"refused to delete {obj.get('name')!r}: not a test object")
             continue
-        for attempt in range(5):     # an access profile can't go while the role still lists it; deletes settle async
+        ot = OBJECT_TYPES[key]
+        for attempt in range(10):    # dependents' deletes settle asynchronously
             try:
-                tenant.call("DELETE", f"{OBJECT_TYPES[key].path}/{obj['id']}")
+                tenant.call("DELETE", f"{ot.item_path}/{obj['id']}", headers=headers(ot))
                 break
             except TenantError as exc:
                 if exc.status == 404:
                     break
-                if attempt == 4:
+                if attempt == 9:
                     problems.append(f"could not delete {obj['name']!r}: {exc}")
-                time.sleep(3)
+                time.sleep(4)
     return problems

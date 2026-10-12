@@ -15,7 +15,11 @@
   "objectTypes": {
     "roles": true,
     "accessProfiles": true,
-    "sources": true
+    "entitlements": true,
+    "sources": true,
+    "apps": true,
+    "governanceGroups": true,
+    "identityProfiles": true
   },
   "alertEmails": [],
   "http": {

@@ -153,10 +153,16 @@ def cmd_doctor(cfg: config_mod.Config, _a: argparse.Namespace) -> int:
     for key in cfg.object_types:
         ot = wf.OBJECT_TYPES[key]
         try:
-            ops.owned(tenant, ot, "0" * 32, limit=1)
-            ok(f"GET {ot.path}?filters=owner.id eq … answers")
+            if ot.server_filter:
+                ops.owned(tenant, ot, "0" * 32, limit=1)
+                ok(f"{ot.plural}: GET {ot.path}?filters=owner.id eq … answers")
+            else:
+                n = ops.count(tenant, ot)
+                (ok if n <= wf.PAGE else warn)(
+                    f"{ot.plural}: {n} in the tenant" + ("" if n <= wf.PAGE else
+                    f"; the workflow only checks the first {wf.PAGE} (this list can't filter on owner)"))
         except TenantError as exc:
-            bad(f"GET {ot.path} with an owner.id filter: {exc}")
+            bad(f"{ot.plural}: GET {ot.path}: {exc}")
 
     print(f"\n{len(problems)} problem(s), {len(warnings)} warning(s).")
     return 1 if problems else 0
@@ -185,10 +191,9 @@ def cmd_apply(cfg: config_mod.Config, a: argparse.Namespace) -> int:
         print(f"note: {config_mod.WORKFLOW_OWNER_NOTE}")
     print(f"HTTP steps authenticate with Parameter Storage parameter {param['name']!r} ({param['id']}).")
     existing = ops.find_workflow(tenant, cfg.workflow_name)
-    if existing:   # keep the HTTP steps' parameter references (refIDs) from the installed version
-        target = dataclasses.replace(target, ref_ids=wf.ref_ids_of(existing))
-    else:          # a fresh install gets fresh references
-        target = dataclasses.replace(target, ref_ids={n: str(uuid.uuid4()) for n in wf.http_step_names(cfg)})
+    # Keep the installed HTTP steps' parameter references (refIDs); steps that are new get fresh ones.
+    kept = wf.ref_ids_of(existing) if existing else {}
+    target = dataclasses.replace(target, ref_ids={n: kept.get(n) or str(uuid.uuid4()) for n in wf.http_step_names(cfg)})
     body = wf.build(cfg, target)
     if a.dry_run:
         print(f"\n== Workflow ({'update ' + existing['id'] if existing else 'create'}) ==\n{wf.pretty(body)}")

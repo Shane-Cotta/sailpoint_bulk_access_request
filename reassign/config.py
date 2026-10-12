@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-OBJECT_TYPE_KEYS = ("roles", "accessProfiles", "sources")
+OBJECT_TYPE_KEYS = ("roles", "accessProfiles", "entitlements", "sources", "apps", "governanceGroups", "identityProfiles")
 OWNER_STRATEGIES = ("manager-then-fallback", "fallback-only")
 DEFAULT_TERMINATION_STATES = ("terminated",)
 DEFAULT_INACTIVE_STATES = ("terminated", "archived")

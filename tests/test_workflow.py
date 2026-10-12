@@ -24,10 +24,17 @@ def cfg(**overrides: Any) -> config_mod.Config:
     return config_mod.from_dict({"prefix": "ACME", "fallbackOwner": "jane.doe", **overrides})
 
 
+def only(*keys: str) -> dict[str, bool]:
+    return {k: k in keys for k in config_mod.OBJECT_TYPE_KEYS}
+
+
 VARIANTS = {
     "default": {},
     "fallback-only": {"ownerStrategy": "fallback-only"},
-    "roles-only": {"objectTypes": {"roles": True, "accessProfiles": False, "sources": False}},
+    "roles-only": {"objectTypes": only("roles")},
+    "original-three": {"objectTypes": only("roles", "accessProfiles", "sources")},
+    "listed-here-only": {"objectTypes": only("governanceGroups", "identityProfiles")},
+    "apps-only": {"objectTypes": only("apps")},
     "no-sources": {"objectTypes": {"sources": False}},
     "several-states": {"terminationStates": ["terminated", "leaver", "inactive"]},
     "no-inactive-check": {"inactiveStates": []},
@@ -168,12 +175,19 @@ def test_http_steps(built):
         assert a["param_oauth"]["paramType"] == wf.OAUTH_PARAMETER_TYPE and a["param_oauth"]["refID"]
         assert not any("ecret" in k for k in a), f"{name} carries a secret"
         assert a["method"] in ("get", "patch")
+        ot = next(o for o in wf.OBJECT_TYPES.values() if o.plural in name or o.singular in name)
+        assert a.get("requestHeaders") == ot.headers
         if a["method"] == "patch":
+            assert a["url"] == f"{wf.API_URL}{ot.item_path}/{{{{$.loop.loopInput.id}}}}"
             assert a["requestContentType"] == "json-patch+json"
             assert a["jsonPatchRequestBody"][0]["path"] == "/owner"
             assert "name" not in a["jsonPatchRequestBody"][0]["value"]    # a stale name is a 400
         else:
-            assert 'filters:owner.id eq "{{$.trigger.identity.id}}"' in a["urlParams"]
+            assert a["url"] == f"{wf.API_URL}{ot.path}"
+            if ot.server_filter:
+                assert 'filters:owner.id eq "{{$.trigger.identity.id}}"' in a["urlParams"]
+            else:
+                assert a["urlParams"] == f"limit:{wf.PAGE}"           # these lists reject an owner filter
     assert sorted(found) == sorted(wf.http_step_names(c))
 
 
@@ -213,6 +227,56 @@ def test_owner_usable_guards():
     assert {"comparator": "StringEquals", "variableA.$": wf.NEW_OWNER_ID, "variableB.$": "$.trigger.identity.id",
             "nextStep": wf.STOP_NO_OWNER} in entries
     assert any(e.get("variableB") == "^__" for e in entries)        # an unfilled placeholder never patches
+
+
+def test_new_owner_is_checked_before_any_change():
+    top = wf.build(cfg())["definition"]["steps"]
+    assert top[wf.OWNER_USABLE]["defaultStep"] == wf.GET_NEW_OWNER
+    assert top[wf.GET_NEW_OWNER]["attributes"] == {"id.$": wf.NEW_OWNER_ID}
+    found = top[wf.NEW_OWNER_FOUND]
+    assert found["choiceList"][0]["variableA.$"] == "$.getNewOwner.id" and found["defaultStep"] == wf.STOP_NO_OWNER
+    active = top[wf.NEW_OWNER_ACTIVE]
+    assert active["choiceList"][0]["nextStep"] == wf.STOP_NO_OWNER
+    assert active["defaultStep"] == wf.OBJECT_TYPES["roles"].step("Get Owned")
+    no_check = wf.build(cfg(inactiveStates=[]))["definition"]["steps"]
+    assert wf.NEW_OWNER_ACTIVE not in no_check
+    assert no_check[wf.NEW_OWNER_FOUND]["choiceList"][0]["nextStep"] == wf.OBJECT_TYPES["roles"].step("Get Owned")
+
+
+def test_types_filtered_in_the_workflow():
+    """Governance groups and identity profiles: every object is listed, theirs are picked out with JSONPath in the
+    loop's input, in Owns? and in Anything Left?; their Recheck lists a full page, not one row."""
+    top = wf.build(cfg())["definition"]["steps"]
+    for key in ("governanceGroups", "identityProfiles"):
+        ot = wf.OBJECT_TYPES[key]
+        mine = f"{ot.output('Get Owned')}.body[?(@.owner.id == $.trigger.identity.id)]"
+        assert top[ot.step("Reassign")]["attributes"]["input.$"] == mine
+        assert top[ot.step("Owns")]["choiceList"][0]["variableA.$"] == mine + ".id"
+        assert top[ot.step("Recheck")]["attributes"]["urlParams"] == f"limit:{wf.PAGE}"
+        left = [e["variableA.$"] for e in top[wf.ANYTHING_LEFT]["choiceList"]]
+        assert f"{ot.output('Recheck')}.body[?(@.owner.id == $.trigger.identity.id)].id" in left
+    for key in ("roles", "accessProfiles", "entitlements", "sources", "apps"):
+        ot = wf.OBJECT_TYPES[key]
+        assert top[ot.step("Reassign")]["attributes"]["input.$"] == f"{ot.output('Get Owned')}.body"
+        assert top[ot.step("Recheck")]["attributes"]["urlParams"].endswith("limit:1")
+
+
+def test_apps_use_the_admin_list_and_the_experimental_header():
+    top = wf.build(cfg(objectTypes=only("apps")))["definition"]["steps"]
+    get = top["Get Owned Apps"]["attributes"]
+    patch = top["Reassign Apps"]["attributes"]["steps"]["Patch App Owner"]["attributes"]
+    assert get["url"].endswith("/v2025/source-apps/all")              # /source-apps lists only the caller's apps
+    assert patch["url"].endswith("/v2025/source-apps/{{$.loop.loopInput.id}}")
+    assert get["requestHeaders"] == patch["requestHeaders"] == "X-SailPoint-Experimental:true"
+
+
+def test_every_type_is_supported_by_default():
+    c = config_mod.from_dict({"fallbackOwner": "x"})
+    assert c.object_types == config_mod.OBJECT_TYPE_KEYS == tuple(wf.OBJECT_TYPES)
+    # an older config that lists only the original three keys gets the new types too (missing keys are on)
+    old = config_mod.from_dict({"fallbackOwner": "x", "objectTypes": {"roles": True, "accessProfiles": True,
+                                                                      "sources": True}})
+    assert old.object_types == config_mod.OBJECT_TYPE_KEYS
 
 
 def test_disabled_types_are_left_out():
@@ -262,8 +326,8 @@ def test_example_config_loads():
     ({"terminationStates": []}, "at least one"),
     ({"terminationStates": ["Terminated Employee"]}, "technical names"),
     ({"ownerStrategy": "random"}, "ownerStrategy"),
-    ({"objectTypes": {"entitlements": True}}, "unknown"),
-    ({"objectTypes": {"roles": False, "accessProfiles": False, "sources": False}}, "enable at least one"),
+    ({"objectTypes": {"workflows": True}}, "unknown"),
+    ({"objectTypes": {k: False for k in config_mod.OBJECT_TYPE_KEYS}}, "enable at least one"),
     ({"alertEmails": ["not-an-email"]}, "email"),
     ({"alertEmails": [f"a{i}@example.com" for i in range(11)]}, "at most 10"),
     ({"http": {"clientSecretEnv": "X"}}, "Parameter Storage"),

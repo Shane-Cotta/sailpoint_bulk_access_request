@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +123,27 @@ class Tenant:
         except json.JSONDecodeError:
             parsed = raw.decode(errors="replace")
         if status not in ok:
+            raise TenantError(status, _messages(parsed), parsed)
+        return parsed
+
+    def upload(self, path: str, field: str, filename: str, content: bytes, content_type: str = "text/csv") -> Any:
+        """POST one file as multipart/form-data (e.g. a source's load-entitlements CSV); returns parsed JSON."""
+        boundary = uuid.uuid4().hex
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
+                f"Content-Type: {content_type}\r\n\r\n").encode() + content + f"\r\n--{boundary}--\r\n".encode()
+        req = urllib.request.Request(f"{self.base_url}{path}", data=body, method="POST", headers={
+            "Authorization": f"Bearer {self.token()}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Accept": "application/json",
+            "User-Agent": USER_AGENT,
+        })
+        try:
+            with self._open(req) as resp:
+                raw, status = resp.read(), resp.status
+        except urllib.error.HTTPError as exc:
+            raw, status = exc.read(), exc.code
+        parsed = json.loads(raw) if raw else None
+        if status >= 300:
             raise TenantError(status, _messages(parsed), parsed)
         return parsed
 

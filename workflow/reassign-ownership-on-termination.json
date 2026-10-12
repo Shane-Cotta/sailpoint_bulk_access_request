@@ -1,6 +1,6 @@
 {
   "name": "Reassign Ownership on Termination",
-  "description": "When an identity's lifecycle state becomes terminated, gives the roles, access profiles and sources they own to their manager, or the fallback owner when they have no active manager.",
+  "description": "When an identity's lifecycle state becomes terminated, gives the roles, access profiles, entitlements, sources, apps, governance groups and identity profiles they own to their manager, or the fallback owner when they have no active manager.",
   "owner": {
     "type": "IDENTITY",
     "id": "__WORKFLOW_OWNER_ID__"
@@ -116,6 +116,42 @@
             "nextStep": "Stop - No Usable Owner"
           }
         ],
+        "defaultStep": "Get New Owner",
+        "actionId": "sp:compare-strings"
+      },
+      "Get New Owner": {
+        "actionId": "sp:get-identity",
+        "type": "action",
+        "versionNumber": 2,
+        "displayName": "The new owner",
+        "attributes": {
+          "id.$": "$.defineVariableOwner.newOwnerId"
+        },
+        "nextStep": "New Owner Found?"
+      },
+      "New Owner Found?": {
+        "type": "choice",
+        "displayName": "New owner exists?",
+        "choiceList": [
+          {
+            "comparator": "IsPresent",
+            "variableA.$": "$.getNewOwner.id",
+            "nextStep": "New Owner Active?"
+          }
+        ],
+        "defaultStep": "Stop - No Usable Owner"
+      },
+      "New Owner Active?": {
+        "type": "choice",
+        "displayName": "New owner left too?",
+        "choiceList": [
+          {
+            "comparator": "StringMatches",
+            "variableA.$": "$.getNewOwner.attributes.cloudLifecycleState",
+            "variableB": "^(?:terminated|archived)$",
+            "nextStep": "Stop - No Usable Owner"
+          }
+        ],
         "defaultStep": "Get Owned Roles",
         "actionId": "sp:compare-strings"
       },
@@ -124,7 +160,7 @@
         "type": "failure",
         "displayName": "",
         "failureName": "No usable new owner",
-        "description": "Nothing was changed: the new owner would be the departed identity itself, or the fallback owner ID was never filled in. Set a fallback owner who is not leaving (Define Variable Owner → newOwnerId)."
+        "description": "Nothing was changed: the new owner would be the departed identity itself, the fallback owner ID was never filled in, or the fallback owner no longer exists or has left too. Set a fallback owner who is not leaving (Define Variable Owner → newOwnerId)."
       },
       "Get Owned Roles": {
         "actionId": "sp:http",
@@ -251,7 +287,7 @@
             "nextStep": "Reassign Access Profiles"
           }
         ],
-        "defaultStep": "Get Owned Sources"
+        "defaultStep": "Get Owned Entitlements"
       },
       "Reassign Access Profiles": {
         "actionId": "sp:loop:iterator",
@@ -304,6 +340,96 @@
             }
           }
         },
+        "nextStep": "Get Owned Entitlements"
+      },
+      "Get Owned Entitlements": {
+        "actionId": "sp:http",
+        "type": "action",
+        "versionNumber": 3,
+        "displayName": "Find entitlements the departed identity owns",
+        "attributes": {
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "__PARAMETER_ID__",
+            "paramType": "1.4",
+            "refID": "2032e823-9185-5b7f-9f90-28afb9f21715"
+          },
+          "method": "get",
+          "url": "__API_URL__/v2025/entitlements",
+          "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:250",
+          "requestContentType": "json"
+        },
+        "nextStep": "Owns Entitlements"
+      },
+      "Owns Entitlements": {
+        "type": "choice",
+        "displayName": "Owns any entitlements?",
+        "choiceList": [
+          {
+            "comparator": "IsPresent",
+            "variableA.$": "$.getOwnedEntitlements.body[0].id",
+            "nextStep": "Reassign Entitlements"
+          }
+        ],
+        "defaultStep": "Get Owned Sources"
+      },
+      "Reassign Entitlements": {
+        "actionId": "sp:loop:iterator",
+        "type": "action",
+        "versionNumber": 1,
+        "displayName": "Give each entitlement to the new owner",
+        "attributes": {
+          "input.$": "$.getOwnedEntitlements.body",
+          "context.$": "$",
+          "start": "Patch Entitlement Owner",
+          "steps": {
+            "Patch Entitlement Owner": {
+              "actionId": "sp:http",
+              "type": "action",
+              "versionNumber": 3,
+              "displayName": "Set the entitlement's owner",
+              "attributes": {
+                "param_authenticationRef": "oauth",
+                "param_oauth": {
+                  "mapping": {
+                    "auth_client_id": "clientId",
+                    "auth_client_secret": "clientSecret",
+                    "auth_credential_location": "credentialLocation",
+                    "auth_token_url": "tokenURL"
+                  },
+                  "paramID": "__PARAMETER_ID__",
+                  "paramType": "1.4",
+                  "refID": "3ac1e5f3-21bb-5c4e-add3-35bc2a1432b1"
+                },
+                "method": "patch",
+                "url": "__API_URL__/v2025/entitlements/{{$.loop.loopInput.id}}",
+                "requestContentType": "json-patch+json",
+                "jsonPatchRequestBody": [
+                  {
+                    "op": "replace",
+                    "path": "/owner",
+                    "value": {
+                      "type": "IDENTITY",
+                      "id": "{{$.loop.context.defineVariableOwner.newOwnerId}}"
+                    }
+                  }
+                ]
+              },
+              "nextStep": "Entitlement Reassigned"
+            },
+            "Entitlement Reassigned": {
+              "actionId": "sp:operator-success",
+              "type": "success",
+              "displayName": ""
+            }
+          }
+        },
         "nextStep": "Get Owned Sources"
       },
       "Get Owned Sources": {
@@ -341,7 +467,7 @@
             "nextStep": "Reassign Sources"
           }
         ],
-        "defaultStep": "Recheck Roles"
+        "defaultStep": "Get Owned Apps"
       },
       "Reassign Sources": {
         "actionId": "sp:loop:iterator",
@@ -388,6 +514,278 @@
               "nextStep": "Source Reassigned"
             },
             "Source Reassigned": {
+              "actionId": "sp:operator-success",
+              "type": "success",
+              "displayName": ""
+            }
+          }
+        },
+        "nextStep": "Get Owned Apps"
+      },
+      "Get Owned Apps": {
+        "actionId": "sp:http",
+        "type": "action",
+        "versionNumber": 3,
+        "displayName": "Find apps the departed identity owns",
+        "attributes": {
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "__PARAMETER_ID__",
+            "paramType": "1.4",
+            "refID": "57780503-9a17-53b4-9bd7-3a20e95226f3"
+          },
+          "method": "get",
+          "url": "__API_URL__/v2025/source-apps/all",
+          "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:250",
+          "requestHeaders": "X-SailPoint-Experimental:true",
+          "requestContentType": "json"
+        },
+        "nextStep": "Owns Apps"
+      },
+      "Owns Apps": {
+        "type": "choice",
+        "displayName": "Owns any apps?",
+        "choiceList": [
+          {
+            "comparator": "IsPresent",
+            "variableA.$": "$.getOwnedApps.body[0].id",
+            "nextStep": "Reassign Apps"
+          }
+        ],
+        "defaultStep": "Get Owned Governance Groups"
+      },
+      "Reassign Apps": {
+        "actionId": "sp:loop:iterator",
+        "type": "action",
+        "versionNumber": 1,
+        "displayName": "Give each app to the new owner",
+        "attributes": {
+          "input.$": "$.getOwnedApps.body",
+          "context.$": "$",
+          "start": "Patch App Owner",
+          "steps": {
+            "Patch App Owner": {
+              "actionId": "sp:http",
+              "type": "action",
+              "versionNumber": 3,
+              "displayName": "Set the app's owner",
+              "attributes": {
+                "param_authenticationRef": "oauth",
+                "param_oauth": {
+                  "mapping": {
+                    "auth_client_id": "clientId",
+                    "auth_client_secret": "clientSecret",
+                    "auth_credential_location": "credentialLocation",
+                    "auth_token_url": "tokenURL"
+                  },
+                  "paramID": "__PARAMETER_ID__",
+                  "paramType": "1.4",
+                  "refID": "a12dc348-c7b6-51f6-94d4-0e8d7686a8c8"
+                },
+                "method": "patch",
+                "url": "__API_URL__/v2025/source-apps/{{$.loop.loopInput.id}}",
+                "requestHeaders": "X-SailPoint-Experimental:true",
+                "requestContentType": "json-patch+json",
+                "jsonPatchRequestBody": [
+                  {
+                    "op": "replace",
+                    "path": "/owner",
+                    "value": {
+                      "type": "IDENTITY",
+                      "id": "{{$.loop.context.defineVariableOwner.newOwnerId}}"
+                    }
+                  }
+                ]
+              },
+              "nextStep": "App Reassigned"
+            },
+            "App Reassigned": {
+              "actionId": "sp:operator-success",
+              "type": "success",
+              "displayName": ""
+            }
+          }
+        },
+        "nextStep": "Get Owned Governance Groups"
+      },
+      "Get Owned Governance Groups": {
+        "actionId": "sp:http",
+        "type": "action",
+        "versionNumber": 3,
+        "displayName": "Find governance groups (all; theirs are picked out next)",
+        "attributes": {
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "__PARAMETER_ID__",
+            "paramType": "1.4",
+            "refID": "210dead9-3a56-5431-92de-f69ecb8aabb0"
+          },
+          "method": "get",
+          "url": "__API_URL__/v2025/workgroups",
+          "urlParams": "limit:250",
+          "requestContentType": "json"
+        },
+        "nextStep": "Owns Governance Groups"
+      },
+      "Owns Governance Groups": {
+        "type": "choice",
+        "displayName": "Owns any governance groups?",
+        "choiceList": [
+          {
+            "comparator": "IsPresent",
+            "variableA.$": "$.getOwnedGovernanceGroups.body[?(@.owner.id == $.trigger.identity.id)].id",
+            "nextStep": "Reassign Governance Groups"
+          }
+        ],
+        "defaultStep": "Get Owned Identity Profiles"
+      },
+      "Reassign Governance Groups": {
+        "actionId": "sp:loop:iterator",
+        "type": "action",
+        "versionNumber": 1,
+        "displayName": "Give each governance group to the new owner",
+        "attributes": {
+          "input.$": "$.getOwnedGovernanceGroups.body[?(@.owner.id == $.trigger.identity.id)]",
+          "context.$": "$",
+          "start": "Patch Governance Group Owner",
+          "steps": {
+            "Patch Governance Group Owner": {
+              "actionId": "sp:http",
+              "type": "action",
+              "versionNumber": 3,
+              "displayName": "Set the governance group's owner",
+              "attributes": {
+                "param_authenticationRef": "oauth",
+                "param_oauth": {
+                  "mapping": {
+                    "auth_client_id": "clientId",
+                    "auth_client_secret": "clientSecret",
+                    "auth_credential_location": "credentialLocation",
+                    "auth_token_url": "tokenURL"
+                  },
+                  "paramID": "__PARAMETER_ID__",
+                  "paramType": "1.4",
+                  "refID": "0f0574ed-c49f-5a65-b98c-0ea842b7805d"
+                },
+                "method": "patch",
+                "url": "__API_URL__/v2025/workgroups/{{$.loop.loopInput.id}}",
+                "requestContentType": "json-patch+json",
+                "jsonPatchRequestBody": [
+                  {
+                    "op": "replace",
+                    "path": "/owner",
+                    "value": {
+                      "type": "IDENTITY",
+                      "id": "{{$.loop.context.defineVariableOwner.newOwnerId}}"
+                    }
+                  }
+                ]
+              },
+              "nextStep": "Governance Group Reassigned"
+            },
+            "Governance Group Reassigned": {
+              "actionId": "sp:operator-success",
+              "type": "success",
+              "displayName": ""
+            }
+          }
+        },
+        "nextStep": "Get Owned Identity Profiles"
+      },
+      "Get Owned Identity Profiles": {
+        "actionId": "sp:http",
+        "type": "action",
+        "versionNumber": 3,
+        "displayName": "Find identity profiles (all; theirs are picked out next)",
+        "attributes": {
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "__PARAMETER_ID__",
+            "paramType": "1.4",
+            "refID": "1ebcfd28-640b-51ff-bd24-8aeec894f2c6"
+          },
+          "method": "get",
+          "url": "__API_URL__/v2025/identity-profiles",
+          "urlParams": "limit:250",
+          "requestContentType": "json"
+        },
+        "nextStep": "Owns Identity Profiles"
+      },
+      "Owns Identity Profiles": {
+        "type": "choice",
+        "displayName": "Owns any identity profiles?",
+        "choiceList": [
+          {
+            "comparator": "IsPresent",
+            "variableA.$": "$.getOwnedIdentityProfiles.body[?(@.owner.id == $.trigger.identity.id)].id",
+            "nextStep": "Reassign Identity Profiles"
+          }
+        ],
+        "defaultStep": "Recheck Roles"
+      },
+      "Reassign Identity Profiles": {
+        "actionId": "sp:loop:iterator",
+        "type": "action",
+        "versionNumber": 1,
+        "displayName": "Give each identity profile to the new owner",
+        "attributes": {
+          "input.$": "$.getOwnedIdentityProfiles.body[?(@.owner.id == $.trigger.identity.id)]",
+          "context.$": "$",
+          "start": "Patch Identity Profile Owner",
+          "steps": {
+            "Patch Identity Profile Owner": {
+              "actionId": "sp:http",
+              "type": "action",
+              "versionNumber": 3,
+              "displayName": "Set the identity profile's owner",
+              "attributes": {
+                "param_authenticationRef": "oauth",
+                "param_oauth": {
+                  "mapping": {
+                    "auth_client_id": "clientId",
+                    "auth_client_secret": "clientSecret",
+                    "auth_credential_location": "credentialLocation",
+                    "auth_token_url": "tokenURL"
+                  },
+                  "paramID": "__PARAMETER_ID__",
+                  "paramType": "1.4",
+                  "refID": "56191541-aa4a-5cea-8a5e-93ca7a525bc4"
+                },
+                "method": "patch",
+                "url": "__API_URL__/v2025/identity-profiles/{{$.loop.loopInput.id}}",
+                "requestContentType": "json-patch+json",
+                "jsonPatchRequestBody": [
+                  {
+                    "op": "replace",
+                    "path": "/owner",
+                    "value": {
+                      "type": "IDENTITY",
+                      "id": "{{$.loop.context.defineVariableOwner.newOwnerId}}"
+                    }
+                  }
+                ]
+              },
+              "nextStep": "Identity Profile Reassigned"
+            },
+            "Identity Profile Reassigned": {
               "actionId": "sp:operator-success",
               "type": "success",
               "displayName": ""
@@ -444,6 +842,31 @@
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:1",
           "requestContentType": "json"
         },
+        "nextStep": "Recheck Entitlements"
+      },
+      "Recheck Entitlements": {
+        "actionId": "sp:http",
+        "type": "action",
+        "versionNumber": 3,
+        "displayName": "Recheck entitlements the departed identity owns",
+        "attributes": {
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "__PARAMETER_ID__",
+            "paramType": "1.4",
+            "refID": "04bd1fdb-4e99-5cfb-a28e-404bda7d7e84"
+          },
+          "method": "get",
+          "url": "__API_URL__/v2025/entitlements",
+          "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:1",
+          "requestContentType": "json"
+        },
         "nextStep": "Recheck Sources"
       },
       "Recheck Sources": {
@@ -469,6 +892,82 @@
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:1",
           "requestContentType": "json"
         },
+        "nextStep": "Recheck Apps"
+      },
+      "Recheck Apps": {
+        "actionId": "sp:http",
+        "type": "action",
+        "versionNumber": 3,
+        "displayName": "Recheck apps the departed identity owns",
+        "attributes": {
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "__PARAMETER_ID__",
+            "paramType": "1.4",
+            "refID": "ec633bf2-1820-5b47-87cb-90496f7e0e5d"
+          },
+          "method": "get",
+          "url": "__API_URL__/v2025/source-apps/all",
+          "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:1",
+          "requestHeaders": "X-SailPoint-Experimental:true",
+          "requestContentType": "json"
+        },
+        "nextStep": "Recheck Governance Groups"
+      },
+      "Recheck Governance Groups": {
+        "actionId": "sp:http",
+        "type": "action",
+        "versionNumber": 3,
+        "displayName": "Recheck governance groups (all; theirs are picked out next)",
+        "attributes": {
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "__PARAMETER_ID__",
+            "paramType": "1.4",
+            "refID": "8ff837e0-de48-5969-a232-17abde08eeb1"
+          },
+          "method": "get",
+          "url": "__API_URL__/v2025/workgroups",
+          "urlParams": "limit:250",
+          "requestContentType": "json"
+        },
+        "nextStep": "Recheck Identity Profiles"
+      },
+      "Recheck Identity Profiles": {
+        "actionId": "sp:http",
+        "type": "action",
+        "versionNumber": 3,
+        "displayName": "Recheck identity profiles (all; theirs are picked out next)",
+        "attributes": {
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "__PARAMETER_ID__",
+            "paramType": "1.4",
+            "refID": "b70d8c8c-56ee-5d2a-8008-1e33b5151308"
+          },
+          "method": "get",
+          "url": "__API_URL__/v2025/identity-profiles",
+          "urlParams": "limit:250",
+          "requestContentType": "json"
+        },
         "nextStep": "Anything Left?"
       },
       "Anything Left?": {
@@ -487,7 +986,27 @@
           },
           {
             "comparator": "IsPresent",
+            "variableA.$": "$.recheckEntitlements.body[0].id",
+            "nextStep": "Stop - Ownership Not Fully Reassigned"
+          },
+          {
+            "comparator": "IsPresent",
             "variableA.$": "$.recheckSources.body[0].id",
+            "nextStep": "Stop - Ownership Not Fully Reassigned"
+          },
+          {
+            "comparator": "IsPresent",
+            "variableA.$": "$.recheckApps.body[0].id",
+            "nextStep": "Stop - Ownership Not Fully Reassigned"
+          },
+          {
+            "comparator": "IsPresent",
+            "variableA.$": "$.recheckGovernanceGroups.body[?(@.owner.id == $.trigger.identity.id)].id",
+            "nextStep": "Stop - Ownership Not Fully Reassigned"
+          },
+          {
+            "comparator": "IsPresent",
+            "variableA.$": "$.recheckIdentityProfiles.body[?(@.owner.id == $.trigger.identity.id)].id",
             "nextStep": "Stop - Ownership Not Fully Reassigned"
           }
         ],
@@ -498,7 +1017,7 @@
         "type": "failure",
         "displayName": "",
         "failureName": "Ownership not fully reassigned",
-        "description": "The departed identity still owns some roles, access profiles, sources after the reassignment: a change failed, or they owned more than 250 of one type. Check this run's history, then run the workflow again or reassign the rest by hand."
+        "description": "The departed identity still owns some roles, access profiles, entitlements, sources, apps, governance groups, identity profiles after the reassignment: a change failed, or they owned more than 250 of one type (for governance groups and identity profiles: theirs weren't among the first 250). Check this run's history, then run the workflow again or reassign the rest by hand."
       },
       "Done": {
         "actionId": "sp:operator-success",

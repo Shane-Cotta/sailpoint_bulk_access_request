@@ -1,7 +1,8 @@
 # Reassign Ownership on Termination: developer guide
 
 An ISC workflow that, when an identity's lifecycle state becomes a termination state, moves the roles, access
-profiles and sources they own to their manager (or a fallback owner). It ships with a stdlib-only Python installer
+profiles, entitlements, sources, apps, governance groups and identity profiles they own to their manager (or a
+fallback owner). It ships with a stdlib-only Python installer
 and tester. Human docs: `README.md`. The research behind the design, with sources: `docs/RESEARCH.md`.
 
 This branch (`feature/ownership-reassignment`) is an orphan branch: it shares no history with `main` (the bulk access
@@ -56,7 +57,7 @@ request tool). `reassign/tenant.py` is a copy of main's `core/bulkaccess/tenant.
     for authentication type 'oauth': unexpected Parameter configuration".
   - **A `PUT` with `paramID` and a client-generated `refID` (UUID) keeps both, and registers the reference.**
     `GET …/parameters/{id}/references` → `{consumerId "sp-workflow-config", usageHint {"workflowID": …}}`; one row per
-    workflow, even with nine steps.
+    workflow, even with 21 steps.
   - Deleting the workflow removes its reference.
   - Uploading JSON in the UI (Create Workflow → Upload File) also strips the links, so each HTTP step has to be
     re-pointed in the builder. The uploaded graph passes the builder's validation.
@@ -64,11 +65,25 @@ request tool). `reassign/tenant.py` is a copy of main's `core/bulkaccess/tenant.
   - `urlParams: 'filters:owner.id eq "{{$.trigger.identity.id}}"\nlimit:250'` works.
   - `jsonPatchRequestBody` with `"id": "{{$.loop.context.defineVariableOwner.newOwnerId}}"` works, and the PATCH
     changes the owner.
-- **Owner lists:** `GET /v3/{roles|access-profiles|sources}?filters=owner.id eq "<id>"` filters correctly; `owner.name`
-  gives 400. Search has no sources index.
+- **Owner lists:**
+  - `owner.id eq` filters correctly on `/v3/roles`, `/v3/access-profiles`, `/v3/sources`, `/v2025/entitlements` and
+    `/v2025/source-apps/all`. `owner.name` gives 400. Search has no sources index.
+  - `/v2025/source-apps` (without `/all`) lists only the caller's *assigned* apps, so an app the PAT user merely
+    created isn't in it. `/all` is the admin list. The v2025 path needs `X-SailPoint-Experimental: true` (`/beta` doesn't).
+  - **`/v2025/workgroups` and `/v2025/identity-profiles` reject an `owner.id` filter (400).** The workflow lists them
+    (`limit:250`) and filters with JSONPath: `$.getOwnedX.body[?(@.owner.id == $.trigger.identity.id)]`.
+    - As a loop's `input.$`, this iterates over just the matches (8 groups, 8 iterations).
+    - `IsPresent` on `…[?(…)].id` takes the default branch when nothing matches.
+    - An empty loop input completes with no iterations.
+  - `requestHeaders: "X-SailPoint-Experimental:true"` (one `Key:Value` per line) is sent by `sp:http` v3.
 - **Owner PATCH:**
-  - `[{"op":"replace","path":"/owner","value":{"type":"IDENTITY","id":…}}]` works on all three types.
-  - A nonexistent owner gives 400 (roles, access profiles) or 404 (sources).
+  - `[{"op":"replace","path":"/owner","value":{"type":"IDENTITY","id":…}}]` works on all seven types:
+    `/v3/roles`, `/v3/access-profiles`, `/v3/sources`, `/v2025/entitlements`, `/v2025/workgroups`,
+    `/v2025/identity-profiles`, `/v2025/source-apps` (with `X-SailPoint-Experimental: true`).
+  - A nonexistent owner gives 400 (roles, access profiles, entitlements, identity profiles) or 404 (sources, apps).
+  - **A governance group PATCHed to a nonexistent identity returns 2xx and clears its owner** (owner: null). That's why
+    the workflow looks up the new owner (*Get New Owner*) before changing anything. `sp:get-identity` on an unknown ID
+    fails the run with a 404, before any change.
 - **Loops (`sp:loop:iterator`):**
   - A failing HTTP step fails **only that iteration**: the history shows `ChildWorkflowExecutionFailed` with the status.
   - The loop step itself completes, and the run continues. The Recheck steps then route to *Ownership not fully reassigned*.
@@ -77,9 +92,21 @@ request tool). `reassign/tenant.py` is a copy of main's `core/bulkaccess/tenant.
   - They need top-level `failureName` / `description`.
   - The execution GET shows only `status: Failed`, and the history shows which "Stop - …" step ran.
 - **Test objects:**
-  - `POST /v3/sources {"connector": "delimited-file", owner, name, description}` creates a flat-file source.
-  - An access profile can have `entitlements: []`; a role can hold that access profile.
-  - Delete in the order role → access profile → source.
+  - `POST /v3/sources {"connector": "delimited-file", owner, name, description, connectorAttributes}` creates a
+    flat-file source.
+  - To load an entitlement CSV, its `connectorAttributes` need `group.columnNames` (the group schema's 9 columns),
+    `group.indexColumn` and `group.delimiter`. Without them the aggregation task fails ("Missing attribute columnNames").
+  - `POST /v2025/sources/{id}/load-entitlements` (multipart, field `file`) needs a header with every group schema
+    column, returns 202, and the entitlement appears in about 30 s.
+  - The load also turns the header row into an entitlement named `displayName`, so pick yours by name. A new
+    entitlement has `owner: null`.
+  - `POST /v2025/workgroups {name, description, owner}`.
+  - `POST /v2025/identity-profiles {name, owner, authoritativeSource, identityAttributeConfig}` works on the flat-file
+    source.
+  - `POST /v2025/source-apps {name, description, accountSource, matchAllAccounts}` ignores `owner`: the creator owns
+    it, so the test PATCHes it.
+  - Delete apps, identity profiles, governance groups, roles, access profiles, then the source; the entitlements go
+    with the source.
 - **Lookups:** `/v2025/identities?filters=alias eq "x" or name eq "x"` and `emailAddress eq` work.
   `/v2025/identities/{id}` returns 404 for a username.
 

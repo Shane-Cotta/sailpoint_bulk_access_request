@@ -5,6 +5,7 @@ Flow (see README.md for the picture):
   → Get Departed Identity → Define Variable Owner (the fallback)
   → [manager-then-fallback] Has Manager? → Get Manager → Manager Inactive? → Use Manager
   → Owner Usable?  (not the departed identity itself, not an unfilled placeholder)
+  → Get New Owner → New Owner Found? → New Owner Active?   (nothing changes for a missing or departed owner)
   → for each enabled object type: Get Owned X → Owns X? → Reassign X (loop: Patch X Owner)
   → Recheck X … → Anything Left? → [Alert Admins] → failure | success
 
@@ -45,6 +46,9 @@ GET_MANAGER = "Get Manager"
 MANAGER_INACTIVE = "Manager Inactive?"
 USE_MANAGER = "Use Manager"
 OWNER_USABLE = "Owner Usable?"
+GET_NEW_OWNER = "Get New Owner"
+NEW_OWNER_FOUND = "New Owner Found?"
+NEW_OWNER_ACTIVE = "New Owner Active?"
 STOP_NO_OWNER = "Stop - No Usable Owner"
 ANYTHING_LEFT = "Anything Left?"
 ALERT_ADMINS = "Alert Admins"
@@ -58,12 +62,20 @@ NEW_OWNER_ID = f"{OWNER_VARS}.newOwnerId"
 PAGE = 250
 
 
+# Inside a JSONPath filter, the departed identity is read from the run itself (verified live in a loop's input and
+# in an IsPresent choice; a filter that matches nothing takes the choice's default branch).
+OWNED_BY_DEPARTED = "[?(@.owner.id == " + DEPARTED_ID + ")]"
+
+
 @dataclass(frozen=True)
 class ObjectType:
-    key: str        # config objectTypes key
-    plural: str     # "Roles", used in step names
-    singular: str   # "Role"
-    path: str       # list endpoint; PATCH is <path>/<id>
+    key: str                     # config objectTypes key
+    plural: str                  # "Roles", used in step names
+    singular: str                # "Role"
+    path: str                    # list endpoint
+    item_path: str               # GET/PATCH <item_path>/<id>
+    server_filter: bool = True   # the list endpoint filters on owner.id; else list everything and filter here
+    headers: str | None = None   # extra request headers, one "Key:Value" per line
 
     def step(self, verb: str) -> str:
         return f"{verb} {self.plural}"
@@ -71,11 +83,30 @@ class ObjectType:
     def output(self, verb: str) -> str:
         return "$." + _camel(self.step(verb))
 
+    def owned(self, verb: str) -> str:
+        """JSONPath to the departed identity's objects in the response of step `<verb> <plural>`."""
+        return self.output(verb) + ".body" + ("" if self.server_filter else OWNED_BY_DEPARTED)
 
+    def first_owned_id(self, verb: str) -> str:
+        """JSONPath that's present only when that response holds at least one of their objects."""
+        return self.owned(verb) + ("[0].id" if self.server_filter else ".id")
+
+
+EXPERIMENTAL = "X-SailPoint-Experimental:true"
 OBJECT_TYPES: dict[str, ObjectType] = {
-    "roles": ObjectType("roles", "Roles", "Role", "/v3/roles"),
-    "accessProfiles": ObjectType("accessProfiles", "Access Profiles", "Access Profile", "/v3/access-profiles"),
-    "sources": ObjectType("sources", "Sources", "Source", "/v3/sources"),
+    "roles": ObjectType("roles", "Roles", "Role", "/v3/roles", "/v3/roles"),
+    "accessProfiles": ObjectType("accessProfiles", "Access Profiles", "Access Profile",
+                                 "/v3/access-profiles", "/v3/access-profiles"),
+    "entitlements": ObjectType("entitlements", "Entitlements", "Entitlement",
+                               "/v2025/entitlements", "/v2025/entitlements"),
+    "sources": ObjectType("sources", "Sources", "Source", "/v3/sources", "/v3/sources"),
+    # /source-apps lists only the caller's assigned apps; /source-apps/all is the admin list (it filters on owner.id).
+    "apps": ObjectType("apps", "Apps", "App", "/v2025/source-apps/all", "/v2025/source-apps", headers=EXPERIMENTAL),
+    # These two lists reject an owner.id filter (400): the workflow lists them and filters with JSONPath.
+    "governanceGroups": ObjectType("governanceGroups", "Governance Groups", "Governance Group",
+                                   "/v2025/workgroups", "/v2025/workgroups", server_filter=False),
+    "identityProfiles": ObjectType("identityProfiles", "Identity Profiles", "Identity Profile",
+                                   "/v2025/identity-profiles", "/v2025/identity-profiles", server_filter=False),
 }
 
 
@@ -137,7 +168,8 @@ def _failure(name: str, description: str) -> dict[str, Any]:
 
 
 def _http(t: Target, name: str, display: str, method: str, url: str, next_step: str | None, *,
-          url_params: str | None = None, patch: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+          url_params: str | None = None, headers: str | None = None,
+          patch: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """HTTP Request (sp:http v3) to the ISC API. It authenticates with a PAT kept in Parameter Storage (OAuth 2.0
     client credentials), so the workflow holds no secret: v2's inline secrets are dropped (top level) or stored
     readable (inside loops) when a workflow is created through the API (CLAUDE.md)."""
@@ -150,6 +182,8 @@ def _http(t: Target, name: str, display: str, method: str, url: str, next_step: 
     }
     if url_params:
         attrs["urlParams"] = url_params   # one "key:value" per line
+    if headers:
+        attrs["requestHeaders"] = headers
     if patch is not None:
         attrs["requestContentType"] = "json-patch+json"
         attrs["jsonPatchRequestBody"] = patch
@@ -162,9 +196,12 @@ def _http(t: Target, name: str, display: str, method: str, url: str, next_step: 
 
 
 def _list_owned(t: Target, name: str, ot: ObjectType, verb: str, limit: int, next_step: str) -> dict[str, Any]:
-    params = f'filters:owner.id eq "{{{{{DEPARTED_ID}}}}}"\nlimit:{limit}'
-    return _http(t, name, f"{verb} {ot.plural.lower()} the departed identity owns", "get", f"{t.api_url}{ot.path}",
-                 next_step, url_params=params)
+    if ot.server_filter:
+        params, display = (f'filters:owner.id eq "{{{{{DEPARTED_ID}}}}}"\nlimit:{limit}',
+                           f"{verb} {ot.plural.lower()} the departed identity owns")
+    else:   # the list can't filter on owner: take the first PAGE and pick theirs with JSONPath
+        params, display = f"limit:{PAGE}", f"{verb} {ot.plural.lower()} (all; theirs are picked out next)"
+    return _http(t, name, display, "get", f"{t.api_url}{ot.path}", next_step, url_params=params, headers=ot.headers)
 
 
 def _reassign_loop(t: Target, ot: ObjectType, next_step: str) -> dict[str, Any]:
@@ -176,12 +213,13 @@ def _reassign_loop(t: Target, ot: ObjectType, next_step: str) -> dict[str, Any]:
         "actionId": "sp:loop:iterator", "type": "action", "versionNumber": 1,
         "displayName": f"Give each {ot.singular.lower()} to the new owner",
         "attributes": {
-            "input.$": ot.output("Get Owned") + ".body",
+            "input.$": ot.owned("Get Owned"),
             "context.$": "$",
             "start": patch_step,
             "steps": {
                 patch_step: _http(t, patch_step, f"Set the {ot.singular.lower()}'s owner", "patch",
-                                  f"{t.api_url}{ot.path}/{{{{$.loop.loopInput.id}}}}", done_step, patch=patch),
+                                  f"{t.api_url}{ot.item_path}/{{{{$.loop.loopInput.id}}}}", done_step,
+                                  headers=ot.headers, patch=patch),
                 done_step: _success(),
             },
         },
@@ -191,7 +229,7 @@ def _reassign_loop(t: Target, ot: ObjectType, next_step: str) -> dict[str, Any]:
 
 ALERT_BODY = (
     "<p>The workflow <b>$!{workflow}</b> could not move everything that <b>$!{departed}</b> owned.</p>"
-    "<p>Some roles, access profiles or sources are still owned by this identity (new owner: $!{newOwner}, "
+    "<p>Some of the objects they owned still have them as owner (new owner: $!{newOwner}, "
     "chosen as: $!{ownerSource}).</p>"
     "<p>Open <b>Admin → Workflows → $!{workflow} → Execution history</b> for the details, fix the cause, "
     "and reassign what is left.</p>")
@@ -262,32 +300,48 @@ def build(cfg: Config, t: Target = Target()) -> dict[str, Any]:
         [{"comparator": "StringEquals", "variableA.$": NEW_OWNER_ID, "variableB.$": DEPARTED_ID,
           "nextStep": STOP_NO_OWNER},
          {"comparator": "StringMatches", "variableA.$": NEW_OWNER_ID, "variableB": "^__", "nextStep": STOP_NO_OWNER}],
-        first, action="sp:compare-strings")
+        GET_NEW_OWNER, action="sp:compare-strings")
+    # The new owner must exist (and be active) before anything changes: a governance group PATCHed to an unknown
+    # identity ID clears its owner instead of failing (verified live), which no later check would notice.
+    steps[GET_NEW_OWNER] = {"actionId": "sp:get-identity", "type": "action", "versionNumber": 2,
+                            "displayName": "The new owner", "attributes": {"id.$": NEW_OWNER_ID},
+                            "nextStep": NEW_OWNER_FOUND}
+    after_found = NEW_OWNER_ACTIVE if cfg.inactive_states else first
+    steps[NEW_OWNER_FOUND] = _choice("New owner exists?", [_present("$.getNewOwner.id", after_found)], STOP_NO_OWNER)
+    if cfg.inactive_states:
+        steps[NEW_OWNER_ACTIVE] = _choice(
+            "New owner left too?",
+            [{"comparator": "StringMatches", "variableA.$": "$.getNewOwner.attributes.cloudLifecycleState",
+              "variableB": state_regex(cfg.inactive_states), "nextStep": STOP_NO_OWNER}],
+            first, action="sp:compare-strings")
     steps[STOP_NO_OWNER] = _failure(
         "No usable new owner",
-        "Nothing was changed: the new owner would be the departed identity itself, or the fallback owner ID was "
-        "never filled in. Set a fallback owner who is not leaving (Define Variable Owner → newOwnerId).")
+        "Nothing was changed: the new owner would be the departed identity itself, the fallback owner ID was never "
+        "filled in, or the fallback owner no longer exists or has left too. Set a fallback owner who is not leaving "
+        "(Define Variable Owner → newOwnerId).")
 
     for i, ot in enumerate(types):
         after = types[i + 1].step("Get Owned") if i + 1 < len(types) else types[0].step("Recheck")
         steps[ot.step("Get Owned")] = _list_owned(t, ot.step("Get Owned"), ot, "Find", PAGE, ot.step("Owns"))
         steps[ot.step("Owns")] = _choice(f"Owns any {ot.plural.lower()}?",
-                                         [_present(ot.output("Get Owned") + ".body[0].id", ot.step("Reassign"))], after)
+                                         [_present(ot.first_owned_id("Get Owned"), ot.step("Reassign"))], after)
         steps[ot.step("Reassign")] = _reassign_loop(t, ot, after)
 
     # Check that nothing is left: catches failed loop iterations and owners of more than PAGE objects.
     for i, ot in enumerate(types):
         after = types[i + 1].step("Recheck") if i + 1 < len(types) else ANYTHING_LEFT
-        steps[ot.step("Recheck")] = _list_owned(t, ot.step("Recheck"), ot, "Recheck", 1, after)
+        steps[ot.step("Recheck")] = _list_owned(t, ot.step("Recheck"), ot, "Recheck", 1 if ot.server_filter else PAGE,
+                                                after)
     leftovers = ALERT_ADMINS if cfg.alert_emails else STOP_LEFTOVERS
     steps[ANYTHING_LEFT] = _choice("Anything still owned?",
-                                   [_present(ot.output("Recheck") + ".body[0].id", leftovers) for ot in types], DONE)
+                                   [_present(ot.first_owned_id("Recheck"), leftovers) for ot in types], DONE)
     if cfg.alert_emails:
         steps[ALERT_ADMINS] = _alert(cfg, STOP_LEFTOVERS)
     steps[STOP_LEFTOVERS] = _failure(
         "Ownership not fully reassigned",
         f"The departed identity still owns some {', '.join(ot.plural.lower() for ot in types)} after the "
-        f"reassignment: a change failed, or they owned more than {PAGE} of one type. Check this run's history, "
+        f"reassignment: a change failed, or they owned more than {PAGE} of one type (for governance groups and "
+        f"identity profiles: theirs weren't among the first {PAGE}). Check this run's history, "
         "then run the workflow again or reassign the rest by hand.")
     steps[DONE] = _success()
 
