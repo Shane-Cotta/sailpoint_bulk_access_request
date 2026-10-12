@@ -1,0 +1,13 @@
+# Per-tenant config holds tenant-specific choices (and may point at credentials); keep it local.
+config/*.json
+!config/ownership.example.json
+.env
+# Other credential files, e.g. .env.<user>
+.env.*
+__pycache__/
+.venv*/
+.pytest_cache/
+.DS_Store
+# Left in the working tree by other branches of this repository
+node_modules/
+.claude/worktrees/

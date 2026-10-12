@@ -1,0 +1,24 @@
+{
+  "_comment": "Copy to config/<tenant>.json (gitignored) and edit. Credentials are NOT stored here: SAIL_BASE_URL, SAIL_CLIENT_ID and SAIL_CLIENT_SECRET (an ORG_ADMIN PAT) come from the environment or the envFile. See README.md for every key.",
+  "prefix": "ACME",
+  "envFile": ".env",
+  "fallbackOwner": "jane.doe",
+  "workflowOwner": null,
+  "ownerStrategy": "manager-then-fallback",
+  "terminationStates": [
+    "terminated"
+  ],
+  "inactiveStates": [
+    "terminated",
+    "archived"
+  ],
+  "objectTypes": {
+    "roles": true,
+    "accessProfiles": true,
+    "sources": true
+  },
+  "alertEmails": [],
+  "http": {
+    "parameter": "Ownership Reassignment API"
+  }
+}
