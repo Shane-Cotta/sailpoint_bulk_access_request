@@ -1,6 +1,6 @@
 {
   "name": "Reassign Ownership on Termination",
-  "description": "When an identity's lifecycle state becomes terminated, gives the roles, access profiles, entitlements, sources, apps, governance groups and identity profiles they own to their manager, or the fallback owner when they have no active manager.",
+  "description": "When an identity's lifecycle state becomes terminated, gives the roles, access profiles, entitlements, sources, apps, governance groups and identity profiles they own and their pending approvals to their manager, or the fallback owner when they have no active manager.",
   "owner": {
     "type": "IDENTITY",
     "id": "__WORKFLOW_OWNER_ID__"
@@ -739,7 +739,7 @@
             "nextStep": "Reassign Identity Profiles"
           }
         ],
-        "defaultStep": "Recheck Roles"
+        "defaultStep": "Get Pending Approvals"
       },
       "Reassign Identity Profiles": {
         "actionId": "sp:loop:iterator",
@@ -786,6 +786,90 @@
               "nextStep": "Identity Profile Reassigned"
             },
             "Identity Profile Reassigned": {
+              "actionId": "sp:operator-success",
+              "type": "success",
+              "displayName": ""
+            }
+          }
+        },
+        "nextStep": "Get Pending Approvals"
+      },
+      "Get Pending Approvals": {
+        "actionId": "sp:http",
+        "type": "action",
+        "versionNumber": 3,
+        "displayName": "Find the departed identity's pending approvals",
+        "attributes": {
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "__PARAMETER_ID__",
+            "paramType": "1.4",
+            "refID": "ee7d2721-10b0-5526-8dd9-82674a30d52a"
+          },
+          "method": "get",
+          "url": "__API_URL__/generic-approvals/v1",
+          "urlParams": "approverId:{{$.trigger.identity.id}}\nfilters:status eq \"PENDING\"\nlimit:250",
+          "requestContentType": "json"
+        },
+        "nextStep": "Has Pending Approvals?"
+      },
+      "Has Pending Approvals?": {
+        "type": "choice",
+        "displayName": "Any pending approvals?",
+        "choiceList": [
+          {
+            "comparator": "IsPresent",
+            "variableA.$": "$.getPendingApprovals.body[?(@.assignedTo[0].identityID == $.trigger.identity.id)].id",
+            "nextStep": "Reassign Pending Approvals"
+          }
+        ],
+        "defaultStep": "Recheck Roles"
+      },
+      "Reassign Pending Approvals": {
+        "actionId": "sp:loop:iterator",
+        "type": "action",
+        "versionNumber": 1,
+        "displayName": "Give each pending approval to the new owner",
+        "attributes": {
+          "input.$": "$.getPendingApprovals.body[?(@.assignedTo[0].identityID == $.trigger.identity.id)]",
+          "context.$": "$",
+          "start": "Reassign Approval",
+          "steps": {
+            "Reassign Approval": {
+              "actionId": "sp:http",
+              "type": "action",
+              "versionNumber": 3,
+              "displayName": "Reassign the approval",
+              "attributes": {
+                "param_authenticationRef": "oauth",
+                "param_oauth": {
+                  "mapping": {
+                    "auth_client_id": "clientId",
+                    "auth_client_secret": "clientSecret",
+                    "auth_credential_location": "credentialLocation",
+                    "auth_token_url": "tokenURL"
+                  },
+                  "paramID": "__PARAMETER_ID__",
+                  "paramType": "1.4",
+                  "refID": "2a4bbbbe-5b23-5131-b666-2b1a7305e148"
+                },
+                "method": "post",
+                "url": "__API_URL__/generic-approvals/v1/{{$.loop.loopInput.id}}/reassign",
+                "requestContentType": "json",
+                "jsonRequestBody": {
+                  "reassignTo": "{{$.loop.context.defineVariableOwner.newOwnerId}}",
+                  "comment": "Reassigned automatically: the approver has left (workflow Reassign Ownership on Termination)."
+                }
+              },
+              "nextStep": "Approval Reassigned"
+            },
+            "Approval Reassigned": {
               "actionId": "sp:operator-success",
               "type": "success",
               "displayName": ""
@@ -968,6 +1052,31 @@
           "urlParams": "limit:250",
           "requestContentType": "json"
         },
+        "nextStep": "Recheck Pending Approvals"
+      },
+      "Recheck Pending Approvals": {
+        "actionId": "sp:http",
+        "type": "action",
+        "versionNumber": 3,
+        "displayName": "Recheck the departed identity's pending approvals",
+        "attributes": {
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "__PARAMETER_ID__",
+            "paramType": "1.4",
+            "refID": "31fb8b94-df40-5e4a-ae03-6694ed5f97ac"
+          },
+          "method": "get",
+          "url": "__API_URL__/generic-approvals/v1",
+          "urlParams": "approverId:{{$.trigger.identity.id}}\nfilters:status eq \"PENDING\"\nlimit:250",
+          "requestContentType": "json"
+        },
         "nextStep": "Anything Left?"
       },
       "Anything Left?": {
@@ -1008,6 +1117,11 @@
             "comparator": "IsPresent",
             "variableA.$": "$.recheckIdentityProfiles.body[?(@.owner.id == $.trigger.identity.id)].id",
             "nextStep": "Stop - Ownership Not Fully Reassigned"
+          },
+          {
+            "comparator": "IsPresent",
+            "variableA.$": "$.recheckPendingApprovals.body[?(@.assignedTo[0].identityID == $.trigger.identity.id)].id",
+            "nextStep": "Stop - Ownership Not Fully Reassigned"
           }
         ],
         "defaultStep": "Done"
@@ -1017,7 +1131,7 @@
         "type": "failure",
         "displayName": "",
         "failureName": "Ownership not fully reassigned",
-        "description": "The departed identity still owns some roles, access profiles, entitlements, sources, apps, governance groups, identity profiles after the reassignment: a change failed, or they owned more than 250 of one type (for governance groups and identity profiles: theirs weren't among the first 250). Check this run's history, then run the workflow again or reassign the rest by hand."
+        "description": "The departed identity still owns some roles, access profiles, entitlements, sources, apps, governance groups, identity profiles or has pending approvals after the reassignment: a change failed, or they had more than 250 of one kind (for governance groups and identity profiles: theirs weren't among the first 250). Check this run's history, then run the workflow again or reassign the rest by hand."
       },
       "Done": {
         "actionId": "sp:operator-success",

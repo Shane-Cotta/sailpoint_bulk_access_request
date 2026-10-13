@@ -21,6 +21,7 @@
     "governanceGroups": true,
     "identityProfiles": true
   },
+  "pendingApprovals": true,
   "alertEmails": [],
   "http": {
     "parameter": "Ownership Reassignment API"

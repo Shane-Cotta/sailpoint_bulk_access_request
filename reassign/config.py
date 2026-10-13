@@ -47,6 +47,7 @@ class Config:
     object_types: tuple[str, ...]
     alert_emails: tuple[str, ...]
     parameter: str
+    pending_approvals: bool = True
 
     @property
     def workflow_name(self) -> str:
@@ -63,7 +64,7 @@ def defaults(path: str = "<defaults>") -> Config:
     return Config(path=path, prefix="", env_file=".env", fallback_owner=None, workflow_owner=None,
                   owner_strategy=OWNER_STRATEGIES[0], termination_states=DEFAULT_TERMINATION_STATES,
                   inactive_states=DEFAULT_INACTIVE_STATES, object_types=OBJECT_TYPE_KEYS, alert_emails=(),
-                  parameter=DEFAULT_PARAMETER)
+                  parameter=DEFAULT_PARAMETER, pending_approvals=True)
 
 
 def _states(raw: Any, key: str, default: tuple[str, ...], *, allow_empty: bool = False) -> tuple[str, ...]:
@@ -132,6 +133,10 @@ def from_dict(data: dict[str, Any], path: str = "<dict>") -> Config:
         raise ConfigError("http.parameter must be the name or ID of an OAuth 2.0 Client Credentials parameter "
                           "in Parameter Storage")
 
+    pending = data.get("pendingApprovals", d.pending_approvals)
+    if not isinstance(pending, bool):
+        raise ConfigError("pendingApprovals must be true or false")
+
     env_file = data.get("envFile", d.env_file)
     if env_file is not None and not isinstance(env_file, str):
         raise ConfigError("envFile must be a path (relative to the current directory) or null")
@@ -148,6 +153,7 @@ def from_dict(data: dict[str, Any], path: str = "<dict>") -> Config:
         object_types=types,
         alert_emails=tuple(emails),
         parameter=parameter.strip(),
+        pending_approvals=pending,
     )
 
 

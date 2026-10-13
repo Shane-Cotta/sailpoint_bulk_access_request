@@ -2,8 +2,9 @@
 
 A SailPoint Identity Security Cloud (ISC) workflow. When someone leaves the organisation, it moves everything they
 own to their **manager**. If there's no usable manager, it moves it to a **fallback owner** you choose. That covers
-**roles, access profiles, entitlements, sources, apps, governance groups and identity profiles**. Nothing is left
-orphaned, so approvals, certifications and access reviews that go to the owner keep working.
+**roles, access profiles, entitlements, sources, apps, governance groups and identity profiles**, and the **approvals
+still waiting for them**. Nothing is left orphaned, so approvals, certifications and access reviews that go to the
+owner keep working, and nobody's request waits on someone who has left.
 
 It works in any ISC tenant. Everything organisation-specific is in one config file, or, without Python, in four
 clearly marked placeholders.
@@ -22,7 +23,8 @@ flowchart TD
   N --> U
   U -- no --> X1[Stop: no usable new owner — nothing changed]
   U -- yes --> R["For each type they own:<br/>roles, access profiles, entitlements,<br/>sources, apps, governance groups,<br/>identity profiles → new owner"]
-  R --> C{Anything still owned?}
+  R --> P["Their pending approvals<br/>(access requests, forms, workflows)<br/>→ new owner (optional)"]
+  P --> C{Anything still owned or pending?}
   C -- yes --> E["Email the admins (optional)"] --> X2[Stop: not fully reassigned]
   C -- no --> D[Done]
 ```
@@ -40,6 +42,12 @@ flowchart TD
   - Additional owners, governance group *memberships* and workflow owners are not touched (see
     [Adapting it](#adapting-it-to-your-organisation)).
   - Access itself is not touched either. Removing access is the lifecycle state's job.
+- **Pending approvals** (`pendingApprovals`, on by default): every access-request, form and workflow approval
+  waiting for the person who left is reassigned to the same new owner, with the comment *"Reassigned automatically:
+  the approver has left (workflow …)"*. SailPoint records it in the approval's history as a manual reassignment.
+  - Only approvals assigned to **them personally** move. An approval assigned to a governance group they're in stays
+    with the group.
+  - Certifications and manual tasks (work items) are not moved yet.
 - **Safety:**
   - The workflow never makes the person who left the owner again.
   - It never patches with an unfilled placeholder.
@@ -84,6 +92,8 @@ python ownership.py doctor --config config/<tenant>.json      # read-only: is th
 python ownership.py apply  --config config/<tenant>.json --dry-run
 python ownership.py apply  --config config/<tenant>.json      # creates it DISABLED
 python ownership.py test   --config config/<tenant>.json --departed <test identity>
+#   add --approval-for <another test identity> to also give the departed identity two real pending approvals
+#   (one assigned to them, one to a governance group they're in) and check only the first moves; takes minutes
 python ownership.py apply  --config config/<tenant>.json --enable
 ```
 
@@ -108,6 +118,7 @@ python ownership.py apply  --config config/<tenant>.json --enable
 | `terminationStates` | `["terminated"]` | Lifecycle state **technical names** that start the workflow (e.g. `["terminated", "leaver"]`). Case-sensitive |
 | `inactiveStates` | `["terminated", "archived"]` | A manager in one of these counts as gone, so the fallback is used; a fallback owner in one stops the run. `[]` skips these checks |
 | `objectTypes` | all `true` | `{"roles": …, "accessProfiles": …, "entitlements": …, "sources": …, "apps": …, "governanceGroups": …, "identityProfiles": …}`. Set a type to `false` to leave it alone; its steps aren't generated. A key you leave out counts as `true`, so an older config with only the first three gets the new types too |
+| `pendingApprovals` | `true` | Also reassign the access-request, form and workflow approvals waiting for the person who left (only those assigned to them personally, not a governance group's) |
 | `alertEmails` | `[]` | Up to 10 addresses emailed when something couldn't be reassigned |
 | `http.parameter` | `Ownership Reassignment API` | Name or ID of the Parameter Storage entry the HTTP steps authenticate with |
 
@@ -139,7 +150,7 @@ Every run is in **Admin → Workflows → (the workflow) → Executions**. A run
 | Completed, "Done" | Everything they owned now belongs to the new owner (or they owned nothing) | Nothing |
 | Failed, **No usable new owner** | The new owner would have been the person who left (usually: they *are* the fallback owner), the fallback ID is unfilled, or the fallback owner has left too. Nothing was changed | Pick a different fallback owner and reassign by hand, or re-run the test endpoint |
 | Failed at **The new owner**, with a 404 | The fallback owner's identity no longer exists. Nothing was changed | Set a new fallback owner (`apply` again, or edit *Define Variable Owner*), then re-run |
-| Failed, **Ownership not fully reassigned** | Some objects are still theirs. Either an update was rejected (the history shows the HTTP status, e.g. 400), or they owned more than 250 of one type | Fix the cause, then run it again (disable it and use **Test workflow** with the same input), or reassign the rest by hand |
+| Failed, **Ownership not fully reassigned** | Some objects, or approvals waiting for them, are still theirs. Either an update was rejected (the history shows the HTTP status, e.g. 400), or they owned more than 250 of one type | Fix the cause, then run it again (disable it and use **Test workflow** with the same input), or reassign the rest by hand |
 
 A failed update affects only that one object: the others still move, and the final check reports what's left.
 An error in a lookup step (for example, an invalid credential) stops the run straight away, with the error in the
@@ -154,6 +165,9 @@ history.
   miss some; `doctor` warns when that's the case.
 - **Apps** use ISC's admin app list (`/source-apps/all`), an experimental API that needs the
   `X-SailPoint-Experimental` header; the workflow sends it. Turn `apps` off if your tenant rejects it.
+- **Pending approvals: 250 per run, assigned to them personally.** An approval with several assignees moves only when
+  the person who left is the first. An approval created *after* the run (for example a request still in SailPoint's
+  checks when they left) isn't moved; re-run the workflow, or decide it as an admin.
 - **Primary owner only.** Additional owners (`additionalOwners`) and a source's management workgroup stay as they are.
 - **The manager is not checked for being an admin.** ISC accepts any identity as owner. Use `inactiveStates` to rule
   out managers who are leaving too.

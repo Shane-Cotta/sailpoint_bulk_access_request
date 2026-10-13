@@ -37,6 +37,18 @@ specs, the developer community, and a live demo tenant. **Live** means checked a
 - **Page sizes:** list endpoints take `limit` up to 250. The roles spec says 50 (not verified beyond 13 roles).
   Workflow loops take at most 250 items.
 
+## 1b. Pending work (approvals, certifications, manual tasks)
+
+| Kind | Find a person's | Move it | Status |
+|---|---|---|---|
+| Access-request and generic (form/workflow) approvals | `GET /generic-approvals/v1?approverId=<id>&filters=status eq "PENDING"` (**live**; also lists their governance groups' approvals) | `POST /generic-approvals/v1/{id}/reassign {reassignTo, comment}` (**live**) | Done (`pendingApprovals`) |
+| Certifications | `GET /certifications/v1` (reviewer) | `POST /certifications/v1/{id}/reassign` (route exists, **live**; body not tried) | Not yet |
+| Manual tasks (work items) | `GET /work-items/v1?ownerId=<id>` (**live**) | `POST /work-items/v1/{id}/forward` (route exists, **live**) | Not yet |
+| All four, going forward | `GET /reassignment-configurations/v1` | ISC's own out-of-office reassignment: types `ACCESS_REQUESTS`, `CERTIFICATIONS`, `MANUAL_TASKS`, `GENERIC_APPROVALS` (**live**, experimental) | Not used (experimental) |
+
+`POST /access-request-approvals/v1/{id}/forward` (the older access-request API) also exists; the generic-approvals
+reassign covers both kinds of approval in one call, so the workflow uses that.
+
 ## 2. The trigger
 - **`idn:identity-lifecycle-state-changed`** ("Identity Lifecycle State Changed") sends
   `{identity{id,name,type,email}, identityProfile, newLifecycleState, oldLifecycleState}` (**live**: the action

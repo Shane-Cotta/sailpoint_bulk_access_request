@@ -7,7 +7,9 @@ Flow (see README.md for the picture):
   → Owner Usable?  (not the departed identity itself, not an unfilled placeholder)
   → Get New Owner → New Owner Found? → New Owner Active?   (nothing changes for a missing or departed owner)
   → for each enabled object type: Get Owned X → Owns X? → Reassign X (loop: Patch X Owner)
-  → Recheck X … → Anything Left? → [Alert Admins] → failure | success
+  → [pendingApprovals] Get Pending Approvals → Has Pending Approvals? → Reassign Pending Approvals
+    (loop: Reassign Approval, POST /generic-approvals/v1/{id}/reassign)
+  → Recheck X … → [Recheck Pending Approvals] → Anything Left? → [Alert Admins] → failure | success
 
 Facts this relies on are listed, with how they were verified, in CLAUDE.md and docs/RESEARCH.md.
 """
@@ -51,6 +53,12 @@ GET_NEW_OWNER = "Get New Owner"
 NEW_OWNER_FOUND = "New Owner Found?"
 NEW_OWNER_ACTIVE = "New Owner Active?"
 STOP_NO_OWNER = "Stop - No Usable Owner"
+GET_APPROVALS = "Get Pending Approvals"
+HAS_APPROVALS = "Has Pending Approvals?"
+REASSIGN_APPROVALS = "Reassign Pending Approvals"
+REASSIGN_APPROVAL = "Reassign Approval"
+APPROVAL_REASSIGNED = "Approval Reassigned"
+RECHECK_APPROVALS = "Recheck Pending Approvals"
 ANYTHING_LEFT = "Anything Left?"
 ALERT_ADMINS = "Alert Admins"
 STOP_LEFTOVERS = "Stop - Ownership Not Fully Reassigned"
@@ -169,7 +177,7 @@ def _failure(name: str, description: str) -> dict[str, Any]:
 
 def _http(t: Target, name: str, display: str, method: str, url: str, next_step: str | None, *,
           url_params: str | None = None, headers: str | None = None,
-          patch: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+          patch: list[dict[str, Any]] | None = None, body: dict[str, Any] | None = None) -> dict[str, Any]:
     """HTTP Request (sp:http v3) to the ISC API. It authenticates with a PAT kept in Parameter Storage (OAuth 2.0
     client credentials), so the workflow holds no secret: v2's inline secrets are dropped (top level) or stored
     readable (inside loops) when a workflow is created through the API (CLAUDE.md)."""
@@ -189,6 +197,8 @@ def _http(t: Target, name: str, display: str, method: str, url: str, next_step: 
         attrs["jsonPatchRequestBody"] = patch
     else:
         attrs["requestContentType"] = "json"
+        if body is not None:
+            attrs["jsonRequestBody"] = body
     step = {"actionId": "sp:http", "type": "action", "versionNumber": 3, "displayName": display, "attributes": attrs}
     if next_step:
         step["nextStep"] = next_step
@@ -227,9 +237,49 @@ def _reassign_loop(t: Target, ot: ObjectType, next_step: str) -> dict[str, Any]:
     }
 
 
+# ── Pending approvals (cfg.pending_approvals) ──────────────────────────────────
+# The departed identity's pending access-request and generic (form/workflow) approvals, from the unified approvals
+# list (verified live: an admin may pass another identity's approverId). Each is reassigned to the new owner; SailPoint
+# records it in reassignmentHistory (MANUAL_REASSIGNMENT, by the workflow's PAT user) with the comment.
+APPROVALS_LIST_PARAMS = 'approverId:{{' + DEPARTED_ID + '}}\nfilters:status eq "PENDING"\nlimit:'
+# approverId also matches approvals assigned to a governance group the identity is in (verified live): those stay with
+# the group, so only approvals assigned to the identity itself are picked out (an approval with several assignees
+# moves only when the departed identity is the first).
+ASSIGNED_TO_DEPARTED = "[?(@.assignedTo[0].identityID == " + DEPARTED_ID + ")]"
+REASSIGN_COMMENT = "Reassigned automatically: the approver has left (workflow {workflow})."
+
+
+def _list_approvals(t: Target, name: str, verb: str, limit: int, next_step: str) -> dict[str, Any]:
+    return _http(t, name, f"{verb} the departed identity's pending approvals", "get",
+                 f"{t.api_url}{api.GENERIC_APPROVALS}", next_step, url_params=f"{APPROVALS_LIST_PARAMS}{limit}")
+
+
+def _reassign_approvals_loop(cfg: Config, t: Target, next_step: str) -> dict[str, Any]:
+    # The comment is fixed text (the workflow name comes from the config prefix): a templated value is spliced into
+    # the JSON raw, so a name with a quote in it would break the body.
+    body = {"reassignTo": "{{$.loop.context." + NEW_OWNER_ID[2:] + "}}",
+            "comment": REASSIGN_COMMENT.format(workflow=cfg.workflow_name)}
+    return {
+        "actionId": "sp:loop:iterator", "type": "action", "versionNumber": 1,
+        "displayName": "Give each pending approval to the new owner",
+        "attributes": {
+            "input.$": "$." + _camel(GET_APPROVALS) + ".body" + ASSIGNED_TO_DEPARTED,
+            "context.$": "$",
+            "start": REASSIGN_APPROVAL,
+            "steps": {
+                REASSIGN_APPROVAL: _http(t, REASSIGN_APPROVAL, "Reassign the approval", "post",
+                                         f"{t.api_url}{api.GENERIC_APPROVALS}/{{{{$.loop.loopInput.id}}}}/reassign",
+                                         APPROVAL_REASSIGNED, body=body),
+                APPROVAL_REASSIGNED: _success(),
+            },
+        },
+        "nextStep": next_step,
+    }
+
+
 ALERT_BODY = (
     "<p>The workflow <b>$!{workflow}</b> could not move everything that <b>$!{departed}</b> owned.</p>"
-    "<p>Some of the objects they owned still have them as owner (new owner: $!{newOwner}, "
+    "<p>Some of the objects they owned (or approvals waiting for them) are still theirs (new owner: $!{newOwner}, "
     "chosen as: $!{ownerSource}).</p>"
     "<p>Open <b>Admin → Workflows → $!{workflow} → Execution history</b> for the details, fix the cause, "
     "and reassign what is left.</p>")
@@ -254,7 +304,7 @@ def description(cfg: Config) -> str:
     to = ("their manager, or the fallback owner when they have no active manager"
           if cfg.owner_strategy == "manager-then-fallback" else "the fallback owner")
     return (f"When an identity's lifecycle state becomes {' or '.join(cfg.termination_states)}, gives the {what} "
-            f"they own to {to}.")
+            f"they own" + (" and their pending approvals" if cfg.pending_approvals else "") + f" to {to}.")
 
 
 def build(cfg: Config, t: Target = Target()) -> dict[str, Any]:
@@ -320,27 +370,42 @@ def build(cfg: Config, t: Target = Target()) -> dict[str, Any]:
         "filled in, or the fallback owner no longer exists or has left too. Set a fallback owner who is not leaving "
         "(Define Variable Owner → newOwnerId).")
 
+    first_recheck = types[0].step("Recheck")
+    after_objects = GET_APPROVALS if cfg.pending_approvals else first_recheck
     for i, ot in enumerate(types):
-        after = types[i + 1].step("Get Owned") if i + 1 < len(types) else types[0].step("Recheck")
+        after = types[i + 1].step("Get Owned") if i + 1 < len(types) else after_objects
         steps[ot.step("Get Owned")] = _list_owned(t, ot.step("Get Owned"), ot, "Find", PAGE, ot.step("Owns"))
         steps[ot.step("Owns")] = _choice(f"Owns any {ot.plural.lower()}?",
                                          [_present(ot.first_owned_id("Get Owned"), ot.step("Reassign"))], after)
         steps[ot.step("Reassign")] = _reassign_loop(t, ot, after)
+    if cfg.pending_approvals:
+        steps[GET_APPROVALS] = _list_approvals(t, GET_APPROVALS, "Find", PAGE, HAS_APPROVALS)
+        steps[HAS_APPROVALS] = _choice("Any pending approvals?",
+                                       [_present("$." + _camel(GET_APPROVALS) + ".body" + ASSIGNED_TO_DEPARTED + ".id",
+                                                 REASSIGN_APPROVALS)],
+                                       first_recheck)
+        steps[REASSIGN_APPROVALS] = _reassign_approvals_loop(cfg, t, first_recheck)
 
     # Check that nothing is left: catches failed loop iterations and owners of more than PAGE objects.
+    last_recheck = RECHECK_APPROVALS if cfg.pending_approvals else ANYTHING_LEFT
     for i, ot in enumerate(types):
-        after = types[i + 1].step("Recheck") if i + 1 < len(types) else ANYTHING_LEFT
+        after = types[i + 1].step("Recheck") if i + 1 < len(types) else last_recheck
         steps[ot.step("Recheck")] = _list_owned(t, ot.step("Recheck"), ot, "Recheck", 1 if ot.server_filter else PAGE,
                                                 after)
     leftovers = ALERT_ADMINS if cfg.alert_emails else STOP_LEFTOVERS
-    steps[ANYTHING_LEFT] = _choice("Anything still owned?",
-                                   [_present(ot.first_owned_id("Recheck"), leftovers) for ot in types], DONE)
+    left = [_present(ot.first_owned_id("Recheck"), leftovers) for ot in types]
+    if cfg.pending_approvals:
+        # A full page, filtered like the first list: group approvals would hide a leftover behind limit 1.
+        steps[RECHECK_APPROVALS] = _list_approvals(t, RECHECK_APPROVALS, "Recheck", PAGE, ANYTHING_LEFT)
+        left.append(_present("$." + _camel(RECHECK_APPROVALS) + ".body" + ASSIGNED_TO_DEPARTED + ".id", leftovers))
+    steps[ANYTHING_LEFT] = _choice("Anything still owned?", left, DONE)
     if cfg.alert_emails:
         steps[ALERT_ADMINS] = _alert(cfg, STOP_LEFTOVERS)
     steps[STOP_LEFTOVERS] = _failure(
         "Ownership not fully reassigned",
-        f"The departed identity still owns some {', '.join(ot.plural.lower() for ot in types)} after the "
-        f"reassignment: a change failed, or they owned more than {PAGE} of one type (for governance groups and "
+        f"The departed identity still owns some {', '.join(ot.plural.lower() for ot in types)}"
+        + (" or has pending approvals" if cfg.pending_approvals else "") + " after the "
+        f"reassignment: a change failed, or they had more than {PAGE} of one kind (for governance groups and "
         f"identity profiles: theirs weren't among the first {PAGE}). Check this run's history, "
         "then run the workflow again or reassign the rest by hand.")
     steps[DONE] = _success()
@@ -358,9 +423,12 @@ def build(cfg: Config, t: Target = Target()) -> dict[str, Any]:
 
 def http_step_names(cfg: Config) -> list[str]:
     """Names of every HTTP Request step `build` makes for `cfg` (top level and inside loops)."""
-    return [n for k in cfg.object_types for n in (OBJECT_TYPES[k].step("Get Owned"),
-                                                   f"Patch {OBJECT_TYPES[k].singular} Owner",
-                                                   OBJECT_TYPES[k].step("Recheck"))]
+    names = [n for k in cfg.object_types for n in (OBJECT_TYPES[k].step("Get Owned"),
+                                                    f"Patch {OBJECT_TYPES[k].singular} Owner",
+                                                    OBJECT_TYPES[k].step("Recheck"))]
+    if cfg.pending_approvals:
+        names += [GET_APPROVALS, REASSIGN_APPROVAL, RECHECK_APPROVALS]
+    return names
 
 
 def ref_ids_of(workflow: Mapping[str, Any]) -> dict[str, str]:

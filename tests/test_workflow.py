@@ -39,6 +39,8 @@ VARIANTS = {
     "several-states": {"terminationStates": ["terminated", "leaver", "inactive"]},
     "no-inactive-check": {"inactiveStates": []},
     "alerts": {"alertEmails": ["iam-team@example.com"]},
+    "no-approvals": {"pendingApprovals": False},
+    "approvals-roles-only": {"objectTypes": only("roles"), "pendingApprovals": True},
 }
 
 
@@ -174,6 +176,14 @@ def test_http_steps(built):
         assert a["param_authenticationRef"] == "oauth"
         assert a["param_oauth"]["paramType"] == wf.OAUTH_PARAMETER_TYPE and a["param_oauth"]["refID"]
         assert not any("ecret" in k for k in a), f"{name} carries a secret"
+        if name in (wf.GET_APPROVALS, wf.RECHECK_APPROVALS, wf.REASSIGN_APPROVAL):
+            assert a.get("requestHeaders") is None and a["requestContentType"] == "json"
+            if name == wf.REASSIGN_APPROVAL:
+                assert a["method"] == "post"
+                assert a["url"] == f"{wf.API_URL}/generic-approvals/v1/{{{{$.loop.loopInput.id}}}}/reassign"
+            else:
+                assert a["method"] == "get" and a["url"] == f"{wf.API_URL}/generic-approvals/v1"
+            continue
         assert a["method"] in ("get", "patch")
         ot = next(o for o in wf.OBJECT_TYPES.values() if o.plural in name or o.singular in name)
         assert a.get("requestHeaders") == ot.headers
@@ -285,6 +295,46 @@ def test_disabled_types_are_left_out():
     assert "sources" not in wf.build(cfg(objectTypes={"sources": False}))["description"]
 
 
+def test_pending_approvals_are_reassigned_after_the_objects_and_rechecked():
+    c = cfg()
+    assert c.pending_approvals                                       # on by default
+    steps = wf.build(c)["definition"]["steps"]
+    last = wf.OBJECT_TYPES[c.object_types[-1]]
+    first_recheck = wf.OBJECT_TYPES[c.object_types[0]].step("Recheck")
+    # After the last object type (whether or not it owned any), the approvals stage; then the rechecks.
+    assert steps[last.step("Owns")]["defaultStep"] == wf.GET_APPROVALS
+    assert steps[last.step("Reassign")]["nextStep"] == wf.GET_APPROVALS
+    get = steps[wf.GET_APPROVALS]["attributes"]
+    assert get["urlParams"] == 'approverId:{{$.trigger.identity.id}}\nfilters:status eq "PENDING"\nlimit:250'
+    has = steps[wf.HAS_APPROVALS]
+    mine = "[?(@.assignedTo[0].identityID == $.trigger.identity.id)]"   # not a governance group's approvals
+    assert has["choiceList"] == [{"comparator": "IsPresent", "variableA.$": f"$.getPendingApprovals.body{mine}.id",
+                                  "nextStep": wf.REASSIGN_APPROVALS}]
+    assert has["defaultStep"] == first_recheck
+    loop = steps[wf.REASSIGN_APPROVALS]
+    assert loop["attributes"]["input.$"] == f"$.getPendingApprovals.body{mine}" and loop["nextStep"] == first_recheck
+    post = loop["attributes"]["steps"][wf.REASSIGN_APPROVAL]["attributes"]
+    assert post["jsonRequestBody"]["reassignTo"] == "{{$.loop.context.defineVariableOwner.newOwnerId}}"
+    assert "{{" not in post["jsonRequestBody"]["comment"]               # fixed text: nothing spliced in raw
+    assert "ACME Reassign Ownership on Termination" in post["jsonRequestBody"]["comment"]
+    # The last object recheck goes to the approvals recheck, which feeds Anything Left?.
+    assert steps[last.step("Recheck")]["nextStep"] == wf.RECHECK_APPROVALS
+    assert steps[wf.RECHECK_APPROVALS]["attributes"]["urlParams"].endswith("limit:250")
+    assert steps[wf.RECHECK_APPROVALS]["nextStep"] == wf.ANYTHING_LEFT
+    assert {"comparator": "IsPresent", "variableA.$": f"$.recheckPendingApprovals.body{mine}.id",
+            "nextStep": wf.STOP_LEFTOVERS} in steps[wf.ANYTHING_LEFT]["choiceList"]
+    assert "pending approvals" in wf.description(c)
+
+
+def test_pending_approvals_can_be_turned_off():
+    c = cfg(pendingApprovals=False)
+    steps = wf.build(c)["definition"]["steps"]
+    assert not {wf.GET_APPROVALS, wf.HAS_APPROVALS, wf.REASSIGN_APPROVALS, wf.RECHECK_APPROVALS} & set(steps)
+    last = wf.OBJECT_TYPES[c.object_types[-1]]
+    assert steps[last.step("Recheck")]["nextStep"] == wf.ANYTHING_LEFT
+    assert "approval" not in wf.description(c)
+
+
 def test_alert_email_only_when_configured():
     plain = wf.build(cfg())["definition"]["steps"]
     assert wf.ALERT_ADMINS not in plain
@@ -333,6 +383,7 @@ def test_example_config_loads():
     ({"http": {"clientSecretEnv": "X"}}, "Parameter Storage"),
     ({"http": {"parameter": " "}}, "http.parameter"),
     ({"prefix": "-bad"}, "prefix"),
+    ({"pendingApprovals": "yes"}, "pendingApprovals"),
 ])
 def test_config_errors(bad, message):
     with pytest.raises(config_mod.ConfigError, match=message):

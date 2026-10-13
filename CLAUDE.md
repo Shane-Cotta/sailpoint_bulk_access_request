@@ -87,6 +87,22 @@ and re-checked on `/v1` on 2026-10-13 (same filters and shapes). Run history is 
   - **A governance group PATCHed to a nonexistent identity returns 2xx and clears its owner** (owner: null). That's why
     the workflow looks up the new owner (*Get New Owner*) before changing anything. `sp:get-identity` on an unknown ID
     fails the run with a 404, before any change.
+- **Pending approvals (verified 2026-10-13):**
+  - `GET /generic-approvals/v1?approverId=<id>&filters=status eq "PENDING"` (admin PAT, someone else's ID) lists their
+    pending `ACCESS_REQUEST_APPROVAL` and `GENERIC_APPROVAL` rows. **It also lists approvals assigned to a governance
+    group they're a member of** (`assignedTo[0].type: GOVERNANCE_GROUP`), so the workflow keeps only
+    `body[?(@.assignedTo[0].identityID == $.trigger.identity.id)]`.
+  - `POST /generic-approvals/v1/{id}/reassign {"reassignTo": "<identity id>", "comment": …}` → 2xx with an empty body.
+    The approval's `assignedTo`/`approvers` become the new identity, `reassignmentHistory` gets a
+    `MANUAL_REASSIGNMENT` (from, to, reassigner = the PAT user, the comment), the old approver's list no longer has it,
+    and access-request-status shows the new `currentOwner`. An unknown identity → 400 ("Could not find an identity …"),
+    nothing changes. `/generic-approvals/v1/{id}/forward` doesn't exist (404).
+  - SailPoint creates an access-request approval 2 to 10 minutes after the request (SOD and policy phases first).
+  - Cancelling a request: `POST /access-requests/v1/cancel {accountActivityId, comment}` takes the approval's
+    `referenceData` **accessRequestId** (its accountActivityId is a 400).
+  - `POST /workgroups/v1/{id}/members/bulk-add` answers **207** (multi-status, 201 per member).
+  - HTTP Request v3's JSON body is `requestContentType: "json"` + `jsonRequestBody` (an object; `{{…}}` templates in
+    its values work like in `jsonPatchRequestBody`).
 - **Loops (`sp:loop:iterator`):**
   - A failing HTTP step fails **only that iteration**: the history shows `ChildWorkflowExecutionFailed` with the status.
   - The loop step itself completes, and the run continues. The Recheck steps then route to *Ownership not fully reassigned*.
@@ -100,7 +116,9 @@ and re-checked on `/v1` on 2026-10-13 (same filters and shapes). Run history is 
   - To load an entitlement CSV, its `connectorAttributes` need `group.columnNames` (the group schema's 9 columns),
     `group.indexColumn` and `group.delimiter`. Without them the aggregation task fails ("Missing attribute columnNames").
   - `POST /sources/v1/{id}/load-entitlements` (multipart, field `file`) needs a header with every group schema
-    column, returns 202, and the entitlement appears in about 30 s.
+    column, returns 202, and the entitlement appears in about 30 s. The aggregation itself is quick (its task reports
+    `groupsCreated`), but the entitlements list is index-backed: on 2026-10-13 a new one hadn't appeared after 15
+    minutes, so `test` waits up to 15 and then gives up (the test objects are deleted).
   - The load also turns the header row into an entitlement named `displayName`, so pick yours by name. A new
     entitlement has `owner: null`.
   - `POST /workgroups/v1 {name, description, owner}`.

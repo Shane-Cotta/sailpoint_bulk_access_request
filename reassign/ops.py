@@ -176,7 +176,8 @@ def history_summary(events: list[dict[str, Any]]) -> list[str]:
 TEST_SUFFIX = {"sources": "Source", "entitlements": "Entitlement", "accessProfiles": "Access Profile",
                "roles": "Role", "governanceGroups": "Governance Group", "identityProfiles": "Identity Profile",
                "apps": "App"}
-DELETE_ORDER = ("apps", "identityProfiles", "governanceGroups", "roles", "accessProfiles", "sources")
+# Governance groups after roles and access profiles: an item whose approval goes to the group keeps it "in use".
+DELETE_ORDER = ("apps", "identityProfiles", "roles", "accessProfiles", "governanceGroups", "sources")
 ABOUT = "Throwaway object for ownership.py test; safe to delete."
 # A flat-file source needs its entitlement columns before it can load an entitlement CSV.
 GROUP_COLUMNS = ["id", "name", "displayName", "created", "description", "modified", "entitlements", "groups",
@@ -189,7 +190,9 @@ def _set_owner(tenant: Tenant, ot: ObjectType, object_id: str, owner_id: str) ->
                 content_type="application/json-patch+json", headers=headers(ot))
 
 
-def _wait_for_entitlement(tenant: Tenant, source_id: str, name: str, timeout: float = 300) -> dict[str, Any]:
+def _wait_for_entitlement(tenant: Tenant, source_id: str, name: str, timeout: float = 900) -> dict[str, Any]:
+    # The aggregation itself takes seconds, but the entitlements list is index-backed: on a busy tenant a new
+    # entitlement took over 5 minutes to show up (seen live; the task reported groupsCreated meanwhile).
     # The load also turns the CSV's header row into an entitlement (named "displayName"), so pick ours by name.
     f = q(f'source.id eq "{source_id}"')
     deadline = time.monotonic() + timeout
@@ -199,7 +202,8 @@ def _wait_for_entitlement(tenant: Tenant, source_id: str, name: str, timeout: fl
         if hit:
             return hit
         time.sleep(5)
-    raise TenantError(408, f"the test entitlement didn't appear within {timeout:.0f}s (entitlement aggregation)")
+    raise TenantError(408, f"the test entitlement didn't appear within {timeout:.0f}s (entitlement aggregation and "
+                           "indexing; the tenant may be busy, try again later)")
 
 
 def create_test_objects(tenant: Tenant, prefix: str, owner_id: str, log=print) -> dict[str, dict[str, Any]]:
@@ -216,7 +220,7 @@ def create_test_objects(tenant: Tenant, prefix: str, owner_id: str, log=print) -
                                     "group.delimiter": ","}})
         made["sources"] = src
         ref = {"type": "SOURCE", "id": src["id"], "name": src["name"]}
-        log("  loading the test entitlement (an entitlement aggregation; usually under a minute)…")
+        log("  loading the test entitlement (an aggregation, then indexing: usually a minute, on a busy tenant up to 15)…")
         csv = (",".join(GROUP_COLUMNS) + "\n" + f"ownership-test,ownership-test,{name('entitlements')},,{ABOUT},,,,\n")
         tenant.upload(f"{api.SOURCES}/{src['id']}/load-entitlements", "file", "entitlements.csv", csv.encode())
         ent = _wait_for_entitlement(tenant, src["id"], name("entitlements"))
@@ -288,3 +292,77 @@ def delete_test_objects(tenant: Tenant, made: dict[str, dict[str, Any]], prefix:
                     problems.append(f"could not delete {obj['name']!r}: {exc}")
                 time.sleep(4)
     return problems
+
+
+# ── pending approvals (cfg.pending_approvals; ownership.py test --approval-for) ─────────
+PENDING = q('status eq "PENDING"')
+
+
+def pending_approvals(tenant: Tenant, approver_id: str, limit: int = 250) -> list[dict[str, Any]]:
+    """The identity's pending access-request and generic approvals, as the workflow lists them."""
+    return tenant.call("GET", f"{api.GENERIC_APPROVALS}?approverId={q(approver_id)}&filters={PENDING}"
+                              f"&limit={limit}") or []
+
+
+def approval_assignees(tenant: Tenant, approval_id: str) -> list[str]:
+    """Who an approval waits for now (identity IDs)."""
+    found = tenant.call("GET", f"{api.GENERIC_APPROVALS}/{approval_id}") or {}
+    return [a.get("identityID") for a in found.get("assignedTo") or [] if a.get("identityID")]
+
+
+def _request(tenant: Tenant, item_type: str, item_id: str, requested_for: str) -> None:
+    for attempt in range(6):    # a freshly changed item can take a moment to become requestable
+        try:
+            tenant.call("POST", api.ACCESS_REQUESTS, {
+                "requestedFor": [requested_for], "requestType": "GRANT_ACCESS",
+                "requestedItems": [{"type": item_type, "id": item_id,
+                                    "comment": "ownership.py test: a pending approval for the departed identity"}]})
+            return
+        except TenantError:
+            if attempt == 5:
+                raise
+            time.sleep(10)
+
+
+def make_test_approvals(tenant: Tenant, made: dict[str, dict[str, Any]], departed_id: str, requested_for: str,
+                        timeout: float = 900, log=print) -> dict[str, dict[str, Any]]:
+    """Two real pending approvals that `approverId=<departed>` lists:
+      - "direct": the test access profile, approved by its owner (the departed identity); the workflow moves it.
+      - "group": the test role, approved by the test governance group, which the departed identity joins; the
+        workflow must leave it with the group.
+    Both are requested for `requested_for`. SailPoint creates approvals after its SOD and policy checks, 2 to 10
+    minutes later (seen live), so this waits for both. Returns them by case."""
+    patch = lambda path, ops: tenant.call("PATCH", path, ops, content_type="application/json-patch+json")  # noqa: E731
+    on = [{"op": "replace", "path": "/enabled", "value": True}, {"op": "replace", "path": "/requestable", "value": True}]
+    ap, role, group = made["accessProfiles"], made["roles"], made["governanceGroups"]
+    patch(f"{api.ACCESS_PROFILES}/{ap['id']}", on + [{"op": "replace", "path": "/accessRequestConfig", "value": {
+        "commentsRequired": False, "denialCommentsRequired": False, "approvalSchemes": [{"approverType": "OWNER"}]}}])
+    tenant.call("POST", f"{api.WORKGROUPS}/{group['id']}/members/bulk-add", [{"type": "IDENTITY", "id": departed_id}],
+                ok=(200, 201, 202, 204, 207))
+    patch(f"{api.ROLES}/{role['id']}", on + [{"op": "replace", "path": "/accessRequestConfig", "value": {
+        "commentsRequired": False, "denialCommentsRequired": False,
+        "approvalSchemes": [{"approverType": "GOVERNANCE_GROUP", "approverId": group["id"]}]}}])
+    _request(tenant, "ACCESS_PROFILE", ap["id"], requested_for)
+    _request(tenant, "ROLE", role["id"], requested_for)
+    log("  waiting for SailPoint to create both approvals (its checks take 2 to 10 minutes)…")
+    deadline, found = time.monotonic() + timeout, {}
+    while time.monotonic() < deadline:
+        for a in pending_approvals(tenant, departed_id):
+            target = (a.get("requestedTarget") or {}).get("id")
+            if target == ap["id"]:
+                found["direct"] = a
+            elif target == role["id"]:
+                found["group"] = a
+        if len(found) == 2:
+            return found
+        time.sleep(20)
+    raise TenantError(0, f"after {timeout:.0f} s SailPoint had created only {sorted(found) or 'no'} test approval(s)")
+
+
+def cancel_test_request(tenant: Tenant, approval: dict[str, Any]) -> None:
+    """Cancel the access request behind a test approval, so its item can be deleted. The cancel call's
+    `accountActivityId` takes the request's accessRequestId (verified live; its own accountActivityId is a 400)."""
+    ref = next((r.get("id") for r in approval.get("referenceData") or [] if r.get("type") == "accessRequestId"), None)
+    if ref:
+        tenant.call("POST", f"{api.ACCESS_REQUESTS}/cancel",
+                    {"accountActivityId": ref, "comment": "ownership.py test: cleaning up"})

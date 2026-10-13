@@ -164,6 +164,12 @@ def cmd_doctor(cfg: config_mod.Config, _a: argparse.Namespace) -> int:
                     f"; the workflow only checks the first {wf.PAGE} (this list can't filter on owner)"))
         except TenantError as exc:
             bad(f"{ot.plural}: GET {ot.path}: {exc}")
+    if cfg.pending_approvals:
+        try:
+            ops.pending_approvals(tenant, "0" * 32, limit=1)
+            ok(f"Pending approvals: GET {api.GENERIC_APPROVALS}?approverId=… answers")
+        except TenantError as exc:
+            bad(f"Pending approvals: GET {api.GENERIC_APPROVALS}: {exc}")
 
     print(f"\n{len(problems)} problem(s), {len(warnings)} warning(s).")
     return 1 if problems else 0
@@ -266,11 +272,27 @@ def cmd_test(cfg: config_mod.Config, a: argparse.Namespace) -> int:
         print(f"Refusing: {departed['name']} already owns {already}. Test with an identity who owns nothing.")
         return 1
 
+    if cfg.pending_approvals:
+        theirs = ops.pending_approvals(tenant, departed["id"])
+        if theirs:
+            print(f"Refusing: {departed['name']} has {len(theirs)} pending approval(s), which the workflow would move. "
+                  "Test with an identity who has none.")
+            return 1
+    if a.approval_for and (a.no_objects or not cfg.pending_approvals):
+        print("--approval-for needs the test objects and pendingApprovals on.")
+        return 1
+    requestee = ops.resolve_identity(tenant, a.approval_for) if a.approval_for else None
+
     made = {} if a.no_objects else ops.create_test_objects(tenant, prefix, departed["id"])
     print("No test objects (--no-objects): every 'Owns any …?' check should skip its loop." if a.no_objects else
           "Created (owned by the departed identity): " + ", ".join(o["name"] for o in made.values()))
-    passed = False
+    passed, approvals = False, {}
     try:
+        if requestee:
+            approvals = ops.make_test_approvals(tenant, made, departed["id"], requestee["id"],
+                                                timeout=a.approval_timeout)
+            print(f"Pending for {departed['name']}: the access profile's owner approval (direct) and the role's "
+                  "governance-group approval (must stay with the group)")
         ex = ops.run_test(tenant, existing["id"], wf.test_input(departed["id"], departed["name"],
                                                                 cfg.termination_states[0]), timeout=a.timeout)
         print(f"Execution {ex['id']}: {ex.get('status')}")
@@ -279,6 +301,13 @@ def cmd_test(cfg: config_mod.Config, a: argparse.Namespace) -> int:
         for k, o in made.items():
             should = departed["id"] if (expect_failure or k not in cfg.object_types) else want_id
             checks.append((owners[k] == should, f"{o['name']}: owner {owners[k]} (expected {should})"))
+        if approvals:
+            direct = ops.approval_assignees(tenant, approvals["direct"]["id"])
+            should = departed["id"] if expect_failure else want_id
+            checks.append((direct == [should], f"direct approval: assigned to {direct} (expected [{should}])"))
+            group = ops.approval_assignees(tenant, approvals["group"]["id"])
+            checks.append((group == [made["governanceGroups"]["id"]],
+                           f"group approval: assigned to {group} (expected the test governance group)"))
         status_ok = ex.get("status") == ("Failed" if expect_failure else "Completed")
         checks.append((status_ok, f"run status {ex.get('status')} (expected {'Failed' if expect_failure else 'Completed'})"))
         for good, line in checks:
@@ -289,6 +318,11 @@ def cmd_test(cfg: config_mod.Config, a: argparse.Namespace) -> int:
             for line in ops.history_summary(ops.history(tenant, ex["id"])):
                 print("  " + line)
     finally:
+        for approval in approvals.values():
+            try:
+                ops.cancel_test_request(tenant, approval)
+            except TenantError as exc:
+                print(f"could not cancel the test request behind approval {approval['id']}: {exc}")
         if a.keep:
             print("Kept the test objects (--keep); the next test run removes them.")
         else:
@@ -357,6 +391,10 @@ def main(argv: list[str] | None = None) -> int:
                                                              "the departed identity owns nothing")
     p.add_argument("--history", action="store_true", help="print the execution history even when the test passes")
     p.add_argument("--timeout", type=float, default=240, help="seconds to wait for the run (default 240)")
+    p.add_argument("--approval-for", help="test identity (ID, username or email) to request the test items for, "
+                                          "so the departed identity has real pending approvals (takes minutes)")
+    p.add_argument("--approval-timeout", type=float, default=900,
+                   help="seconds to wait for SailPoint to create the test approvals (default 900)")
     add("status", "show the workflow and its recent runs")
     p = add("uninstall", "delete the workflow")
     p.add_argument("--yes", action="store_true", help="don't ask for confirmation")
