@@ -107,7 +107,6 @@
           <span class="group__meta">
             {{ plural(g.people, 'person', 'people') }} × {{ plural(g.items, 'item') }}
             @if (g.requester) { · requested by {{ g.requester }} }
-            @if (g.bulkApprover) { · approved by {{ g.bulkApprover }} }
             · since {{ day(g.oldest) }}
             @if (g.earliestDue) { · due {{ day(g.earliestDue) }} }
           </span>

@@ -1,58 +1,10 @@
 <div class="step">
   <p class="step__intro">
-    One person approves or denies the whole request. It can't be you: SailPoint hands self-approvals to another administrator.
+    The INC number and your justification go on every access request. Each item is then approved the way it's set
+    up in SailPoint (its owner, the person's manager, …); items without an approval of their own are granted right away.
   </p>
 
-  <div class="columns">
-    <section class="panel">
-      <span class="field__label" id="approver-label">Approver</span>
-      @if (store.approver(); as a) {
-        <div class="approver" [class.approver--bad]="isSelf() || isOnRequest()">
-          <div class="result__text">
-            <span class="result__name">{{ a.name }}</span>
-            <span class="result__meta">{{ a.email || a.detail || '' }}</span>
-          </div>
-          <p-button label="Change" size="small" [text]="true" (onClick)="store.approver.set(null)" />
-        </div>
-        @if (isSelf()) {
-          <p-message severity="error" size="small" text="You can't approve your own request. Choose someone else." />
-        } @else if (isOnRequest()) {
-          <p-message severity="error" size="small"
-            [text]="a.name + ' is one of the people on this request, and nobody approves their own access. Choose someone else.'" />
-        }
-      } @else {
-        <input
-          pInputText
-          type="search"
-          class="field__input"
-          aria-labelledby="approver-label"
-          autocomplete="off"
-          placeholder="Search by name, username or email"
-          [ngModel]="store.approverQuery()"
-          (ngModelChange)="onQuery($event)"
-        />
-        @if (searching()) {
-          <p class="muted">Searching…</p>
-        }
-        @if (store.approverResults().length) {
-          <ul class="results" aria-label="Approver search results">
-            @for (p of store.approverResults(); track p.id) {
-              <li class="result">
-                <div class="result__text">
-                  <span class="result__name">{{ p.name }}{{ isMe(p) ? ' (you)' : onRequest(p) ? ' (on this request)' : '' }}</span>
-                  <span class="result__meta">{{ p.email || p.detail || '' }}</span>
-                </div>
-                <p-button label="Choose" size="small" [outlined]="true" [disabled]="isMe(p) || onRequest(p)" (onClick)="choose(p)" />
-              </li>
-            }
-          </ul>
-        }
-      }
-      @if (error()) {
-        <p-message severity="error" size="small" [text]="error()" />
-      }
-    </section>
-
+  <div class="columns columns--one">
     <section class="panel">
       <label class="field__label" for="inc">ServiceNow incident (INC) number</label>
       <input
@@ -71,7 +23,7 @@
       @if (incError()) {
         <p-message id="inc-help" severity="error" size="small" [text]="incError()" />
       } @else if (incOk()) {
-        <small id="inc-help" class="field__ok">✓ Valid INC number. It goes on every access item's comment.</small>
+        <small id="inc-help" class="field__ok">✓ Valid INC number. It goes on every access request's comment.</small>
       } @else {
         <small id="inc-help" class="field__hint">{{ cfg().incMessage }}</small>
       }
@@ -82,12 +34,12 @@
         pTextarea
         rows="4"
         class="field__input"
-        [maxlength]="store.justificationMax()"
+        [maxlength]="store.justificationMax"
         placeholder="Why do these people need this access?"
         [ngModel]="store.justification()"
         (ngModelChange)="store.justification.set($event)"
       ></textarea>
-      <small class="field__hint">Shown to the approver and stored on every access request. {{ store.justification().length }}/{{ store.justificationMax() }}</small>
+      <small class="field__hint">Stored on every access request, where the item approvers see it. {{ store.justification().length }}/{{ store.justificationMax }}</small>
     </section>
   </div>
 

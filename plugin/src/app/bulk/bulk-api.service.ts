@@ -5,8 +5,8 @@ import { SailpointPluginService } from '@core';
 import { describeError } from './errors';
 import type { RuntimeConfig } from './runtime-config';
 import {
-  APPROVAL_NAME_PREFIX, catalogOptions, entitlementFilter, filterQuote, requestableObjectTypes, type AccessItem,
-  type CatalogOption, type LauncherFormAccess,
+  catalogOptions, entitlementFilter, filterQuote, requestableObjectTypes, type AccessItem, type CatalogOption,
+  type LauncherFormAccess,
 } from './rules';
 
 /**
@@ -30,50 +30,34 @@ export interface Resolution {
   ambiguous: { token: string; matches: Person[] }[];
 }
 
-/**
- * What POST /workflows/v1/{id}/test receives as `input`: the plugin workflow's trigger
- * contract (CONTRACTS §3). One run per part; every field is always present.
- */
-export interface BulkInput {
-  /** 1..partSize identity IDs (at most 250, SailPoint's loop limit). */
-  people: string[];
-  items: AccessItem[];
-  approverId: string;
-  requesterId: string;
-  inc: string;
-  justification: string;
-  /** 1-based part number, the number of parts, and partLabel(part, parts) ("" when parts is 1). */
-  part: number;
-  parts: number;
-  partLabel: string;
-  /** Manage Access v2 removeDuration: "" = permanent, e.g. "30d" or "720h". */
-  removeDuration: string;
-  /** "Permanent", "Temporary: 30 days" or "Temporary: until 2026-11-07". */
-  accessLabel: string;
-}
-
 /** Progress of a pasted-list lookup: tokens looked up so far, out of all of them. */
 export type ResolveProgress = (done: number, total: number) => void;
 
-export interface Execution {
-  id: string;
-  status: 'Running' | 'Completed' | 'Failed' | 'Canceled' | string;
-}
-
 /**
  * What the page writes into the Launcher form when it submits through the Launcher (CONTRACTS §9): the
- * Launchpad's own formData shapes (an approver one-item list, a TOGGLE boolean, a TEXT string, a SELECT list),
- * plus the hidden `partLabel`. The 30-person and catalog-option limits are the Launchpad picker's only; the
- * API takes up to 250 people and any `{id, type, name}` item (verified live).
+ * Launchpad's own formData shapes (a TOGGLE boolean, a TEXT string, a SELECT list), plus the hidden `partLabel`.
+ * The 30-person and catalog-option limits are the Launchpad picker's only; the API takes up to 250 people and any
+ * `{id, type, name}` item (verified live).
  */
 export interface LauncherFormData extends LauncherFormAccess {
   people: string[];
   items: AccessItem[];
-  approver: string[];
   inc: string;
   justification: string;
-  /** "" or " (2/3)"; the Launcher workflow names the approval with it. */
+  /** "" or " (2/3)"; the Launcher workflow shows it next to the INC. */
   partLabel: string;
+}
+
+/**
+ * How one direct access request went (POST /access-requests): SailPoint answers with one entry per person and item
+ * it filed (`newRequests`, verified live as a non-admin), and lists the ones a person already has pending
+ * (`existingRequests`).
+ */
+export interface DirectRequestResult {
+  /** Access requests filed. */
+  created: number;
+  /** Person and item pairs SailPoint skipped because the same request is already open. */
+  existing: number;
 }
 
 /** A block of a Launcher's interactive process: its FORM (config.formInstanceId), then its messages. */
@@ -89,15 +73,12 @@ export interface LauncherBlock {
 interface FormInstance {
   state?: string;
   formErrors?: { key?: string; messages?: { text?: string }[] }[];
-  createdBy?: { type?: string; id?: string };
 }
 
-/** How a Launcher form submission went: its state, the form's own validation errors, and the run it started. */
+/** How a Launcher form submission went: its state, and the form's own validation errors. */
 export interface LauncherFormResult {
   state: string;
   errors: { key: string; messages: string[] }[];
-  /** The workflow run behind the form (the form instance's createdBy), which the approval references. */
-  executionId: string | null;
 }
 
 /** How long to wait for the Launcher's form to appear after the launch. */
@@ -105,61 +86,47 @@ const LAUNCHER_FORM_TIMEOUT_MS = 30_000;
 
 const plainText = (v: unknown) => (typeof v === 'string' ? v.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() : '');
 
-/**
- * The error message the Launcher's workflow showed when it stopped before the approval (its "Reject …" steps
- * post an ERROR interactive message), or null. Best effort: only the FORM block's shape is verified
- * (`{type, config, data: {title, message}}`), so the category is looked for in `config` and `data`.
- */
-export function launcherStopMessage(blocks: LauncherBlock[]): string | null {
+/** The first message block of a category ("ERROR" or "INFO") the Launcher's workflow posted, as plain text. */
+function launcherMessage(blocks: LauncherBlock[], wanted: 'ERROR' | 'INFO'): string | null {
   for (const b of blocks) {
     if (b.type === 'FORM') continue;
     const category = String(b.config?.['category'] ?? b.data?.['category'] ?? '').toUpperCase();
-    if (category !== 'ERROR' && !/ERROR/i.test(b.type ?? '')) continue;
+    if (category !== wanted && !new RegExp(wanted, 'i').test(b.type ?? '')) continue;
     const title = plainText(b.data?.['title'] ?? b.config?.['title']);
     const message = plainText(b.data?.['message'] ?? b.config?.['message']);
-    return [title, message].filter(Boolean).join(': ') || 'The Launcher workflow stopped with an error.';
+    return [title, message].filter(Boolean).join(': ') || (wanted === 'ERROR'
+      ? 'The Launcher workflow stopped with an error.' : 'The Launcher workflow accepted the request.');
   }
   return null;
 }
 
-/** The fields of a /generic-approvals/v1 row the page reads. */
-type Who = { name?: string };
 /**
- * The approver the requester chose. While pending that is `assignedTo`. If the task was
- * later reassigned (an admin acting on the approver's behalf shows up as a manual
- * reassignment), the original choice is the first `reassignedFrom`; otherwise `approvers`.
+ * The error message the Launcher's workflow showed when it stopped before requesting anything (its "Reject …" steps
+ * post an ERROR interactive message), or null. Best effort: only the FORM block's shape is verified
+ * (`{type, config, data: {title, message}}`), so the category is looked for in `config` and `data`.
  */
-export function assignedApproverNames(a: {
-  assignedTo?: Who[] | null;
-  approvers?: Who[];
-  reassignmentHistory?: { reassignedFrom?: Who }[] | null;
-}): string[] {
-  const original = a.reassignmentHistory?.[0]?.reassignedFrom;
-  const people = a.assignedTo?.length ? a.assignedTo : original ? [original] : a.approvers ?? [];
-  return people.map((x) => x.name).filter((n): n is string => !!n);
+export function launcherStopMessage(blocks: LauncherBlock[]): string | null {
+  return launcherMessage(blocks, 'ERROR');
 }
 
+/** The message the Launcher's workflow showed once it passed every check ("Requested: …" or, dry run, "Checked: …"). */
+export function launcherInfoMessage(blocks: LauncherBlock[]): string | null {
+  return launcherMessage(blocks, 'INFO');
+}
+
+/** The fields of a /generic-approvals/v1 row the Approvals tab reads (item access-request approvals). */
 export interface GenericApproval {
   id: string;
   name?: { value: string; locale?: string }[];
-  description?: { value: string }[];
   status: string;
   createdDate?: string;
-  completedDate?: string | null;
+  /** Who asked: the signed-in requester for direct requests, the Launcher workflow's owner for Launcher ones. */
   requester?: { identityID?: string; name?: string };
-  /** Who the approval was assigned to (the chosen approver). */
-  assignedTo?: { identityID?: string; name?: string }[] | null;
-  /** Present when the task was reassigned (e.g. an admin decided on the approver's behalf). */
-  reassignmentHistory?: { reassignedFrom?: { name?: string } }[] | null;
-  /** Who acted on it. An admin deciding on someone's behalf shows up here, not the assignee. */
-  approvers?: { identityID?: string; name?: string }[];
   /** Who decided. Only the single GET has these; the list leaves them empty. */
   approvedBy?: { identityID?: string; name?: string }[] | null;
   rejectedBy?: { identityID?: string; name?: string }[] | null;
-  referenceData?: { id: string; type: string }[];
   /** Only with include-comments=true (and then `assignedTo` is left out). */
   comments?: { comment?: string; author?: { name?: string } }[];
-  // Access-request approvals (type ACCESS_REQUEST_APPROVAL), read by the Approvals tab:
   type?: string;
   /** The person who would get the access. */
   requestee?: { identityID?: string; name?: string } | null;
@@ -212,6 +179,8 @@ export interface AccessRequestStatus {
   requesterComment?: { comment?: string } | null;
   /** When temporary access is removed (null or missing = permanent). */
   removeDate?: string | null;
+  /** The item's approvals so far (verified live): who it's with now while PENDING, and the scheme (e.g. SOURCE_OWNER). */
+  approvalDetails?: { status?: string; scheme?: string; currentOwner?: { name?: string } | null }[] | null;
 }
 
 /**
@@ -719,27 +688,35 @@ export class BulkApiService {
     return [...unique.values()];
   }
 
-  // ── Workflow ─────────────────────────────────────────────────────────────
-  async workflowId(cfg: RuntimeConfig): Promise<string> {
-    if (cfg.workflowId) return cfg.workflowId;
-    const flows = await this.plugin.get<Row[]>(`${API.workflows}?limit=250`);
-    const hit = (flows ?? []).find((w) => w['name'] === cfg.workflowName);
-    if (!hit) throw new Error(`The workflow "${cfg.workflowName}" is not installed in this tenant. Run plugin/install.py.`);
-    return String(hit['id']);
+  // ── Who may submit ───────────────────────────────────────────────────────
+  /**
+   * Whether the signed-in user holds the Launcher Access profile (null: none is installed, so nobody is turned
+   * away). A non-admin may ask requestable-objects about their own access (verified live: `requestStatus` ASSIGNED).
+   */
+  async hasLauncherAccess(cfg: Pick<RuntimeConfig, 'launcherAccessId'>, me: string): Promise<boolean | null> {
+    if (!cfg.launcherAccessId) return null;
+    const filter = encodeURIComponent(`id eq ${quoted(cfg.launcherAccessId)}`);
+    const rows = await retry(() => this.plugin.get<Row[]>(
+      `${API.requestableObjects}?identity-id=${encodeURIComponent(me)}&types=ACCESS_PROFILE&limit=1&filters=${filter}`));
+    return (rows ?? []).some((r) => r['requestStatus'] === 'ASSIGNED');
   }
 
-  /** Start the plugin workflow through the workflow test endpoint (needs the right to test workflows). */
-  async submit(workflowId: string, input: BulkInput): Promise<string> {
-    const started = await this.plugin.post<{ workflowExecutionId?: string }>(
-      `${API.workflows}/${encodeURIComponent(workflowId)}/test`,
-      { input },
-    );
-    if (!started?.workflowExecutionId) throw new Error('The workflow did not start (no execution ID returned).');
-    return started.workflowExecutionId;
-  }
-
-  execution(id: string): Promise<Execution> {
-    return this.plugin.get<Execution>(`${API.workflowExecutions}/${encodeURIComponent(id)}`);
+  // ── Submitting directly (CONTRACTS §9; verified live as a non-admin) ──────
+  /**
+   * File the access requests as the signed-in user: every item for every person (at most 10 people per call),
+   * each item carrying the bulk comment and, for temporary access, its removal date. Each request then goes
+   * through the item's own approval, as SailPoint has it set up.
+   */
+  async requestAccess(people: string[], items: AccessItem[], comment: string,
+                      removeDate: string | null): Promise<DirectRequestResult> {
+    const body = {
+      requestedFor: people,
+      requestType: 'GRANT_ACCESS',
+      requestedItems: items.map((i) => ({ type: i.type, id: i.id, comment, ...(removeDate ? { removeDate } : {}) })),
+    };
+    const res = await this.plugin.post<{ newRequests?: unknown[]; existingRequests?: unknown[] } | null>(
+      API.accessRequests, body);
+    return { created: res?.newRequests?.length ?? 0, existing: res?.existingRequests?.length ?? 0 };
   }
 
   // ── Submitting through the Launcher (CONTRACTS §9; every call verified live as a non-admin) ──
@@ -796,50 +773,12 @@ export class BulkApiService {
       current = (await this.plugin.get<FormInstance>(path)) ?? {};
       if (current.state === 'SUBMITTED' || current.state === 'COMPLETED' || current.formErrors?.length) break;
     }
-    const createdBy = current.createdBy;
     return {
       state: current.state ?? 'UNKNOWN',
       errors: (current.formErrors ?? []).map((e) => ({
         key: e.key ?? '', messages: (e.messages ?? []).map((m) => m.text ?? '').filter(Boolean),
       })),
-      executionId: createdBy?.type === 'WORKFLOW_EXECUTION' && createdBy.id ? createdBy.id : null,
     };
-  }
-
-  /**
-   * The generic approvals `requesterId` requested (the workflow files the bulk approval in the name of whoever
-   * submitted), newest first. It's the `requesterId` *query parameter*: verified live, it returns a non-admin's own
-   * approvals (another ID → 400) and keeps an admin to that requester, while `filters=requesterId eq …` returns
-   * nothing for a non-admin.
-   */
-  async approvals(requesterId: string): Promise<GenericApproval[]> {
-    return (await this.plugin.get<GenericApproval[]>(
-      `${API.genericApprovals}?limit=250&sorters=-createdDate&requesterId=${encodeURIComponent(requesterId)}`)) ?? [];
-  }
-
-  /**
-   * The user's own bulk approvals with their approvers and deciders. The list call
-   * leaves `approvers`/`approvedBy`/`rejectedBy` out, so the newest `max` are
-   * fetched one by one (the list row is kept if a detail call fails).
-   */
-  async myBulkApprovals(requesterId: string, max = 30, concurrency = 5): Promise<GenericApproval[]> {
-    const mine = (await this.approvals(requesterId))
-      .filter((a) => a.requester?.identityID === requesterId && (a.name?.[0]?.value ?? '').startsWith(APPROVAL_NAME_PREFIX))
-      .sort((a, b) => (b.createdDate ?? '').localeCompare(a.createdDate ?? ''))
-      .slice(0, max);
-    const out = [...mine];
-    let next = 0;
-    const worker = async () => {
-      for (let i = next++; i < mine.length; i = next++) {
-        try {
-          out[i] = { ...mine[i], ...(await this.plugin.get<GenericApproval>(`${API.genericApprovals}/${encodeURIComponent(mine[i].id)}`)) };
-        } catch {
-          /* keep the list row */
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(concurrency, mine.length) }, worker));
-    return out;
   }
 
   approval(id: string): Promise<GenericApproval> {

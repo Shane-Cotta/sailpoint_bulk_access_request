@@ -1,84 +1,75 @@
-import { DEMO_APPROVALS, DEMO_CONFIG, DEMO_ME, DEMO_REQUESTS } from '../demo/fixtures';
-import { combinedStatus, executionIdOf, groupByInc, isBulkApproval, latestSubmission, statusLabel, type Submission } from './my-requests';
+import { DEMO_CONFIG, DEMO_ME, DEMO_REQUESTS, demoPerson, demoRequest } from '../demo/fixtures';
+import { groupByInc, groupStatus, requestLabel, requestStatus, statusLabel } from './my-requests';
 
 describe('My bulk requests grouping', () => {
-  const groups = groupByInc(DEMO_CONFIG, DEMO_ME.id, DEMO_APPROVALS, DEMO_REQUESTS);
+  const groups = groupByInc(DEMO_CONFIG, DEMO_ME.id, DEMO_REQUESTS);
 
-  it('groups approvals and access requests by INC, newest first', () => {
+  it('groups the access requests by INC, newest first', () => {
     expect(groups.map((g) => [g.inc, g.status])).toEqual([
-      ['INC0048213', 'PENDING'],
-      ['INC0048120', 'PENDING'],
-      ['INC0047950', 'APPROVED'],
-      ['INC0047711', 'REJECTED'],
+      ['INC0048120', 'WAITING'],
+      ['INC0047950', 'WAITING'],
+      ['INC0047711', 'NOT_GRANTED'],
     ]);
   });
 
-  it('keeps every submission of a re-submitted INC, latest decision first', () => {
-    const resubmitted = groups.find((g) => g.inc === 'INC0047711')!;
-    expect(resubmitted.submissions.map((s) => s.status)).toEqual(['REJECTED', 'CANCELLED']);
-    expect(resubmitted.requests).toEqual([]);
+  it('counts people, items and requests per status', () => {
+    const big = groups.find((g) => g.inc === 'INC0048120')!;
+    expect([big.people, big.items, big.waiting, big.done, big.notGranted]).toEqual([500, 1, 10, 490, 0]);
+    const small = groups.find((g) => g.inc === 'INC0047950')!;
+    expect([small.people, small.items, small.waiting, small.done]).toEqual([3, 2, 1, 5]);
+    expect(small.lastActivity).toBe('2026-10-06T10:03:00Z');
   });
 
-  it('counts the people and items an approved request was filed for', () => {
-    const approved = groups.find((g) => g.inc === 'INC0047950')!;
-    expect(approved.people).toBe(3);
-    expect(approved.items).toBe(2);
-    expect(approved.submissions[0].decidedBy).toBe('Carmen Ruiz');
+  it('reads the access label and justification from the bulk comment', () => {
+    const big = groups.find((g) => g.inc === 'INC0048120')!;
+    expect(big.accessLabel).toBe('Temporary: 30 days');
+    expect(big.justification).toBe('Remote reading during the PACS cutover');
   });
 
-  it("ignores other people's approvals, other approvals, and requests without an INC", () => {
-    const foreign = { ...DEMO_APPROVALS[0], requester: { identityID: 'someone-else' } };
-    const unrelated = { ...DEMO_APPROVALS[0], name: [{ value: 'Quarterly review' }] };
-    expect(groupByInc(DEMO_CONFIG, DEMO_ME.id, [foreign, unrelated], [])).toEqual([]);
-    expect(isBulkApproval(unrelated)).toBe(false);
-    expect(groups.some((g) => g.requests.some((r) => r.item === 'Zoom - Licensed User'))).toBe(false);
-  });
-
-  it('a request with requests but no approval still shows, as Requested', () => {
-    const only = groupByInc(DEMO_CONFIG, DEMO_ME.id, [], DEMO_REQUESTS);
-    expect(only.map((g) => [g.inc, g.status])).toEqual([['INC0048120', 'REQUESTED'], ['INC0047950', 'REQUESTED']]);
-  });
-
-  it('reads the execution ID from the approval and labels statuses', () => {
-    expect(executionIdOf(DEMO_APPROVALS[0])).toBe('e0000000-0000-4000-8000-000000000001');
-    expect(statusLabel('REJECTED')).toEqual({ label: 'Denied', severity: 'danger' });
-  });
-
-  it('groups the parts of one INC and counts how many are approved', () => {
-    const split = groups.find((g) => g.inc === 'INC0048120')!;
-    expect(split.latest.map((s) => [s.part, s.parts, s.status])).toEqual([
-      [1, 3, 'APPROVED'], [2, 3, 'APPROVED'], [3, 3, 'PENDING'],
+  it('says who a waiting request waits for, sorted by person then item', () => {
+    const small = groups.find((g) => g.inc === 'INC0047950')!;
+    expect(small.requests.map((r) => [r.person, r.item])).toEqual([
+      ['Amelia Thornton', 'PACS Radiologist Workstation'], ['Amelia Thornton', 'Radiology Department Staff'],
+      ['Bruno Marchetti', 'PACS Radiologist Workstation'], ['Bruno Marchetti', 'Radiology Department Staff'],
+      ['Claire Beaumont', 'PACS Radiologist Workstation'], ['Claire Beaumont', 'Radiology Department Staff'],
     ]);
-    expect(split.approvedParts).toBe(2);
-    expect(split.status).toBe('PENDING');
-    expect(split.people).toBe(500);                          // parts 1 and 2 were requested
-    const single = groups.find((g) => g.inc === 'INC0047950')!;
-    expect(single.latest).toHaveLength(1);
-    expect(single.latest[0].part).toBeNull();
+    const waiting = small.requests.find((r) => r.status === 'WAITING')!;
+    expect(waiting.waitingFor).toEqual(['Aisha Bello']);
+    expect(requestLabel(waiting)).toEqual({ label: 'Waiting for Aisha Bello', severity: 'warn' });
   });
 
   it('shows when temporary access ends', () => {
-    const split = groups.find((g) => g.inc === 'INC0048120')!;
-    expect(split.requests[0].removeDate).toMatch(/^2026-11-06T/);
+    expect(groups.find((g) => g.inc === 'INC0048120')!.requests[0].removeDate).toMatch(/^2026-11-06T/);
     expect(groups.find((g) => g.inc === 'INC0047950')!.requests[0].removeDate).toBeNull();
   });
 
-  it("doesn't mix a re-submitted INC's parts with its earlier attempt", () => {
-    const sub = (part: number | null, parts: number | null, status: string, created: string): Submission => ({
-      approvalId: `${part}-${created}`, executionId: null, status, approver: 'A', decidedBy: null, created, completed: null,
-      description: '', part, parts,
-    });
-    const newestFirst = [
-      sub(2, 2, 'PENDING', '2026-10-08T10:00:02Z'), sub(1, 2, 'APPROVED', '2026-10-08T10:00:01Z'),
-      sub(3, 3, 'REJECTED', '2026-10-01T10:00:03Z'), sub(2, 3, 'REJECTED', '2026-10-01T10:00:02Z'),
-    ];
-    expect(latestSubmission(newestFirst).map((s) => s.approvalId)).toEqual([
-      '1-2026-10-08T10:00:01Z', '2-2026-10-08T10:00:02Z',
-    ]);
-    expect(latestSubmission([sub(null, null, 'APPROVED', 'x'), sub(1, 2, 'REJECTED', 'w')])).toHaveLength(1);
-    expect(combinedStatus(['APPROVED', 'APPROVED'])).toBe('APPROVED');
-    expect(combinedStatus(['APPROVED', 'PENDING'])).toBe('PENDING');
-    expect(combinedStatus(['APPROVED', 'REJECTED'])).toBe('MIXED');
-    expect(statusLabel('MIXED').label).toBe('Partly approved');
+  it("ignores other people's requests and requests without an INC", () => {
+    const foreign = { ...DEMO_REQUESTS[0], requester: { id: 'someone-else' } };
+    expect(groupByInc(DEMO_CONFIG, DEMO_ME.id, [foreign])).toEqual([]);
+    expect(groups.some((g) => g.requests.some((r) => r.item === 'Zoom - Licensed User'))).toBe(false);
+  });
+
+  it('still groups requests filed while bulk requests had an approver (the old comment)', () => {
+    const old = demoRequest(demoPerson('Alan Bradley'), 'VPN - Remote Access', 'REQUEST_COMPLETED', '2026-09-01T10:00:00Z',
+      'INC0040000 | Bulk access request by Jordan Lee | Approved by Aisha Bello | Permanent | Old request');
+    expect(groupByInc(DEMO_CONFIG, DEMO_ME.id, [old]).map((g) => [g.inc, g.status, g.justification]))
+      .toEqual([['INC0040000', 'DONE', 'Old request']]);
+  });
+
+  it('turns SailPoint states into plain statuses', () => {
+    expect(requestStatus({ state: 'REQUEST_COMPLETED' })).toBe('DONE');
+    expect(requestStatus({ state: 'REJECTED' })).toBe('NOT_GRANTED');
+    expect(requestStatus({ state: 'CANCELLED' })).toBe('NOT_GRANTED');
+    expect(requestStatus({ state: 'EXECUTING', approvalDetails: [{ status: 'PENDING' }] })).toBe('WAITING');
+    expect(requestStatus({ state: 'EXECUTING', approvalDetails: [{ status: 'APPROVED' }] })).toBe('IN_PROGRESS');
+    expect(requestStatus({ state: 'EXECUTING', approvalDetails: null })).toBe('IN_PROGRESS');
+    expect(groupStatus([])).toBe('IN_PROGRESS');
+    expect(groupStatus(['DONE', 'DONE'])).toBe('DONE');
+    expect(groupStatus(['DONE', 'WAITING'])).toBe('WAITING');
+    expect(groupStatus(['DONE', 'NOT_GRANTED'])).toBe('PARTLY_DONE');
+    expect(groupStatus(['DONE', 'IN_PROGRESS'])).toBe('IN_PROGRESS');
+    expect(statusLabel('PARTLY_DONE')).toEqual({ label: 'Partly granted', severity: 'warn' });
+    expect(requestLabel({ status: 'NOT_GRANTED', state: 'REJECTED', waitingFor: [] }).label).toBe('Rejected');
+    expect(requestLabel({ status: 'IN_PROGRESS', state: 'EXECUTING', waitingFor: [] }).label).toBe('Provisioning');
   });
 });

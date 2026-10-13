@@ -120,11 +120,11 @@
         <p-button label="Remove all" size="small" severity="secondary" [text]="true" (onClick)="store.clearPeople()" />
       }
     </div>
-    @if (partsCount() > 1) {
+    @if (cfg().submit === 'launcher' && partsCount() > 1) {
       <p-message severity="info" size="small" styleClass="parts-note">
         <div>
-          <strong>{{ store.people().length.toLocaleString() }} people → sent as {{ partsCount() }} approvals of up to {{ cfg().partSize }}, same INC.</strong>
-          SailPoint's workflow loop handles at most {{ cfg().partSize }} people per run; the approver decides each part.
+          <strong>{{ store.people().length.toLocaleString() }} people → sent as {{ partsCount() }} Launcher runs of up to {{ cfg().partSize }}, same INC.</strong>
+          SailPoint's workflow loop handles at most {{ cfg().partSize }} people per run.
         </div>
       </p-message>
     }

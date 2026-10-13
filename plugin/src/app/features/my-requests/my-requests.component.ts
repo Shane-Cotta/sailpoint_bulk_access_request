@@ -10,12 +10,12 @@ import { TagModule } from 'primeng/tag';
 import { BulkApiService } from '../../bulk/bulk-api.service';
 import { BulkConfigService } from '../../bulk/bulk-config.service';
 import { describeError } from '../../bulk/errors';
-import { groupByInc, requestStateLabel, statusLabel, type BulkGroup, type RequestRow } from '../../bulk/my-requests';
+import { groupByInc, requestLabel, statusLabel, type BulkGroup, type RequestRow } from '../../bulk/my-requests';
 
 /** Access-request rows shown per group before "Show all" (a 600-person request has 600+). */
 const ROWS_SHOWN = 10;
 
-/** The My bulk requests tab: the signed-in user's bulk requests, grouped by INC. */
+/** The My bulk requests tab: the access requests the signed-in user filed, grouped by INC. */
 @Component({
   selector: 'app-my-requests',
   imports: [ButtonModule, FormsModule, InputTextModule, MessageModule, SkeletonModule, TagModule],
@@ -26,7 +26,6 @@ export class MyRequestsComponent {
   private readonly api = inject(BulkApiService);
   private readonly plugin = inject(SailpointPluginService);
   protected readonly cfg = inject(BulkConfigService).config;
-  protected readonly isAdmin = computed(() => this.plugin.user()?.capabilities?.isOrgAdmin ?? false);
 
   protected readonly groups = signal<BulkGroup[] | null>(null);
   protected readonly loading = signal(false);
@@ -44,14 +43,14 @@ export class MyRequestsComponent {
     const all = this.groups() ?? [];
     return {
       total: all.length,
-      pending: all.filter((g) => g.status === 'PENDING').length,
-      approved: all.filter((g) => g.status === 'APPROVED' || g.status === 'REQUESTED' || g.status === 'MIXED').length,
-      denied: all.filter((g) => g.status === 'REJECTED').length,
+      waiting: all.filter((g) => g.status === 'WAITING').length,
+      done: all.filter((g) => g.status === 'DONE' || g.status === 'PARTLY_DONE').length,
+      notGranted: all.filter((g) => g.status === 'NOT_GRANTED').length,
     };
   });
 
   protected readonly statusLabel = statusLabel;
-  protected readonly requestStateLabel = requestStateLabel;
+  protected readonly requestLabel = requestLabel;
 
   constructor() {
     let started = false;
@@ -68,31 +67,17 @@ export class MyRequestsComponent {
     if (!me) return;
     this.loading.set(true);
     this.errors.set([]);
-    const [approvals, requests] = await Promise.allSettled([this.api.myBulkApprovals(me), this.api.myAccessRequests(me)]);
-    const errors: string[] = [];
-    if (approvals.status === 'rejected') errors.push(`Approvals: ${describeError(approvals.reason, 'read', 'your approvals')}`);
-    if (requests.status === 'rejected') errors.push(`Access requests: ${describeError(requests.reason, 'read', 'your access requests')}`);
-    const groups = groupByInc(
-      this.cfg(),
-      me,
-      approvals.status === 'fulfilled' ? approvals.value : [],
-      requests.status === 'fulfilled' ? requests.value : [],
-    );
+    let groups: BulkGroup[] = [];
+    try {
+      groups = groupByInc(this.cfg(), me, await this.api.myAccessRequests(me));
+    } catch (err) {
+      this.errors.set([describeError(err, 'read', 'your access requests')]);
+    }
     this.groups.set(groups);
-    this.errors.set(errors);
     this.loadedAt.set(new Date());
     // Open the newest request so the page shows detail straight away.
     if (groups.length && !this.open().size) this.open.set(new Set([groups[0].inc]));
     this.loading.set(false);
-  }
-
-  protected hasParts(g: BulkGroup): boolean {
-    return g.submissions.some((s) => s.part !== null);
-  }
-
-  /** The latest submission's parts in order (1/3, 2/3, 3/3), then earlier attempts, newest first. */
-  protected approvalRows(g: BulkGroup): BulkGroup['submissions'] {
-    return [...g.latest, ...g.submissions.filter((s) => !g.latest.includes(s))];
   }
 
   protected shownRequests(g: BulkGroup): RequestRow[] {

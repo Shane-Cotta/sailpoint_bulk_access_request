@@ -1,5 +1,4 @@
 import { Component, computed, inject, OnInit, output, signal } from '@angular/core';
-import { SailpointPluginService } from '@core';
 import { ButtonModule } from 'primeng/button';
 import { MessageModule } from 'primeng/message';
 import { ProgressSpinnerModule } from 'primeng/progressspinner';
@@ -8,9 +7,8 @@ import { TagModule } from 'primeng/tag';
 import { BulkApiService } from '../../bulk/bulk-api.service';
 import { BulkConfigService } from '../../bulk/bulk-config.service';
 import { EXISTING_CHECK_MAX, partsSummary, RequestStore, type PartState } from '../../bulk/request-store';
-import { APPROVAL_NAME_PREFIX } from '../../bulk/rules';
 
-/** Step 4: check everything, submit, then follow the approval. */
+/** Step 4: check everything, then submit. Each item is then approved the way it's set up in SailPoint. */
 @Component({
   selector: 'app-review-step',
   imports: [ButtonModule, MessageModule, ProgressSpinnerModule, TagModule],
@@ -21,21 +19,22 @@ export class ReviewStepComponent implements OnInit {
   protected readonly store = inject(RequestStore);
   protected readonly cfg = inject(BulkConfigService).config;
   protected readonly configError = inject(BulkConfigService).error;
-  private readonly plugin = inject(SailpointPluginService);
   private readonly api = inject(BulkApiService);
 
   /** Ask the host page to show the My bulk requests tab. */
   readonly showHistory = output<void>();
 
   protected readonly checking = signal(false);
-  protected readonly isAdmin = computed(() => this.plugin.user()?.capabilities?.isOrgAdmin ?? false);
-  /** Through the Launcher anyone may try (SailPoint checks the Launcher access); the test endpoint is ORG_ADMIN only. */
   protected readonly viaLauncher = computed(() => this.cfg().submit === 'launcher');
-  protected readonly mayStart = computed(() => this.viaLauncher() || this.isAdmin());
-  protected readonly canSubmit = computed(() => !this.store.problems().length && this.mayStart() && !this.configError()
+  protected readonly canSubmit = computed(() => !this.store.problems().length && !this.configError()
     && (!this.store.submission() || this.store.submission()!.state === 'error'));
-  protected readonly canRetry = computed(() => this.mayStart() && !this.configError() && this.store.startFailed().length > 0
-    && !this.store.submission()?.parts.some((p) => p.state === 'queued' || p.state === 'starting'));
+  protected readonly canRetry = computed(() => !this.configError() && this.store.sendFailed().length > 0
+    && !this.store.submission()?.parts.some((p) => p.state === 'queued' || p.state === 'sending'));
+  /** The parts are worth listing: Launcher runs (each has its own answer), or any part that didn't go. */
+  protected readonly showParts = computed(() => {
+    const s = this.store.submission();
+    return !!s && s.parts.length > 1 && (s.submit === 'launcher' || s.parts.some((p) => p.state !== 'requested'));
+  });
 
   /** Chosen entitlements the "already has it" check skips (it needs admin rights for them). */
   protected readonly entitlementsUnchecked = computed(() => !this.api.entitlementsChecked()
@@ -44,14 +43,14 @@ export class ReviewStepComponent implements OnInit {
   /** People shown by name on the review card; the rest are counted. */
   protected readonly previewMax = 5;
   protected readonly existingCheckMax = EXISTING_CHECK_MAX;
-  protected readonly approvalPrefix = APPROVAL_NAME_PREFIX;
   protected readonly summary = computed(() => partsSummary(this.store.submission()?.parts ?? []));
   /** "parts 2 and 3" / "part 2" for the retry banner. */
   protected readonly failedNames = computed(() => {
-    const nums = this.store.startFailed().map((p) => p.part);
+    const nums = this.store.sendFailed().map((p) => p.part);
     if (nums.length === 1) return `part ${nums[0]}`;
     return `parts ${nums.slice(0, -1).join(', ')} and ${nums.at(-1)}`;
   });
+  protected readonly submitLabel = computed(() => (this.cfg().mode === 'live' ? 'Request access' : 'Check it (dry run)'));
 
   /** "Alan Bradley already has ACME Bulk Test Access", grouped per item. */
   protected readonly warnings = computed(() => {
@@ -79,20 +78,13 @@ export class ReviewStepComponent implements OnInit {
     }
   }
 
-  protected requestCount(): number {
-    return this.store.people().length;
-  }
-
   protected partState(state: PartState): { label: string; severity: 'success' | 'warn' | 'danger' | 'info' | 'secondary' } {
     switch (state) {
       case 'queued': return { label: 'Queued', severity: 'secondary' };
-      case 'starting': return { label: 'Starting', severity: 'info' };
-      case 'start-failed': return { label: 'Not started', severity: 'danger' };
-      case 'waiting': return { label: 'Waiting', severity: 'warn' };
-      case 'still-waiting': return { label: 'Still waiting', severity: 'warn' };
-      case 'approved': return { label: 'Approved', severity: 'success' };
-      case 'denied': return { label: 'Not approved', severity: 'danger' };
-      case 'failed': return { label: 'Stopped', severity: 'danger' };
+      case 'sending': return { label: 'Sending', severity: 'info' };
+      case 'requested': return { label: 'Sent', severity: 'success' };
+      case 'failed': return { label: 'Not sent', severity: 'danger' };
+      case 'stopped': return { label: 'Stopped', severity: 'danger' };
     }
   }
 }

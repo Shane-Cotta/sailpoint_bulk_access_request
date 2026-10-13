@@ -2,103 +2,97 @@ import { computed, inject, Injectable, OnDestroy, signal } from '@angular/core';
 import { SailpointPluginService } from '@core';
 
 import {
-  assignedApproverNames, BulkApiService, launcherStopMessage, type BulkInput, type ExistingAccess, type GenericApproval,
-  type LauncherFormData, type Person, type Resolution,
+  BulkApiService, launcherInfoMessage, launcherStopMessage, type ExistingAccess, type LauncherFormData, type Person,
+  type Resolution,
 } from './bulk-api.service';
 import { BulkConfigService } from './bulk-config.service';
-import { approvalName, executionIdOf } from './my-requests';
-import { describeError, describeSubmitError, isLauncherAccessDenied } from './errors';
+import { describeError, describeSubmitError, isLauncherAccessDenied, msgNeedsLauncherAccess } from './errors';
 import {
-  accessLabel, APPROVAL_NAME_PREFIX, clip, justificationMax, launcherFormAccess, partLabel, PERMANENT, removeDuration,
+  accessLabel, bulkComment, JUSTIFICATION_MAX, launcherFormAccess, partLabel, PERMANENT, removeDate, removeDuration,
   splitIntoParts, temporaryModes, validateAccess, validateRequest, type AccessChoice, type CatalogOption,
 } from './rules';
-import { MSG_LAUNCHER_ID, type DurationUnit } from './runtime-config';
+import { ACCESS_REQUEST_PEOPLE_MAX, MSG_LAUNCHER_ID, type DurationUnit, type SubmitMode } from './runtime-config';
 
-/** One part's state: one workflow run and its approval. */
+/**
+ * One part's state. A part is one direct access request (up to 10 people) or one Launcher run (up to `partSize`).
+ * There is no approval of the bulk request itself: once a part is requested, each item is approved the way it's
+ * set up in SailPoint.
+ */
 export type PartState =
-  | 'queued'          // not started yet (parts start one after another)
-  | 'starting'
-  | 'start-failed'    // the test endpoint refused it; can be retried
-  | 'waiting'         // started; approval being created or waiting for the approver
-  | 'approved'
-  | 'denied'          // rejected, expired or cancelled
-  | 'failed'          // the workflow stopped before a decision
-  | 'still-waiting';  // we stopped polling
+  | 'queued'      // not sent yet
+  | 'sending'
+  | 'requested'   // filed (direct), or the Launcher's workflow accepted it (launcher); dry run: checked
+  | 'failed'      // couldn't be sent; can be retried
+  | 'stopped';    // the Launcher's workflow refused it (its message says why)
 
 /** The whole submission, summed up over its parts. */
-export type SubmissionState =
-  | 'starting' | 'waiting' | 'approved' | 'denied' | 'mixed' | 'failed' | 'still-waiting' | 'error';
+export type SubmissionState = 'sending' | 'requested' | 'partial' | 'error';
 
 export interface PartStatus {
   part: number;
   parts: number;
-  /** partLabel(part, parts): "" or " (2/3)". */
+  /** partLabel(part, parts): "" or " (2/3)" (Launcher runs show it next to the INC). */
   label: string;
   /** Identity IDs in this part. */
   people: string[];
   state: PartState;
-  executionId: string | null;
-  /** Launcher mode: the interactive process the launch started (its blocks carry the form and any stop message). */
+  /** Direct: access requests filed, and person/item pairs SailPoint skipped as already pending. */
+  created: number;
+  existing: number;
+  /** Launcher mode: the interactive process the launch started (its blocks carry the form and the workflow's answer). */
   processId: string | null;
-  approvalId: string | null;
-  approver: string;
-  decidedBy: string | null;
+  /** Launcher mode: its form was submitted; the workflow's answer is awaited. */
+  submitted: boolean;
   message: string;
-  /** Polling for this part is over (decided and the workflow finished, or gave up). */
+  /** Nothing more to follow for this part. */
   done: boolean;
 }
 
 export interface SubmissionStatus {
   state: SubmissionState;
+  submit: SubmitMode;
+  dryRun: boolean;
   inc: string;
-  approver: string;
   accessLabel: string;
   message: string;
   startedAt: number;
   parts: PartStatus[];
 }
 
-/** Poll quickly while the approval is being created, then back off. */
-const POLL_SCHEDULE_MS = [2000, 2000, 3000, 3000, 5000, 5000, 10000];
-const POLL_FOR_MS = 10 * 60 * 1000;
+/** Launcher mode: how often, and for how long, the Launcher's answer is looked for. */
+const POLL_SCHEDULE_MS = [2000, 2000, 3000, 3000, 5000];
+const POLL_FOR_MS = 2 * 60 * 1000;
+/** Direct requests in flight at once. */
+const DIRECT_CONCURRENCY = 3;
 /** Above this many people the review step skips the "already has it" check (one call per person). */
 export const EXISTING_CHECK_MAX = 100;
-
-const DECIDED: Partial<Record<string, PartState>> = {
-  APPROVED: 'approved', REJECTED: 'denied', EXPIRED: 'denied', CANCELLED: 'denied',
-};
 
 /** Overall state of a submission from its parts' states. */
 export function overallState(parts: Pick<PartStatus, 'state'>[]): SubmissionState {
   const states = parts.map((p) => p.state);
-  if (states.some((s) => s === 'queued' || s === 'starting')) return 'starting';
-  const started = states.filter((s) => s !== 'start-failed');
-  if (!started.length) return 'error';
-  if (started.some((s) => s === 'waiting')) return 'waiting';
-  if (started.some((s) => s === 'still-waiting')) return 'still-waiting';
-  if (started.every((s) => s === 'approved')) return 'approved';
-  if (started.every((s) => s === 'denied')) return 'denied';
-  if (started.every((s) => s === 'failed')) return 'failed';
-  return 'mixed';
+  if (states.some((s) => s === 'queued' || s === 'sending')) return 'sending';
+  if (states.every((s) => s === 'requested')) return 'requested';
+  if (states.some((s) => s === 'requested')) return 'partial';
+  return 'error';
 }
 
-/** "2 of 3 approved · 1 waiting": the parts per state, for the submitted view. */
+/** "2 of 3 sent · 1 not sent": the parts per state, for the submitted view. */
 export function partsSummary(parts: Pick<PartStatus, 'state'>[]): string {
   const n = parts.length;
   const count = (...states: PartState[]) => parts.filter((p) => states.includes(p.state)).length;
   const bits: [number, string][] = [
-    [count('approved'), 'approved'],
-    [count('waiting', 'still-waiting'), 'waiting'],
-    [count('denied'), 'not approved'],
-    [count('failed'), 'stopped'],
-    [count('queued', 'starting'), 'starting'],
-    [count('start-failed'), 'not started'],
+    [count('requested'), 'sent'],
+    [count('queued', 'sending'), 'sending'],
+    [count('failed'), 'not sent'],
+    [count('stopped'), 'stopped'],
   ];
   const shown = bits.filter(([k]) => k > 0);
   if (!shown.length) return '';
   const [[first, word], ...rest] = shown;
   return [`${first} of ${n} ${word}`, ...rest.map(([k, w]) => `${k} ${w}`)].join(' · ');
 }
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /** The request being built on the New request tab, and its submission. */
 @Injectable({ providedIn: 'root' })
@@ -110,7 +104,6 @@ export class RequestStore implements OnDestroy {
   readonly step = signal(1);
   readonly people = signal<Person[]>([]);
   readonly items = signal<CatalogOption[]>([]);
-  readonly approver = signal<Person | null>(null);
   readonly inc = signal('');
   readonly justification = signal('');
   readonly existing = signal<ExistingAccess[]>([]);
@@ -129,11 +122,9 @@ export class RequestStore implements OnDestroy {
   readonly resolution = signal<Resolution | null>(null);
   readonly chosenFilter = signal('');
   readonly chosenPage = signal(0);
-  readonly approverQuery = signal('');
-  readonly approverResults = signal<Person[]>([]);
   readonly itemFilter = signal('');
 
-  readonly justificationMax = computed(() => justificationMax(this.inc(), this.bulkConfig.config().incExample));
+  readonly justificationMax = JUSTIFICATION_MAX;
   readonly requesterId = computed(() => this.plugin.user()?.id ?? '');
 
   /** The unit shown in the picker: the chosen one, else DAYS if offered, else the first offered. */
@@ -152,28 +143,33 @@ export class RequestStore implements OnDestroy {
   readonly accessProblems = computed(() => validateAccess(this.bulkConfig.config(), this.accessChoice()));
   readonly accessLabel = computed(() => (this.accessProblems().length ? '' : accessLabel(this.accessChoice())));
 
-  /** The chosen people cut into parts of `partSize`, one approval each. */
-  readonly parts = computed(() => splitIntoParts(this.people(), this.bulkConfig.config().partSize, (p) => p.id));
+  /** How the chosen people are sent: direct requests of up to 10 people, or Launcher runs of up to `partSize`. */
+  readonly partSize = computed(() => {
+    const cfg = this.bulkConfig.config();
+    return cfg.submit === 'launcher' ? cfg.partSize : ACCESS_REQUEST_PEOPLE_MAX;
+  });
+  readonly parts = computed(() => splitIntoParts(this.people(), this.partSize(), (p) => p.id));
+  /** How many access requests SailPoint files: one per person and item. */
+  readonly requestCount = computed(() => this.people().length * this.items().length);
+  /** The chosen items SailPoint grants without any approval (the review step warns about them). */
+  readonly grantedAtOnce = computed(() => {
+    const ids = new Set(this.bulkConfig.config().noApproval);
+    return this.items().filter((o) => ids.has(o.value.id));
+  });
 
-  readonly problems = computed(() => {
-    const problems = validateRequest(this.bulkConfig.config(), {
-      requesterId: this.requesterId(),
-      approverId: this.approver()?.id,
+  readonly problems = computed(() => [
+    ...validateRequest(this.bulkConfig.config(), {
       people: this.people().map((p) => p.id),
       items: this.items().map((o) => o.value),
       inc: this.inc(),
-    });
-    problems.push(...this.accessProblems());
-    const max = this.justificationMax();
-    if (!this.justification().trim()) problems.push('Enter a business justification.');
-    else if (this.justification().trim().length > max) problems.push(`Keep the justification to ${max} characters.`);
-    return problems;
-  });
+      justification: this.justification(),
+    }),
+    ...this.accessProblems(),
+  ]);
 
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private workflowId: string | null = null;
-  private starting = false;
-  /** Bumped by every new submission and reset, so a poll that was in flight stops. */
+  private sending = false;
+  /** Bumped by every new submission and reset, so work that was in flight stops. */
   private generation = 0;
 
   /** Add people (skipping ones already chosen), up to `peopleMax` when the config sets one. */
@@ -208,122 +204,144 @@ export class RequestStore implements OnDestroy {
     this.existing.set(await this.api.existingAccess(this.people().map((p) => p.id), this.items().map((o) => o.value)));
   }
 
-  /** Start one workflow run per part, one after another, then follow each part's approval. */
+  /** Send every part (direct requests a few at a time; Launcher runs one after another). */
   async submit(): Promise<void> {
-    if (this.problems().length || this.starting) return;
+    if (this.problems().length || this.sending) return;
     const state = this.submission()?.state;
     if (state && state !== 'error') return;
-    const approver = this.approver()!;
-    const inc = this.inc().trim();
+    const cfg = this.bulkConfig.config();
     const parts = this.parts();
     this.stop();
     this.generation++;
     this.submission.set({
-      state: 'starting', inc, approver: approver.name, accessLabel: accessLabel(this.accessChoice()),
-      message: parts.length > 1 ? `Starting ${parts.length} approvals…` : 'Starting the workflow…', startedAt: Date.now(),
+      state: 'sending', submit: cfg.submit, dryRun: cfg.mode !== 'live', inc: this.inc().trim(),
+      accessLabel: accessLabel(this.accessChoice()), message: 'Checking that you may submit…', startedAt: Date.now(),
       parts: parts.map((list, i) => ({
         part: i + 1, parts: parts.length, label: partLabel(i + 1, parts.length), people: list.map((p) => p.id),
-        state: 'queued', executionId: null, processId: null, approvalId: null, approver: approver.name, decidedBy: null,
-        message: 'Not started yet.', done: false,
+        state: 'queued', created: 0, existing: 0, processId: null, submitted: false,
+        message: 'Not sent yet.', done: false,
       })),
     });
-    await this.start(this.submission()!.parts.map((p) => p.part));
+    await this.send(this.submission()!.parts.map((p) => p.part));
   }
 
-  /** Start again just the parts that didn't start. */
+  /** Send again just the parts that couldn't be sent. */
   async retryFailedParts(): Promise<void> {
     const s = this.submission();
-    if (!s || this.starting) return;
-    const failed = s.parts.filter((p) => p.state === 'start-failed').map((p) => p.part);
+    if (!s || this.sending) return;
+    const failed = s.parts.filter((p) => p.state === 'failed').map((p) => p.part);
     if (!failed.length) return;
-    for (const n of failed) this.patchPart(n, { state: 'queued', message: 'Not started yet.', executionId: null, processId: null });
+    for (const n of failed) {
+      this.patchPart(n, { state: 'queued', message: 'Not sent yet.', processId: null, submitted: false });
+    }
     this.patch({ startedAt: Date.now() });
-    await this.start(failed);
+    await this.send(failed);
   }
 
-  /** The parts that failed to start (for the retry banner). */
-  readonly startFailed = computed(() => (this.submission()?.parts ?? []).filter((p) => p.state === 'start-failed'));
+  /** The parts that couldn't be sent (for the retry banner). */
+  readonly sendFailed = computed(() => (this.submission()?.parts ?? []).filter((p) => p.state === 'failed'));
 
-  private async start(partNumbers: number[]): Promise<void> {
-    const s = this.submission()!;
-    this.starting = true;
+  private async send(partNumbers: number[]): Promise<void> {
+    const cfg = this.bulkConfig.config();
+    const generation = this.generation;
+    this.sending = true;
     this.refresh();
     try {
-      // The same access choice for every part; an end date is converted to hours now.
-      const cfg = this.bulkConfig.config();
-      const viaLauncher = cfg.submit === 'launcher';
       const choice = this.accessChoice();
-      const problems = validateAccess(cfg, choice);
-      let fatal: string | null = problems[0] ?? (viaLauncher && !cfg.launcherId ? MSG_LAUNCHER_ID : null);
-      const duration = fatal ? '' : removeDuration(choice);
-      const label = accessLabel(choice);
-      if (!fatal && !viaLauncher) {
-        try {
-          this.workflowId ??= await this.api.workflowId(cfg);
-        } catch (err) {
-          fatal = describeSubmitError(err, cfg);
-        }
+      let fatal: string | null = validateAccess(cfg, choice)[0]
+        ?? (cfg.submit === 'launcher' && !cfg.launcherId ? MSG_LAUNCHER_ID : null);
+      if (!fatal) fatal = await this.mayNotSubmit();
+      if (fatal) {
+        for (const n of partNumbers) this.patchPart(n, { state: 'failed', message: fatal });
+        return;
       }
-      for (const n of partNumbers) {
-        const part = this.submission()!.parts[n - 1];
-        if (fatal) {
-          this.patchPart(n, { state: 'start-failed', message: fatal });
-          continue;
+      if (cfg.submit === 'launcher') {
+        const duration = removeDuration(choice);
+        for (const n of partNumbers) {
+          if (generation !== this.generation) return;
+          fatal = fatal ?? await this.sendViaLauncher(n, duration);
+          if (fatal) this.patchPart(n, { state: 'failed', message: fatal });
         }
-        if (viaLauncher) {
-          fatal = await this.startViaLauncher(part, s.inc, duration);
-          continue;
-        }
-        this.patchPart(n, { state: 'starting', message: 'Starting…' });
-        const input: BulkInput = {
-          people: part.people,
-          items: this.items().map((o) => o.value),
-          approverId: this.approver()!.id,
-          requesterId: this.requesterId(),
-          inc: s.inc,
-          justification: clip(this.justification(), this.justificationMax()),
-          part: part.part,
-          parts: part.parts,
-          partLabel: part.label,
-          removeDuration: duration,
-          accessLabel: label,
-        };
-        try {
-          const executionId = await this.api.submit(this.workflowId!, input);
-          this.patchPart(n, { state: 'waiting', executionId, message: 'Creating the approval…', done: false });
-          if (!this.timer) this.schedule(0);
-        } catch (err) {
-          const status = (err as { status?: number })?.status;
-          this.patchPart(n, { state: 'start-failed', message: describeSubmitError(err, cfg) });
-          // A permission problem fails every part the same way: don't hammer the endpoint.
-          if (status === 401 || status === 403) fatal = describeSubmitError(err, cfg);
-        }
+      } else {
+        await this.sendDirect(partNumbers, choice, generation);
       }
     } finally {
-      this.starting = false;
+      this.sending = false;
       this.refresh();
     }
   }
 
+  /** Why the user may not submit at all (they don't hold the Launcher Access profile), or null. */
+  private async mayNotSubmit(): Promise<string | null> {
+    const cfg = this.bulkConfig.config();
+    try {
+      return (await this.api.hasLauncherAccess(cfg, this.requesterId())) === false ? msgNeedsLauncherAccess(cfg) : null;
+    } catch (err) {
+      return `Couldn't check that you may submit: ${describeError(err, 'read', 'your access')}`;
+    }
+  }
+
+  /**
+   * Direct: one access request per part (up to 10 people, every item), as the signed-in user, a few at a time.
+   * In dry-run mode nothing is sent: the parts are only checked.
+   */
+  private async sendDirect(partNumbers: number[], choice: AccessChoice, generation: number): Promise<void> {
+    const cfg = this.bulkConfig.config();
+    const s = this.submission()!;
+    const items = this.items().map((o) => o.value);
+    const requester = this.plugin.user()?.displayName || this.plugin.user()?.id || '';
+    const comment = bulkComment(s.inc, requester, accessLabel(choice), this.justification());
+    const until = removeDate(choice);
+    let fatal: string | null = null;
+    const queue = [...partNumbers];
+    const worker = async () => {
+      for (let n = queue.shift(); n !== undefined; n = queue.shift()) {
+        if (generation !== this.generation) return;
+        const part = this.submission()!.parts[n - 1];
+        if (fatal) {
+          this.patchPart(n, { state: 'failed', message: fatal });
+          continue;
+        }
+        if (cfg.mode !== 'live') {
+          this.patchPart(n, { state: 'requested', done: true,
+            message: 'Dry-run mode: everything checks out, but nothing was requested.' });
+          continue;
+        }
+        this.patchPart(n, { state: 'sending', message: 'Requesting…' });
+        try {
+          const result = await this.api.requestAccess(part.people, items, comment, until);
+          this.patchPart(n, { state: 'requested', done: true, created: result.created, existing: result.existing,
+            message: requestedMessage(result.created, result.existing) });
+        } catch (err) {
+          const message = describeSubmitError(err, cfg);
+          this.patchPart(n, { state: 'failed', message });
+          const status = (err as { status?: number })?.status;
+          // A permission problem fails every part the same way: don't send the rest.
+          if (status === 401 || status === 403) fatal = message;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(DIRECT_CONCURRENCY, partNumbers.length) }, worker));
+  }
+
   /**
    * One part through the Launcher, as the signed-in user (CONTRACTS §9): launch it, wait for its form, then
-   * submit the form with this part's people and the hidden part label. Returns a message when no other part
-   * can start either (the user may not use the Launcher), else null.
+   * submit the form with this part's people and the hidden part label; then look for the workflow's answer.
+   * Returns a message when no other part can be sent either (the user may not use the Launcher), else null.
    */
-  private async startViaLauncher(part: PartStatus, inc: string, duration: string): Promise<string | null> {
+  private async sendViaLauncher(n: number, duration: string): Promise<string | null> {
     const cfg = this.bulkConfig.config();
-    const n = part.part;
+    const part = this.submission()!.parts[n - 1];
     const formData: LauncherFormData = {
       people: part.people,
       items: this.items().map((o) => o.value),
-      approver: [this.approver()!.id],
-      inc,
-      justification: clip(this.justification(), this.justificationMax()),
+      inc: this.submission()!.inc,
+      justification: this.justification().trim(),
       ...launcherFormAccess(duration),
       partLabel: part.label,
     };
     try {
-      this.patchPart(n, { state: 'starting', message: 'Starting the Launcher…' });
+      this.patchPart(n, { state: 'sending', message: 'Starting the Launcher…' });
       const processId = await this.api.launch(cfg.launcherId ?? '');
       this.patchPart(n, { processId, message: 'Opening its form…' });
       const formId = await this.api.launcherFormInstance(processId);
@@ -331,16 +349,16 @@ export class RequestStore implements OnDestroy {
       const result = await this.api.submitLauncherForm(formId, formData);
       if (result.state !== 'SUBMITTED' && result.state !== 'COMPLETED') {
         const why = result.errors.map((e) => `${e.key}: ${e.messages.join(' ')}`).join('; ') || `it stayed ${result.state}`;
-        this.patchPart(n, { state: 'start-failed',
-          message: `The Launcher form refused the request (${why}). Nothing was sent for approval.` });
+        this.patchPart(n, { state: 'failed', message: `The Launcher form refused the request (${why}). Nothing was requested.` });
         return null;
       }
-      this.patchPart(n, { state: 'waiting', executionId: result.executionId, message: 'Creating the approval…', done: false });
+      this.patchPart(n, { submitted: true,
+        message: 'Submitted; waiting for the Launcher\'s answer…' });
       if (!this.timer) this.schedule(0);
       return null;
     } catch (err) {
       const message = describeSubmitError(err, cfg);
-      this.patchPart(n, { state: 'start-failed', message });
+      this.patchPart(n, { state: 'failed', message });
       // Without access to the Launcher every part fails the same way: don't try the others.
       return isLauncherAccessDenied(err) ? message : null;
     }
@@ -353,7 +371,6 @@ export class RequestStore implements OnDestroy {
     this.step.set(1);
     this.people.set([]);
     this.items.set([]);
-    this.approver.set(null);
     this.inc.set('');
     this.justification.set('');
     this.existing.set([]);
@@ -368,8 +385,6 @@ export class RequestStore implements OnDestroy {
     this.resolution.set(null);
     this.chosenFilter.set('');
     this.chosenPage.set(0);
-    this.approverQuery.set('');
-    this.approverResults.set([]);
     this.itemFilter.set('');
   }
 
@@ -399,33 +414,29 @@ export class RequestStore implements OnDestroy {
     const s = this.submission();
     if (!s) return;
     const state = overallState(s.parts);
-    const one = s.parts.length === 1 ? s.parts[0] : null;
-    const failed = s.parts.filter((p) => p.state === 'start-failed');
+    const n = s.parts.length;
+    const one = n === 1 ? s.parts[0] : null;
+    const sent = s.parts.filter((p) => p.state === 'requested');
+    const unsent = s.parts.filter((p) => p.state === 'failed' || p.state === 'stopped');
+    const runs = s.submit === 'launcher' ? 'Launcher runs' : 'requests';
     let message: string;
     if (one) {
       message = one.message;
-    } else if (state === 'starting') {
-      const started = s.parts.filter((p) => !['queued', 'starting'].includes(p.state)).length;
-      message = `Starting ${s.parts.length} approvals, one after another (${started} of ${s.parts.length} done)…`;
+    } else if (state === 'sending') {
+      const finished = s.parts.filter((p) => !['queued', 'sending'].includes(p.state)).length;
+      message = `Sending ${n} ${runs} (${finished} of ${n} done)…`;
     } else if (state === 'error') {
-      message = `None of the ${s.parts.length} approvals started. ${failed[0]?.message ?? ''}`.trim();
+      message = `Nothing was sent. ${unsent[0]?.message ?? ''}`.trim();
+    } else if (s.dryRun) {
+      message = 'Dry-run mode: everything checks out, but nothing was requested.';
+    } else if (s.submit === 'launcher') {
+      message = `Submitted as ${n} Launcher runs with the same INC. The Launcher files the requests, and each item is `
+        + 'approved the way it\'s set up in SailPoint; you\'ll get an email for each run.';
     } else {
-      const mode = this.bulkConfig.config().mode;
-      message = {
-        waiting: `Sent as ${s.parts.length} approvals with the same INC. Waiting for ${s.approver} to decide each one.`,
-        'still-waiting': `Still waiting for ${s.approver}. Follow it on the My bulk requests tab.`,
-        approved: `${s.approver} approved all ${s.parts.length} approvals. ` + (mode === 'live'
-          ? 'Access is being requested for every person; follow it on My bulk requests.'
-          : 'Dry-run mode: nothing was requested.'),
-        denied: `None of the ${s.parts.length} approvals was approved. Nothing was requested.`,
-        failed: 'The workflow stopped before the approvals were decided. An administrator can see why in Admin > Workflows > executions.',
-        mixed: 'Some approvals were decided differently; see each part below. Access is only requested for approved parts.',
-        starting: '',
-        error: '',
-      }[state];
+      message = requestedMessage(sent.reduce((k, p) => k + p.created, 0), sent.reduce((k, p) => k + p.existing, 0));
     }
-    if (failed.length && state !== 'error' && state !== 'starting' && !one) {
-      message += ` ${failed.length} of ${s.parts.length} didn't start.`;
+    if (state === 'partial' && !one) {
+      message += ` ${unsent.length} of ${n} ${runs} weren't sent; see below.`;
     }
     this.patch({ state, message });
   }
@@ -437,116 +448,42 @@ export class RequestStore implements OnDestroy {
     this.timer = setTimeout(() => void this.poll(attempt, generation), delay);
   }
 
-  /** One round: each live part's execution status, plus the approval it created (found by execution ID). */
+  /** Launcher mode: each submitted run's answer (its INFO or ERROR message), read from the process's blocks. */
   private async poll(attempt: number, generation: number): Promise<void> {
     this.timer = null;
     const s = this.submission();
     if (!s || generation !== this.generation) return;
-    const live = s.parts.filter(tracked);
-    if (!live.length && !this.starting) return;
-    if (live.length) {
-      try {
-        const approvals = await this.api.approvals(this.requesterId());
-        if (generation !== this.generation) return;
-        await Promise.all(live.map((p) => this.pollPart(p, approvals)));
-      } catch (err) {
-        // A failed poll is not fatal; try again on the next round.
-        for (const p of live) this.patchPart(p.part, { message: `Still checking… (${describeError(err, 'read', 'the approval')})` });
-      }
-    }
+    const waiting = s.parts.filter(awaitingLauncher);
+    await Promise.all(waiting.map(async (p) => {
+      const blocks = await this.api.launcherBlocks(p.processId!).catch(() => []);
+      const stopped = launcherStopMessage(blocks);
+      const accepted = launcherInfoMessage(blocks);
+      if (stopped) this.patchPart(p.part, { state: 'stopped', done: true, message: `The Launcher stopped it: ${stopped}` });
+      else if (accepted) this.patchPart(p.part, { state: 'requested', done: true, message: accepted });
+    }));
     const now = this.submission();
     if (!now || generation !== this.generation) return;
+    const still = now.parts.filter(awaitingLauncher);
+    if (!still.length && !this.sending) return;
     if (Date.now() - now.startedAt > POLL_FOR_MS) {
-      for (const p of now.parts.filter(tracked)) {
-        this.patchPart(p.part, {
-          done: true,
-          ...(p.state === 'waiting' ? { state: 'still-waiting' as const,
-            message: `Still waiting for ${p.approver}. Follow it on the My bulk requests tab.` } : {}),
-        });
+      for (const p of still) {
+        this.patchPart(p.part, { state: 'requested', done: true,
+          message: 'Submitted to the Launcher, which hasn\'t answered yet. You\'ll get an email with the result.' });
       }
       return;
     }
-    if (this.starting || now.parts.some(tracked)) this.schedule(attempt + 1);
-  }
-
-  private async pollPart(p: PartStatus, approvals: GenericApproval[]): Promise<void> {
-    try {
-      if (this.bulkConfig.config().submit === 'launcher') await this.pollLauncherPart(p, approvals);
-      else await this.pollWorkflowPart(p, approvals);
-    } catch (err) {
-      this.patchPart(p.part, { message: `Still checking… (${describeError(err, 'read', 'the approval')})` });
-    }
-  }
-
-  /** The approval is decided: say by whom (the list leaves that out; the detail call has it). */
-  private async settle(p: PartStatus, approval: GenericApproval, approver: string, decided: PartState,
-                       done: boolean): Promise<void> {
-    Object.assign(approval, await this.api.approval(approval.id).catch(() => ({})));
-    const by = decided === 'approved' ? approval.approvedBy?.[0]?.name : approval.rejectedBy?.[0]?.name;
-    const mode = this.bulkConfig.config().mode;
-    const message = decided === 'denied'
-      ? `${approval.status === 'REJECTED' ? `Denied by ${by ?? approver}` : `Approval ${approval.status.toLowerCase()}`}. Nothing was requested.`
-      : `Approved by ${by ?? approver}. ` + (mode === 'live'
-        ? 'Access is being requested for every person; follow it on My bulk requests.'
-        : 'Dry-run mode: nothing was requested.');
-    this.patchPart(p.part, { state: decided, decidedBy: by ?? null, message, done });
-  }
-
-  /**
-   * Launcher mode: only what the signed-in user may read. The approval (filed in their name) is found by the
-   * run's ID or by its name; until it exists, the process's blocks tell whether the workflow stopped with a
-   * message (an INC or approver it refused). Workflow executions are not read: they need admin rights.
-   */
-  private async pollLauncherPart(p: PartStatus, approvals: GenericApproval[]): Promise<void> {
-    const s = this.submission()!;
-    const name = `${APPROVAL_NAME_PREFIX}${s.inc}${p.label}`;
-    const approval = (p.executionId ? approvals.find((a) => executionIdOf(a) === p.executionId) : undefined)
-      ?? approvals.find((a) => approvalName(a) === name && Date.parse(a.createdDate ?? '') >= s.startedAt - MATCH_SLACK_MS);
-    if (approval) {
-      const approver = assignedApproverNames(approval)[0] || p.approver;
-      this.patchPart(p.part, { approvalId: approval.id, approver });
-      const decided = DECIDED[approval.status];
-      if (decided) await this.settle(p, approval, approver, decided, true);
-      else this.patchPart(p.part, { state: 'waiting', message: `Waiting for ${approver} to approve or deny.` });
-      return;
-    }
-    const stopped = p.processId ? launcherStopMessage(await this.api.launcherBlocks(p.processId).catch(() => [])) : null;
-    if (stopped) {
-      this.patchPart(p.part, { state: 'failed', done: true,
-        message: `The workflow stopped before the approval: ${stopped}` });
-    } else {
-      this.patchPart(p.part, { state: 'waiting', message: 'Creating the approval…' });
-    }
-  }
-
-  /** Test-endpoint mode: the run's execution status, plus the approval it created (found by execution ID). */
-  private async pollWorkflowPart(p: PartStatus, approvals: GenericApproval[]): Promise<void> {
-    const execution = await this.api.execution(p.executionId!);
-    const approval = approvals.find((a) => executionIdOf(a) === p.executionId);
-    const approver = (approval && assignedApproverNames(approval)[0]) || p.approver;
-    if (approval) this.patchPart(p.part, { approvalId: approval.id, approver });
-
-    const decided = approval && DECIDED[approval.status];
-    if (approval && decided) {
-      // Keep polling until the workflow itself finishes (its emails go out last).
-      await this.settle(p, approval, approver, decided, execution.status !== 'Running');
-    } else if (execution.status === 'Failed' || execution.status === 'Canceled') {
-      this.patchPart(p.part, { state: 'failed', done: true, message: `The workflow ${execution.status.toLowerCase()} before an approval `
-        + 'was decided. An administrator can see why in Admin > Workflows > executions.' });
-    } else if (execution.status === 'Completed' && !approval) {
-      this.patchPart(p.part, { state: 'failed', done: true, message: 'The workflow finished without creating an approval '
-        + '(the INC number or approver was rejected). Check your email for details.' });
-    } else {
-      this.patchPart(p.part, { state: 'waiting',
-        message: approval ? `Waiting for ${approver} to approve or deny.` : 'Creating the approval…' });
-    }
+    this.schedule(attempt + 1);
   }
 }
 
-/** A part being followed: started (a run or a Launcher process) and not finished. */
-function tracked(p: PartStatus): boolean {
-  return !p.done && !!(p.executionId || p.processId) && !['queued', 'starting', 'start-failed'].includes(p.state);
+/** "Filed 12 access requests. Each is approved …" (and how many SailPoint skipped as already pending). */
+function requestedMessage(created: number, existing: number): string {
+  return `Filed ${plural(created, 'access request')}`
+    + (existing ? ` (${existing} already pending, so not requested again)` : '')
+    + '. Each is approved the way it\'s set up in SailPoint; follow them on My bulk requests.';
 }
 
-/** Launcher mode, approval found by name: how much earlier than the submission it may have been created (clock skew). */
-const MATCH_SLACK_MS = 5 * 60 * 1000;
+/** A Launcher run that was submitted and hasn't answered yet. */
+function awaitingLauncher(p: PartStatus): boolean {
+  return !p.done && p.submitted && !!p.processId && p.state === 'sending';
+}

@@ -17,8 +17,6 @@ export const API = {
   publicIdentities: '/public-identities/v1',
   requestableObjects: '/requestable-objects/v1',
   search: '/search/v1',
-  workflowExecutions: '/workflow-executions/v1',
-  workflows: '/workflows/v1',
   /** Beta: no GA path returns a Launcher run's blocks (its form). Only the Launcher submit mode needs it. */
   interactiveProcessesBeta: '/beta/interactive-processes',
 } as const;

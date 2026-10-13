@@ -4,8 +4,8 @@ import { SailpointPluginService } from '@core';
 import { DEMO_CONFIG } from '../demo/fixtures';
 import { routedPlugin } from '../testing/plugin.testing';
 import {
-  batches, BulkApiService, escapeQuery, isTransient, launcherStopMessage, pool, retry, splitPasted, Throttle, type BulkInput,
-  type LauncherFormData,
+  batches, BulkApiService, escapeQuery, isTransient, launcherInfoMessage, launcherStopMessage, pool, retry, splitPasted,
+  Throttle, type LauncherFormData,
 } from './bulk-api.service';
 
 function setup(routes: Record<string, unknown>, isOrgAdmin = true) {
@@ -17,27 +17,42 @@ function setup(routes: Record<string, unknown>, isOrgAdmin = true) {
 const ALAN = '0123456789abcdef0123456789abcdef';
 
 describe('BulkApiService', () => {
-  it('starts the workflow through the test endpoint with the trigger contract', async () => {
-    const { api, plugin } = setup({ '/workflows/v1/wf-1/test': { workflowExecutionId: 'exec-1' } });
-    const input: BulkInput = {
-      people: [ALAN], items: [{ id: 'ap-1', type: 'ACCESS_PROFILE' as const, name: 'ACME Bulk Test Access' }],
-      approverId: 'boss', requesterId: 'me', inc: 'INC0012345', justification: 'why',
-      part: 1, parts: 1, partLabel: '', removeDuration: '', accessLabel: 'Permanent',
-    };
-    await expect(api.submit('wf-1', input)).resolves.toBe('exec-1');
-    expect(plugin.post).toHaveBeenCalledWith('/workflows/v1/wf-1/test', { input });
-  });
+  describe('submitting directly (CONTRACTS §9)', () => {
+    const items = [{ id: 'ap-1', type: 'ACCESS_PROFILE' as const, name: 'ACME Bulk Test Access' },
+      { id: 'en-1', type: 'ENTITLEMENT' as const, name: 'Zoom' }];
 
-  it('says so when the workflow does not start', async () => {
-    const { api } = setup({ '/workflows/v1/': {} });
-    await expect(api.submit('wf-1', {} as never)).rejects.toThrow('did not start');
-  });
+    it('files every item for every person in one access request, each with the comment and removal date', async () => {
+      const { api, plugin } = setup({ '/access-requests/v1': { newRequests: [{}, {}, {}], existingRequests: [{}] } });
+      await expect(api.requestAccess([ALAN, 'p2'], items, 'INC0012345 | Bulk access request by Me | Temporary: 2 hours | why',
+        '2026-10-08T12:00:00.000Z')).resolves.toEqual({ created: 3, existing: 1 });
+      expect(plugin.post).toHaveBeenCalledWith('/access-requests/v1', {
+        requestedFor: [ALAN, 'p2'],
+        requestType: 'GRANT_ACCESS',
+        requestedItems: items.map((i) => ({ type: i.type, id: i.id,
+          comment: 'INC0012345 | Bulk access request by Me | Temporary: 2 hours | why', removeDate: '2026-10-08T12:00:00.000Z' })),
+      });
+    });
 
-  it('finds the workflow by name unless the config names its ID', async () => {
-    const { api } = setup({ '/workflows/v1': [{ id: 'other', name: 'Something else' }, { id: 'wf-9', name: DEMO_CONFIG.workflowName }] });
-    await expect(api.workflowId({ ...DEMO_CONFIG, workflowId: null })).resolves.toBe('wf-9');
-    await expect(api.workflowId({ ...DEMO_CONFIG, workflowId: 'fixed' })).resolves.toBe('fixed');
-    await expect(api.workflowId({ ...DEMO_CONFIG, workflowId: null, workflowName: 'Missing' })).rejects.toThrow('install.py');
+    it('leaves the removal date out for permanent access, and copes with an empty answer', async () => {
+      const { api, plugin } = setup({ '/access-requests/v1': null });
+      await expect(api.requestAccess([ALAN], items.slice(0, 1), 'c', null)).resolves.toEqual({ created: 0, existing: 0 });
+      expect((plugin.post.mock.calls[0][1] as { requestedItems: object[] }).requestedItems).toEqual([
+        { type: 'ACCESS_PROFILE', id: 'ap-1', comment: 'c' },
+      ]);
+    });
+
+    it('checks that the user holds the Launcher Access profile through requestable-objects', async () => {
+      const answers = [[{ id: 'lap', requestStatus: 'ASSIGNED' }], [{ id: 'lap', requestStatus: 'AVAILABLE' }], []];
+      const { api, plugin } = setup({ '/requestable-objects/v1': () => answers.shift() }, false);
+      await expect(api.hasLauncherAccess({ launcherAccessId: 'lap' }, 'me')).resolves.toBe(true);
+      await expect(api.hasLauncherAccess({ launcherAccessId: 'lap' }, 'me')).resolves.toBe(false);
+      await expect(api.hasLauncherAccess({ launcherAccessId: 'lap' }, 'me')).resolves.toBe(false);
+      const params = new URLSearchParams(String(plugin.get.mock.calls[0][0]).split('?')[1]);
+      expect([params.get('identity-id'), params.get('types'), params.get('filters')]).toEqual(['me', 'ACCESS_PROFILE', 'id eq "lap"']);
+      // No profile installed: nobody is turned away, and nothing is called.
+      await expect(api.hasLauncherAccess({ launcherAccessId: null }, 'me')).resolves.toBeNull();
+      expect(plugin.get).toHaveBeenCalledTimes(3);
+    });
   });
 
   it('resolves pasted IDs, usernames and emails, and reports the rest', async () => {
@@ -142,6 +157,8 @@ describe('BulkApiService', () => {
     });
     expect(await api.myAccessRequests('me')).toHaveLength(600);
     expect(plugin.get).toHaveBeenCalledTimes(3);
+    const params = new URLSearchParams(String(plugin.get.mock.calls[0][0]).split('?')[1]);
+    expect([params.get('requested-by'), params.get('sorters')]).toEqual(['me', '-created']);
   });
 
   it('searches identities and accounts, de-duplicated and sorted', async () => {
@@ -287,7 +304,7 @@ describe('BulkApiService', () => {
 
   describe('submitting through the Launcher (CONTRACTS §9)', () => {
     const formData: LauncherFormData = {
-      people: [ALAN], items: [{ id: 'ap-1', type: 'ACCESS_PROFILE', name: 'ACME Bulk Test Access' }], approver: ['boss'],
+      people: [ALAN], items: [{ id: 'ap-1', type: 'ACCESS_PROFILE', name: 'ACME Bulk Test Access' }],
       inc: 'INC0012345', justification: 'why', accessType: true, duration: '720', durationUnit: ['h'], partLabel: ' (2/3)',
     };
 
@@ -323,14 +340,13 @@ describe('BulkApiService', () => {
       vi.useRealTimers();
     });
 
-    it('submits the form with one JSON Patch, repeating until it is SUBMITTED, and returns the run behind it', async () => {
+    it('submits the form with one JSON Patch, repeating until it is SUBMITTED', async () => {
       const states = ['IN_PROGRESS', 'SUBMITTED'];
       const { api, plugin } = setup({
         'PATCH /form-instances/v1/fi-1': {},
-        '/form-instances/v1/fi-1': () => ({ state: states.shift(), formErrors: [],
-          createdBy: { type: 'WORKFLOW_EXECUTION', id: 'run-1' } }),
+        '/form-instances/v1/fi-1': () => ({ state: states.shift(), formErrors: [] }),
       });
-      await expect(api.submitLauncherForm('fi-1', formData)).resolves.toEqual({ state: 'SUBMITTED', errors: [], executionId: 'run-1' });
+      await expect(api.submitLauncherForm('fi-1', formData)).resolves.toEqual({ state: 'SUBMITTED', errors: [] });
       expect(plugin.patch).toHaveBeenCalledTimes(2);
       expect(plugin.patch).toHaveBeenCalledWith('/form-instances/v1/fi-1', [
         { op: 'replace', path: '/formData', value: formData },
@@ -341,52 +357,29 @@ describe('BulkApiService', () => {
     it("stops at the form's own validation errors and returns them", async () => {
       const { api, plugin } = setup({
         'PATCH /form-instances/v1/': {},
-        '/form-instances/v1/fi-1': { state: 'IN_PROGRESS', createdBy: { type: 'WORKFLOW_EXECUTION', id: 'run-1' },
+        '/form-instances/v1/fi-1': { state: 'IN_PROGRESS',
           formErrors: [{ key: 'inc', messages: [{ text: 'Enter a ServiceNow incident number.' }] }] },
       });
       await expect(api.submitLauncherForm('fi-1', formData)).resolves.toEqual({
-        state: 'IN_PROGRESS', errors: [{ key: 'inc', messages: ['Enter a ServiceNow incident number.'] }], executionId: 'run-1',
+        state: 'IN_PROGRESS', errors: [{ key: 'inc', messages: ['Enter a ServiceNow incident number.'] }],
       });
       expect(plugin.patch).toHaveBeenCalledTimes(1);
     });
 
-    it('finds an ERROR message among the blocks (the workflow stopped before the approval)', () => {
+    it("finds the workflow's ERROR or INFO message among the blocks", () => {
       expect(launcherStopMessage([{ type: 'FORM', config: { formInstanceId: 'x' } }])).toBeNull();
       expect(launcherStopMessage([{ type: 'MESSAGE', config: { category: 'INFO' }, data: { title: 'Sent' } }])).toBeNull();
       expect(launcherStopMessage([
         { type: 'FORM', config: { formInstanceId: 'x' } },
-        { type: 'MESSAGE', data: { category: 'ERROR', title: 'Choose a different approver', message: '<p>Not <b>you</b>.</p>' } },
-      ])).toBe('Choose a different approver: Not you .');
+        { type: 'MESSAGE', data: { category: 'ERROR', title: 'Invalid INC number', message: '<p>Use <b>INC</b> + 7 digits.</p>' } },
+      ])).toBe('Invalid INC number: Use INC + 7 digits.');
+      expect(launcherInfoMessage([{ type: 'FORM', config: { formInstanceId: 'x' } }])).toBeNull();
+      expect(launcherInfoMessage([
+        { type: 'FORM', config: { formInstanceId: 'x' } },
+        { type: 'MESSAGE', config: { category: 'INFO' }, data: { title: 'Requested: INC0012345', message: '<p>4 requests.</p>' } },
+      ])).toBe('Requested: INC0012345: 4 requests.');
+      expect(launcherInfoMessage([{ type: 'MESSAGE', config: { category: 'INFO' } }])).toBe('The Launcher workflow accepted the request.');
     });
-
-    it("lists the caller's own approvals with the requesterId query parameter (the filter is empty for non-admins)", async () => {
-      const { api, plugin } = setup({ '/generic-approvals/v1?': [] });
-      await api.approvals('me-1');
-      const params = new URLSearchParams(String(plugin.get.mock.calls[0][0]).split('?')[1]);
-      expect(params.get('requesterId')).toBe('me-1');
-      expect(params.get('filters')).toBeNull();
-      expect(params.get('sorters')).toBe('-createdDate');
-    });
-  });
-
-  it("loads the user's own bulk approvals with approver details the list leaves out", async () => {
-    const row = (id: string, name: string, requester: string, created: string) =>
-      ({ id, name: [{ value: name }], status: 'PENDING', requester: { identityID: requester }, createdDate: created });
-    const { api, plugin } = setup({
-      '/generic-approvals/v1?': [
-        row('a1', 'Bulk access INC0000001', 'me', '2026-10-01'),
-        row('a2', 'Bulk access INC0000002', 'someone-else', '2026-10-02'),
-        row('a3', 'Quarterly review', 'me', '2026-10-03'),
-        row('a4', 'Bulk access INC0000004', 'me', '2026-10-04'),
-      ],
-      '/generic-approvals/v1/a1': { approvers: [{ name: 'Aisha Bello' }] },
-      '/generic-approvals/v1/a4': Promise.reject(new Error('boom')),
-    });
-    const mine = await api.myBulkApprovals('me');
-    expect(mine.map((a) => a.id)).toEqual(['a4', 'a1']);                 // newest first, ours only
-    expect(mine[1].approvers).toEqual([{ name: 'Aisha Bello' }]);
-    expect(mine[0].name?.[0].value).toBe('Bulk access INC0000004');     // detail failed: list row kept
-    expect(plugin.get).toHaveBeenCalledTimes(3);
   });
 
   describe('Approvals tab', () => {

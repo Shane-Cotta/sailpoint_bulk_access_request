@@ -3,19 +3,22 @@
  * real tenant: names, IDs and INC numbers are fictitious.
  */
 import type { AccessRequestStatus, GenericApproval } from '../bulk/bulk-api.service';
+import { NO_APPROVAL_LABEL } from '../bulk/rules';
 import { parseRuntimeConfig, type RuntimeConfig } from '../bulk/runtime-config';
 
 export const DEMO_ME = { id: 'd0000000000000000000000000000001', name: 'Jordan Lee', email: 'jordan.lee@example.edu' };
 
+/** The Launcher Access profile: holding it is what lets someone submit (the launcher-denied scenario lacks it). */
+export const DEMO_LAUNCHER_ACCESS = 'c0000000000000000000000000000100';
+
 export const DEMO_CONFIG: RuntimeConfig = parseRuntimeConfig({
   prefix: 'ACME',
   mode: 'live',
-  // The default: submit through the Launcher as the signed-in user (the submitted-test-endpoint scenario switches).
-  submit: 'launcher',
+  // The default: file the access requests directly as the signed-in user (the parts-* scenarios use the Launcher).
+  submit: 'direct',
   launcherId: 'demo-launcher',
+  launcherAccessId: DEMO_LAUNCHER_ACCESS,
   launcherAccessName: 'ACME Bulk Access Request - Launcher Access',
-  workflowName: 'ACME Bulk Access Request (Plugin)',
-  workflowId: 'demo-workflow',
   incPattern: '^INC\\d{7}$',
   incMessage: 'Enter a ServiceNow incident number: INC followed by 7 digits, e.g. INC0012345.',
   incExample: 'INC0012345',
@@ -28,6 +31,8 @@ export const DEMO_CONFIG: RuntimeConfig = parseRuntimeConfig({
   temporary: { enabled: true, allow: ['duration', 'endDate'], units: ['HOURS', 'DAYS', 'WEEKS', 'MONTHS'], maxDays: null },
   // The other keys take the Python defaults (concurrency 4, useBulkEndpoint auto, maxRows 5000, deny needs a comment).
   approvals: { enabled: true, showOther: true },
+  // Written by the installer: items with no approval of their own (see DEMO_CATALOG).
+  noApproval: ['c0000000000000000000000000000001'],
 });
 
 const people: [string, string, string][] = [
@@ -91,7 +96,10 @@ export function demoPerson(displayName: string, nth = 0) {
   return { id: doc.id, name: doc.displayName, email: doc.email, detail: doc.attributes.department };
 }
 
-/** Catalog rows (GET /requestable-objects/v1, or /entitlements/v1 for entitlements), plus each one's source. */
+/**
+ * Catalog rows (GET /requestable-objects/v1, or /entitlements/v1 for entitlements), plus each one's source.
+ * The first one, ACME Bulk Test Access, has no approval of its own (DEMO_CONFIG.noApproval).
+ */
 export const DEMO_CATALOG: { row: Record<string, unknown>; source: string | null }[] = [
   ['ACME Bulk Test Access', 'ACCESS_PROFILE', 'ACME SaaS', 'Read-only group on the ACME SaaS demo source.'],
   ['PACS Radiologist Workstation', 'ACCESS_PROFILE', 'PACS', 'View and report on imaging studies.'],
@@ -113,7 +121,8 @@ export function demoItem(name: string) {
   const label = { ACCESS_PROFILE: 'Access profile', ROLE: 'Role', ENTITLEMENT: 'Entitlement' }[type];
   return {
     label: name,
-    subLabel: label + (hit.source ? ` · ${hit.source}` : ''),
+    subLabel: label + (hit.source ? ` · ${hit.source}` : '')
+      + (DEMO_CONFIG.noApproval.includes(String(hit.row['id'])) ? ` · ${NO_APPROVAL_LABEL}` : ''),
     description: String(hit.row['description']),
     source: hit.source,
     value: { id: String(hit.row['id']), type, name },
@@ -132,57 +141,17 @@ export const DEMO_HELD: Record<string, Record<string, 'ASSIGNED' | 'PENDING'>> =
   },
 };
 
-export const DEMO_NEW_EXECUTION = 'e0000000-0000-4000-8000-000000000099';
-
-function approval(id: string, inc: string, status: string, approver: string, created: string,
-                  completed: string | null, executionId: string, part = '', access = 'Permanent'): GenericApproval {
-  return {
-    id,
-    name: [{ value: `Bulk access ${inc}${part}`, locale: 'en_US' }],
-    description: [{ value: `ACME bulk access request ${inc}${part} from ${DEMO_ME.name} · ${access}` }],
-    status,
-    createdDate: created,
-    completedDate: completed,
-    requester: { identityID: DEMO_ME.id, name: DEMO_ME.name },
-    approvers: [{ identityID: demoPerson(approver).id, name: approver }],
-    approvedBy: status === 'APPROVED' ? [{ name: approver }] : null,
-    rejectedBy: status === 'REJECTED' ? [{ name: approver }] : null,
-    referenceData: [{ id: executionId, type: 'workflowExecutionId' }],
-  };
-}
-
-/** Approvals already in the tenant (the "My bulk requests" history). */
-export const DEMO_APPROVALS: GenericApproval[] = [
-  approval('a0000000-0000-4000-8000-000000000001', 'INC0048213', 'PENDING', 'Aisha Bello',
-    '2026-10-07T15:12:00Z', null, 'e0000000-0000-4000-8000-000000000001'),
-  // One 600-person request, sent as 3 parts with the same INC: 2 of 3 approved so far.
-  approval('a0000000-0000-4000-8000-000000000011', 'INC0048120', 'APPROVED', 'Carmen Ruiz',
-    '2026-10-07T11:00:05Z', '2026-10-07T13:15:00Z', 'e0000000-0000-4000-8000-000000000011', ' (1/3)', 'Temporary: 30 days'),
-  approval('a0000000-0000-4000-8000-000000000012', 'INC0048120', 'APPROVED', 'Carmen Ruiz',
-    '2026-10-07T11:00:09Z', '2026-10-07T13:16:00Z', 'e0000000-0000-4000-8000-000000000012', ' (2/3)', 'Temporary: 30 days'),
-  approval('a0000000-0000-4000-8000-000000000013', 'INC0048120', 'PENDING', 'Carmen Ruiz',
-    '2026-10-07T11:00:13Z', null, 'e0000000-0000-4000-8000-000000000013', ' (3/3)', 'Temporary: 30 days'),
-  approval('a0000000-0000-4000-8000-000000000002', 'INC0047950', 'APPROVED', 'Carmen Ruiz',
-    '2026-10-06T09:30:00Z', '2026-10-06T10:02:00Z', 'e0000000-0000-4000-8000-000000000002'),
-  approval('a0000000-0000-4000-8000-000000000003', 'INC0047711', 'REJECTED', 'Aisha Bello',
-    '2026-10-03T16:45:00Z', '2026-10-04T08:15:00Z', 'e0000000-0000-4000-8000-000000000003'),
-  approval('a0000000-0000-4000-8000-000000000004', 'INC0047711', 'CANCELLED', 'Diego Alvarez',
-    '2026-10-03T16:20:00Z', '2026-10-03T16:40:00Z', 'e0000000-0000-4000-8000-000000000004'),
-];
-
-/** The execution ID of the k-th workflow run the demo starts (the first is DEMO_NEW_EXECUTION). */
-export function demoExecutionId(k: number): string {
-  return k === 0 ? DEMO_NEW_EXECUTION : `e0000000-0000-4000-8000-1${String(k).padStart(11, '0')}`;
-}
-
-/** The approval the "submitted" scenarios' workflow run k creates (part label as in CONTRACTS §4). */
-export function demoNewApproval(inc: string, approver: string, k = 0, part = '', access = 'Permanent'): GenericApproval {
-  const id = k === 0 ? 'a0000000-0000-4000-8000-000000000099' : `a0000000-0000-4000-8000-1${String(k).padStart(11, '0')}`;
-  return approval(id, inc, 'PENDING', approver, new Date().toISOString(), null, demoExecutionId(k), part, access);
+/** Who approves an item, the way the demo tenant has it set up (none for DEMO_CONFIG.noApproval). */
+export function demoItemApproval(itemId: string): { scheme: string; owner: string } | null {
+  if (DEMO_CONFIG.noApproval.includes(itemId)) return null;
+  const type = DEMO_CATALOG.find((c) => c.row['id'] === itemId)?.row['type'];
+  if (type === 'ROLE') return { scheme: 'ROLE_OWNER', owner: 'Carmen Ruiz' };
+  if (type === 'ENTITLEMENT') return { scheme: 'SOURCE_OWNER', owner: 'Diego Alvarez' };
+  return { scheme: 'ACCESS_PROFILE_OWNER', owner: 'Aisha Bello' };
 }
 
 // ── The Approvals tab: item approvals waiting for the demo user ─────────────────
-/** The workflow owner: SailPoint files every request of a bulk run in its name. */
+/** The Launcher workflow's owner: SailPoint files every request of a Launcher run in its name. */
 export const DEMO_SERVICE = { id: 'd0000000000000000000000000000002', name: 'ACME Bulk Service' };
 /** A colleague in the same governance group, who sometimes decides first (approvals-partial). */
 export const DEMO_COLLEAGUE = { id: 'd0000000000000000000000000000003', name: 'Elliot Reid' };
@@ -191,38 +160,41 @@ export const DEMO_COLLEAGUE = { id: 'd0000000000000000000000000000003', name: 'E
 export const DEMO_PENDING_INCS = { big: 'INC0048502', small: 'INC0048466' } as const;
 
 function pending(n: number, person: { id: string; name: string }, item: string, created: string, due: string,
-                 scheme: string, comment: string | null, removalDate: string | null = null): GenericApproval {
+                 scheme: string, comment: string | null, removalDate: string | null = null,
+                 requester: { id: string; name: string } = DEMO_SERVICE): GenericApproval {
   const it = demoItem(item);
   return {
     id: `b0000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
     type: 'ACCESS_REQUEST_APPROVAL',
     status: 'PENDING',
     name: [{ value: item, locale: 'en-US' }],
-    description: [{ value: it.description }],
     createdDate: created,
     dueDate: due,
-    requester: { identityID: DEMO_SERVICE.id, name: DEMO_SERVICE.name },
+    requester: { identityID: requester.id, name: requester.name },
     requestee: { identityID: person.id, name: person.name },
     requestedTarget: { id: it.value.id, name: item, targetType: it.value.type, requestType: 'GRANT_ACCESS', removalDate },
     approvalConfig: { serialChain: [{ tier: 1, identityType: scheme }] },
     // The real list leaves assignedTo out when it includes comments.
-    comments: comment ? [{ comment, author: { name: DEMO_SERVICE.name } }] : [],
-    referenceData: [{ id: `r${String(n).padStart(31, '0')}`, type: 'accessRequestId' }],
+    comments: comment ? [{ comment, author: { name: requester.name } }] : [],
   };
 }
 
-const bulkComment = (inc: string, requester: string, approver: string, access: string, why: string) =>
+/** The bulk comment on every request of a bulk request (CONTRACTS §4). */
+const bulkComment = (inc: string, requester: string, access: string, why: string) =>
+  `${inc} | Bulk access request by ${requester} | ${access} | ${why}`;
+/** The same, as the old Launcher (with its bulk approver) wrote it: still read, so older requests keep grouping. */
+const oldBulkComment = (inc: string, requester: string, approver: string, access: string, why: string) =>
   `${inc} | Bulk access request by ${requester} | Approved by ${approver} | ${access} | ${why}`;
 
 export const DEMO_PENDING: GenericApproval[] = [
-  // INC0048502: 150 people × 2 access profiles the demo user owns = 300 approvals.
+  // INC0048502: 150 people × 2 access profiles the demo user owns = 300 approvals, filed directly by Carmen Ruiz.
   ...crowdPeople(150).flatMap((p, i) => ['PACS Radiologist Workstation', 'Epic - Clinician Read Only'].map((item, j) =>
     pending(1 + i * 2 + j, p, item, `2026-10-07T13:15:${String(i % 60).padStart(2, '0')}Z`, '2026-10-14T13:15:00Z',
-      'ACCESS_PROFILE_OWNER', bulkComment(DEMO_PENDING_INCS.big, 'Carmen Ruiz', 'Aisha Bello', 'Permanent',
-        'Hospital-wide move to the new PACS on 14 Oct | cutover weekend')))),
-  // INC0048466: 40 people the demo user manages, VPN for 30 days.
+      'ACCESS_PROFILE_OWNER', bulkComment(DEMO_PENDING_INCS.big, 'Carmen Ruiz', 'Permanent',
+        'Hospital-wide move to the new PACS on 14 Oct | cutover weekend'), null, demoPerson('Carmen Ruiz')))),
+  // INC0048466: 40 people the demo user manages, VPN for 30 days, from an older Launcher run (old comment form).
   ...crowdPeople(190).slice(150).map((p, i) => pending(301 + i, p, 'VPN - Remote Access', '2026-10-06T09:40:00Z',
-    '2026-10-13T09:40:00Z', 'MANAGER', bulkComment(DEMO_PENDING_INCS.small, 'Diego Alvarez', 'Carmen Ruiz',
+    '2026-10-13T09:40:00Z', 'MANAGER', oldBulkComment(DEMO_PENDING_INCS.small, 'Diego Alvarez', 'Carmen Ruiz',
       'Temporary: 30 days', 'Remote reading during the ward refurbishment'), '2026-11-05T09:40:00Z')),
   // Ordinary requests, not from a bulk request: the "Other" group.
   pending(401, demoPerson('Brenda Cooper'), 'Zoom - Licensed User', '2026-10-05T08:00:00Z', '2026-10-12T08:00:00Z',
@@ -233,27 +205,45 @@ export const DEMO_PENDING: GenericApproval[] = [
     'ROLE_OWNER', 'INC0047001 please'),
 ];
 
-function request(person: { id: string; name: string }, item: string, state: string, created: string, inc: string,
-                 approver: string, access = 'Permanent', removeDate: string | null = null): AccessRequestStatus {
+/** One access-request-status row the demo user filed (the My bulk requests tab). */
+export function demoRequest(person: { id: string; name: string }, item: string, state: string, created: string,
+                            comment: string, removeDate: string | null = null,
+                            approval: { status: string; owner?: string } | null = null): AccessRequestStatus {
   const it = demoItem(item);
+  const scheme = demoItemApproval(it.value.id);
   return {
     id: it.value.id, name: item, type: it.value.type, state, created,
     requestedFor: { id: person.id, name: person.name },
     requester: { id: DEMO_ME.id, name: DEMO_ME.name },
-    requesterComment: { comment: `${inc} | Bulk access request by ${DEMO_ME.name} | Approved by ${approver} | ${access} | New PACS rollout` },
+    requesterComment: { comment },
     removeDate,
+    approvalDetails: scheme && approval
+      ? [{ status: approval.status, scheme: scheme.scheme, currentOwner: { name: approval.owner ?? scheme.owner } }] : [],
   };
 }
 
+const PACS = 'New PACS rollout';
+const approved = { status: 'APPROVED' };
+const waiting = { status: 'PENDING' };
+
 export const DEMO_REQUESTS: AccessRequestStatus[] = [
-  // INC0048120: parts 1 and 2 (500 people) approved, temporary for 30 days.
-  ...crowdPeople(500).map((p, i) => request(p, 'VPN - Remote Access', i % 50 === 7 ? 'EXECUTING' : 'REQUEST_COMPLETED',
-    `2026-10-07T13:${i < 250 ? '15' : '16'}:30Z`, 'INC0048120', 'Carmen Ruiz', 'Temporary: 30 days',
-    i < 250 ? '2026-11-06T13:15:30Z' : '2026-11-06T13:16:30Z')),
+  // INC0048120: 500 people, VPN for 30 days, approved by each person's manager; a few still wait.
+  ...crowdPeople(500).map((p, i) => demoRequest(p, 'VPN - Remote Access', i % 50 === 7 ? 'EXECUTING' : 'REQUEST_COMPLETED',
+    `2026-10-07T13:${i < 250 ? '15' : '16'}:30Z`,
+    bulkComment('INC0048120', DEMO_ME.name, 'Temporary: 30 days', 'Remote reading during the PACS cutover'),
+    i < 250 ? '2026-11-06T13:15:30Z' : '2026-11-06T13:16:30Z',
+    i % 50 === 7 ? { status: 'PENDING', owner: 'Carmen Ruiz' } : approved)),
+  // INC0047950: an access profile (its owner approves) and a role, for 3 people.
   ...['Amelia Thornton', 'Bruno Marchetti', 'Claire Beaumont'].flatMap((name, i) => [
-    request(demoPerson(name), 'PACS Radiologist Workstation', i === 2 ? 'EXECUTING' : 'REQUEST_COMPLETED', '2026-10-06T10:03:00Z', 'INC0047950', 'Carmen Ruiz'),
-    request(demoPerson(name), 'Radiology Department Staff', 'REQUEST_COMPLETED', '2026-10-06T10:03:00Z', 'INC0047950', 'Carmen Ruiz'),
+    demoRequest(demoPerson(name), 'PACS Radiologist Workstation', i === 2 ? 'EXECUTING' : 'REQUEST_COMPLETED',
+      '2026-10-06T10:03:00Z', bulkComment('INC0047950', DEMO_ME.name, 'Permanent', PACS), null, i === 2 ? waiting : approved),
+    demoRequest(demoPerson(name), 'Radiology Department Staff', 'REQUEST_COMPLETED', '2026-10-06T10:03:00Z',
+      bulkComment('INC0047950', DEMO_ME.name, 'Permanent', PACS), null, approved),
   ]),
+  // INC0047711: the entitlement's source owner said no.
+  ...['Diego Alvarez', 'Brenda Cooper'].map((name) => demoRequest(demoPerson(name), 'Box - Imaging Research Share', 'REJECTED',
+    '2026-10-03T16:45:00Z', bulkComment('INC0047711', DEMO_ME.name, 'Permanent', 'Research share for the imaging study'),
+    null, { status: 'REJECTED' })),
   // An ordinary access request without an INC: the page ignores it.
   { id: 'x', name: 'Zoom - Licensed User', type: 'ENTITLEMENT', state: 'REQUEST_COMPLETED', created: '2026-10-01T10:00:00Z',
     requestedFor: { id: DEMO_ME.id, name: DEMO_ME.name }, requester: { id: DEMO_ME.id }, requesterComment: { comment: 'need it' } },

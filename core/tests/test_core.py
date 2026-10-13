@@ -744,7 +744,6 @@ def test_export_offline_builds_every_object_with_placeholders(tmp_path):
 
 
 # ── bulk approvals: the item comment read back, and the `approvals` config ────
-BULK = "INC0012345 | Bulk access request by Ada Lovelace | Approved by Grace Hopper | Temporary: 30 days | Quarterly audit"
 BULK = "INC0012345 | Bulk access request by Ada Lovelace | Temporary: 30 days | Quarterly audit"
 PARSED = {"inc": "INC0012345", "requester": "Ada Lovelace", "approver": None,
           "accessLabel": "Temporary: 30 days", "justification": "Quarterly audit"}

@@ -97,16 +97,16 @@ async function runDone(page, timeout = 150000) {
 const SHOTS = [
   { file: 'plugin-1-people.png', demo: 'people' },
   { file: 'plugin-2-items.png', demo: 'items' },
-  { file: 'plugin-3-approver-inc.png', demo: 'approver' },
-  { file: 'plugin-3b-inc-validation-error.png', demo: 'approver-error' },
+  { file: 'plugin-3-inc-details.png', demo: 'details' },
+  { file: 'plugin-3b-inc-validation-error.png', demo: 'inc-error' },
   { file: 'plugin-4-review.png', demo: 'review' },
   {
-    file: 'plugin-5-submitted-waiting.png', demo: 'submitted',
-    run: (p) => p.getByRole('heading', { name: /Waiting for Aisha Bello/ }).waitFor({ timeout: 15000 }),
+    file: 'plugin-5-submitted.png', demo: 'submitted',
+    run: (p) => p.getByRole('heading', { name: /^Requested: INC0048391/ }).waitFor({ timeout: 15000 }),
   },
   {
     file: 'plugin-6-my-bulk-requests.png', demo: 'history',
-    run: async (p) => { await expand(p, 'INC0048213'); await expand(p, 'INC0048120'); },
+    run: async (p) => { await expand(p, 'INC0048120', false); await expand(p, 'INC0047950'); },
   },
   { file: 'plugin-7-temporary-access.png', demo: 'temporary' },
   { file: 'plugin-8-parts-review.png', demo: 'parts-review' },
@@ -318,12 +318,13 @@ const card = (body) => `<!doctype html><html><head><meta charset="utf-8"><style>
 const TITLE_CARD = card(`
   <div class="kicker">Demo mode · made-up data · no tenant</div>
   <h1>Bulk Access Request for SailPoint ISC</h1>
-  <p class="lead">Many people × many Request Center items, one chosen approver, tracked by a ServiceNow INC number.</p>
+  <p class="lead">Many people × many Request Center items, tracked by a ServiceNow INC number. Each item is approved the
+    way SailPoint has it set up.</p>
   <div class="grid">
-    <div class="box"><h2>Launcher + Form + Workflows</h2><p>Any user starts a bulk request from the Launchpad: an ISC Form collects
-      people, items, approver and INC; ISC Workflows run the approval and request the access.</p></div>
+    <div class="box"><h2>Launcher + Form + Workflow</h2><p>Any user starts a bulk request from the Launchpad: an ISC Form collects
+      people, items and INC; an ISC Workflow requests the access.</p></div>
     <div class="box"><h2>UI plugin: New request</h2><p>Anyone with Launcher Access searches or pastes any number of people, picks
-      items, sets temporary access, and follows every request on <em>My bulk requests</em>.</p></div>
+      items, sets temporary access, files the requests as themselves, and follows them on <em>My bulk requests</em>.</p></div>
     <div class="box"><h2>UI plugin: Approvals tab</h2><p>Item approvers (owners, managers) decide a whole bulk request at once,
       grouped by INC, instead of one approval per person and item.</p></div>
   </div>
@@ -334,7 +335,7 @@ const CLOSING_CARD = card(`
   <h1>Standard ISC building blocks, no custom backend</h1>
   <div class="grid" style="margin-top:28px">
     <div class="box"><h2>Workflows</h2><ul>
-      <li>Generic Approval: one chosen approver per run</li>
+      <li>The Launcher's workflow: no approval of its own</li>
       <li>Loop (≤ 250 people per run, so parts)</li>
       <li>Manage Access v2 with <code>removeDuration</code> for temporary access</li></ul></div>
     <div class="box"><h2>Forms + Launchers</h2><ul>
@@ -342,15 +343,15 @@ const CLOSING_CARD = card(`
       <li>Launcher on the Launchpad, gated by a requestable “Launcher Access” profile</li></ul></div>
     <div class="box"><h2>UI Plugins</h2><ul>
       <li>Angular + PrimeNG page inside ISC</li>
-      <li>Each part launches the Launcher and submits its form as the signed-in user</li>
-      <li>ORG_ADMIN alternative: the workflow test endpoint</li>
+      <li>Files <code>/access-requests/v1</code> as the signed-in user, 10 people per request</li>
+      <li>Or launches the Launcher and submits its form</li>
       <li>Deployed with the <code>sail</code> CLI</li></ul></div>
     <div class="box"><h2>Unified Approvals API</h2><ul>
       <li><code>/generic-approvals/v1</code> (mine, comments)</li>
       <li>Per-item <code>/{id}/approve</code> · <code>/reject</code> as the approver</li>
       <li>bulk-approve / bulk-reject for admins (≤ 50 IDs)</li></ul></div>
     <div class="box"><h2>Request status</h2><ul>
-      <li><code>/access-request-status/v1</code> for <em>My bulk requests</em></li>
+      <li><code>/access-request-status/v1</code> for <em>My bulk requests</em>: status, who it waits for</li>
       <li><code>/requestable-objects/v1</code> + <code>/entitlements/v1</code> catalog</li></ul></div>
     <div class="box"><h2>Install</h2><ul>
       <li><code>bulkaccess.py apply</code> from one config file</li>
@@ -394,8 +395,8 @@ const SESSIONS = [
     await pause(page, 2500);
     const chosen = page.locator('section.chosen');
     await bring(page, chosen.locator('.chosen__head'), 'start');
-    await caption(page, 1, 'No people limit: 600 people go out as 3 approvals of up to 250, same INC',
-      "SailPoint's workflow Loop step handles at most 250 items per run, so the plugin sends parts.");
+    await caption(page, 1, 'No people limit: 600 people, filed 10 per access request, same INC',
+      'SailPoint takes at most 10 people per access request, so the plugin sends them a few at a time.');
     await pause(page, 3500);
     await click(page, page.getByRole('button', { name: 'Next ›' }), 1800);
     await click(page, page.getByRole('button', { name: 'Next: access' }), 600);
@@ -415,14 +416,14 @@ const SESSIONS = [
     await clear(page, filter);
     await bring(page, page.locator('section.chosen'));
     await pause(page, 2000);
-    await click(page, page.getByRole('button', { name: 'Next: approver' }), 600);
+    await click(page, page.getByRole('button', { name: 'Next: INC & details' }), 600);
     await scrollTop(page);
 
     mark('03-temporary');
     const temp = page.locator('section.temporary');
     await bring(page, temp);
     await caption(page, 3, 'Temporary access: for a duration or until a date',
-      'Sent to Manage Access v2 as removeDuration; SailPoint removes the access automatically.');
+      'Every access request carries its removal date; SailPoint removes the access automatically.');
     await pause(page, 2200);
     await click(page, temp.getByText('For a duration', { exact: true }), 1200);
     const n = page.getByLabel('Duration');
@@ -433,20 +434,9 @@ const SESSIONS = [
     await pause(page, 2000);
     await scrollTop(page);
 
-    mark('04-approver-inc');
-    await caption(page, 4, 'One approver decides the whole request, and it can’t be you',
-      'SailPoint would silently hand a self-approval to another admin, so the page blocks it up front.');
-    await pause(page, 1800);
-    const approver = page.getByRole('searchbox', { name: 'Approver', exact: true });
-    await type(page, approver, 'jordan', 120);
-    await page.locator('li.result', { hasText: 'Jordan Lee' }).waitFor();
-    await glide(page, resultButton(page, 'Jordan Lee', 'Choose'));
-    await pause(page, 2500);
-    await clear(page, approver);
-    await type(page, approver, 'aisha', 120);
-    await click(page, resultButton(page, 'Aisha Bello', 'Choose'), 1500);
+    mark('04-inc');
     await caption(page, 4, 'The ServiceNow INC number is validated as you type',
-      'Same rule as the Launcher form (INC + 7 digits); it goes on every access item’s comment.');
+      'Same rule as the Launcher form (INC + 7 digits); it goes on every access request’s comment.');
     const inc = page.getByLabel('ServiceNow incident (INC) number');
     await type(page, inc, 'INC48391', 160);
     await pause(page, 3000);
@@ -460,28 +450,30 @@ const SESSIONS = [
     await scrollTop(page);
 
     mark('05-review-submit');
-    await caption(page, 5, 'Review: 600 people × 2 items, temporary for 30 days, approved by Aisha Bello',
-      'The request goes out as 3 approvals with the same INC; only approved parts are requested.');
+    await caption(page, 5, 'Review: 600 people × 2 items, temporary for 30 days',
+      'No approval of the request as a whole: each item is approved the way it’s set up in SailPoint.');
     await pause(page, 3500);
-    await bring(page, page.locator('.parts-card'));
-    await pause(page, 3500);
-    await caption(page, 5, 'Submit: each part launches the Launcher and submits its form as you',
-      'Demo mode: the workflow and the approver are simulated in the browser; nothing reaches a tenant.');
-    await click(page, page.getByRole('button', { name: 'Submit 3 approvals' }), 600);
+    await bring(page, page.locator('p-message', { hasText: 'No approval:' }));
+    await caption(page, 5, 'An item with no approval of its own is granted right away, so the page says so',
+      'The installer reads each catalog item’s approval setup and lists the ones without any.');
+    await pause(page, 4000);
+    await caption(page, 5, 'Request access: the page files the access requests as you, 10 people per request',
+      'Demo mode: SailPoint is simulated in the browser; nothing reaches a tenant.');
+    await click(page, page.getByRole('button', { name: 'Request access' }), 600);
     await scrollTop(page);
-    await page.locator('table.parts').waitFor();
-    await pause(page, 5500);
+    await page.getByRole('heading', { name: /^Requested: INC0048391/ }).waitFor({ timeout: 60000 });
+    await pause(page, 4000);
 
     mark('06-my-requests');
-    await caption(page, 6, 'My bulk requests: every request by INC, part by part',
-      'Approvals come from /generic-approvals/v1; filed access requests from /access-request-status/v1.');
+    await caption(page, 6, 'My bulk requests: your access requests, grouped by INC',
+      'From /access-request-status/v1: each request’s status, who it waits for, and when temporary access ends.');
     await click(page, page.getByRole('button', { name: 'My bulk requests' }), 600);
     await settle(page, 1500);
     await click(page, groupHead(page, 'INC0048391'), 2500);
     await click(page, groupHead(page, 'INC0048391'), 800);
     await click(page, groupHead(page, 'INC0048120'), 1500);
-    await caption(page, 6, 'An earlier 600-person request: 2 of 3 parts approved, access temporary until Nov 6',
-      'Each filed access request shows its status and its removal date.');
+    await caption(page, 6, 'An earlier 500-person request: VPN for 30 days, a few still waiting for their manager',
+      'Each access request shows its status and its removal date.');
     await bring(page, page.getByText('Access requests', { exact: true }).nth(0));
     await pause(page, 4000);
     await scrollTop(page);

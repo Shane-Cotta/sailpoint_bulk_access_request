@@ -3,11 +3,10 @@
  * Used for the README screenshots and for UI work. A stub replaces
  * SailpointPluginService and answers the same API paths from fixtures.ts.
  *
- * Scenarios: new (empty), people (600 chosen: no limit, 3 parts), items, approver,
- * approver-error, temporary (approver step with temporary access), review,
- * parts-review (600 people, 3 parts, temporary), submitted, parts-submitted (both through the Launcher, the
- * default), submitted-test-endpoint (the same through the workflow test endpoint), launcher-denied (a user without
- * the Launcher Access profile submits), history,
+ * Scenarios: new (empty), people (600 chosen: no limit), items, details, inc-error (a mistyped INC),
+ * temporary (details with temporary access), review (one item has no approval: the warning), submitted (filed
+ * directly, the default), parts-review and parts-submitted (600 people through the Launcher: 3 runs of 250,
+ * temporary), launcher-denied (a user without the Launcher Access profile submits), history,
  * approvals (a non-admin item approver: 300 + 40 approvals from two bulk requests, and 3 others),
  * approvals-partial (the same, with throttling, failures and colleagues deciding first).
  */
@@ -16,13 +15,13 @@ import type { PluginContext } from '@sailpoint/ui-plugin-sdk';
 import { SailpointPluginService } from '@core';
 
 import { ApprovalsStore } from '../bulk/approvals-store';
-import type { GenericApproval } from '../bulk/bulk-api.service';
+import type { AccessRequestStatus, GenericApproval, LauncherBlock } from '../bulk/bulk-api.service';
 import { BulkConfigService } from '../bulk/bulk-config.service';
 import { NavService } from '../bulk/nav';
 import { RequestStore } from '../bulk/request-store';
 import {
-  crowdPeople, DEMO_APPROVALS, DEMO_CATALOG, DEMO_COLLEAGUE, DEMO_CONFIG, DEMO_CROWD, DEMO_HELD, DEMO_IDENTITIES, DEMO_ME,
-  DEMO_PENDING, DEMO_PENDING_INCS, DEMO_REQUESTS, demoExecutionId, demoItem, demoNewApproval, demoPerson,
+  crowdPeople, DEMO_CATALOG, DEMO_COLLEAGUE, DEMO_CONFIG, DEMO_CROWD, DEMO_HELD, DEMO_IDENTITIES, DEMO_LAUNCHER_ACCESS,
+  DEMO_ME, DEMO_PENDING, DEMO_PENDING_INCS, DEMO_REQUESTS, demoItem, demoItemApproval, demoPerson, demoRequest,
 } from './fixtures';
 import type { DemoScenario } from './scenario';
 
@@ -74,8 +73,8 @@ export class DemoPluginService {
   readonly user = computed(() => this._context()?.user ?? null);
   readonly apiReady = computed(() => true);
 
-  /** Approvals the demo's workflow runs created, newest first. */
-  private submitted: GenericApproval[] = [];
+  /** Access requests the demo user filed (directly, or through a Launcher run), newest first. */
+  private filed: AccessRequestStatus[] = [];
   private runs = 0;
   /** Item approvals waiting for the demo user (the Approvals tab), decided in place. */
   private pending: GenericApproval[] = structuredClone(DEMO_PENDING);
@@ -83,10 +82,10 @@ export class DemoPluginService {
   /** IDs whose one-off 429/503 has been served. */
   private hiccups = new Set<string>();
   faults: DemoApprovalFaults | null = null;
-  /** Launcher mode: each launch's interactive process (run k) and the form it assigns. */
-  private processes = new Map<string, { k: number; polls: number }>();
+  /** Launcher mode: each launch's interactive process (run k), the form it assigns, and the workflow's answer. */
+  private processes = new Map<string, { k: number; polls: number; answer?: { title: string; message: string } }>();
   private forms = new Map<string, { k: number; state: string; formData?: Record<string, unknown> }>();
-  /** false: play a user without the Launcher Access profile (the launch is refused). */
+  /** false: play a user without the Launcher Access profile (the page and the Launcher turn them away). */
   launcherAccess = true;
 
   whenReady(): Promise<PluginContext> {
@@ -99,7 +98,7 @@ export class DemoPluginService {
   }
 
   /** The list leaves out who decided; the single GET has it. */
-  private static listRow({ approvedBy: _b, rejectedBy: _r, assignedTo: _t, ...row }: GenericApproval): GenericApproval {
+  private static listRow({ approvedBy: _b, rejectedBy: _r, ...row }: GenericApproval): GenericApproval {
     return row;
   }
 
@@ -150,6 +149,11 @@ export class DemoPluginService {
       // `filters=id in (…)` narrows it to the chosen items (the "already has it" check).
       const who = params.get('identity-id');
       if (!who && !this.user()?.capabilities.isOrgAdmin) return Promise.reject(apiError(403, 'Forbidden'));
+      if (who === DEMO_ME.id && filterValues(path).includes(DEMO_LAUNCHER_ACCESS)) {
+        // The submit gate: does the user hold the Launcher Access profile?
+        return delay([{ id: DEMO_LAUNCHER_ACCESS, type: 'ACCESS_PROFILE', name: DEMO_CONFIG.launcherAccessName,
+          requestStatus: this.launcherAccess ? 'ASSIGNED' : 'AVAILABLE' }] as T);
+      }
       const held = (who && DEMO_HELD[who]) || {};
       const wanted = (params.get('filters') ?? '').startsWith('id in') ? new Set(filterValues(path)) : null;
       return delay(rows.filter((c) => !wanted || wanted.has(String(c.row['id']).toLowerCase()))
@@ -192,8 +196,13 @@ export class DemoPluginService {
       // Like the real Launcher: the form shows up a moment after the launch.
       const process = this.processes.get(decodeURIComponent(blocks[1]));
       if (!process) return Promise.reject(apiError(404, 'Not found'));
-      return delay({ items: process.polls++ < 1 ? [] : [{ id: `b-${process.k}`, type: 'FORM', created: new Date().toISOString(),
-        config: { formInstanceId: `f-${process.k}` }, data: { title: DEMO_CONFIG.launcherName } }] } as T);
+      const now = new Date().toISOString();
+      const items: LauncherBlock[] = process.polls++ < 1 ? [] : [{ id: `b-${process.k}`, type: 'FORM', created: now,
+        config: { formInstanceId: `f-${process.k}` }, data: { title: DEMO_CONFIG.launcherName } }];
+      // Once the workflow has taken the form, its INFO message ("Requested: …").
+      if (process.answer) items.push({ id: `m-${process.k}`, type: 'MESSAGE', created: now,
+        config: { category: 'INFO' }, data: process.answer });
+      return delay({ items } as T);
     }
     if (route.startsWith('/form-instances/v1/')) {
       const id = decodeURIComponent(route.split('/').pop()!);
@@ -201,11 +210,8 @@ export class DemoPluginService {
       if (!form) return Promise.reject(apiError(404, 'Not found'));
       const errors = form.state === 'IN_PROGRESS'
         ? [{ key: 'inc', messages: [{ text: DEMO_CONFIG.incMessage }] }] : [];
-      return delay({ id, state: form.state, formData: form.formData ?? null, formErrors: errors,
-        createdBy: { type: 'WORKFLOW_EXECUTION', id: demoExecutionId(form.k) } } as T);
+      return delay({ id, state: form.state, formData: form.formData ?? null, formErrors: errors } as T);
     }
-    if (route.startsWith('/workflow-executions/v1/')) return delay({ id: route.split('/').pop(), status: 'Running' } as T);
-    const approvals = [...this.submitted, ...DEMO_APPROVALS];
     if (route === '/generic-approvals/v1' && params.get('mine') === 'true') {
       // The Approvals tab: the user's pending item approvals, oldest first, a page at a time.
       const offset = Number(params.get('offset') ?? 0);
@@ -216,21 +222,10 @@ export class DemoPluginService {
     }
     if (route === '/generic-approvals/v1' && (params.get('filters') ?? '').startsWith('approvalId in')) {
       const wanted = new Set(filterValues(path));
-      return delay([...this.pending, ...approvals].filter((a) => wanted.has(a.id)).map(DemoPluginService.listRow) as T);
-    }
-    // Like the real API, the list leaves out approvers and deciders; the detail call has them.
-    if (route === '/generic-approvals/v1') {
-      // Like the real API: the requesterId query parameter must be the caller's own unless they're an admin
-      // (verified live: 400), and it narrows the list to that requester.
-      const requester = params.get('requesterId');
-      if (requester && requester !== DEMO_ME.id && !admin) {
-        return Promise.reject(apiError(400, "requesterId must match the calling user's identity ID"));
-      }
-      return delay(approvals.filter((a) => !requester || a.requester?.identityID === requester)
-        .map(({ approvers: _a, approvedBy: _b, rejectedBy: _r, ...row }) => row) as T);
+      return delay(this.pending.filter((a) => wanted.has(a.id)).map(DemoPluginService.listRow) as T);
     }
     if (route.startsWith('/generic-approvals/v1/')) {
-      const hit = [...this.pending, ...approvals].find((a) => a.id === route.split('/').pop());
+      const hit = this.pending.find((a) => a.id === route.split('/').pop());
       return hit ? delay(hit as T) : Promise.reject(Object.assign(new Error('Not found'), { status: 404 }));
     }
     if (route === '/access-request-status/v1' && params.get('requested-for')) {
@@ -240,8 +235,11 @@ export class DemoPluginService {
         .map((c) => ({ id: c.row['id'], name: c.row['name'], type: 'ENTITLEMENT', state: 'EXECUTING', requestType: 'GRANT_ACCESS' })) as T, 300);
     }
     if (route === '/access-request-status/v1') {
+      // requested-by=<me>: what the user filed, newest first (a Launcher run's requests are filed by its owner).
+      const by = params.get('requested-by');
       const offset = Number(params.get('offset') ?? 0);
-      return delay(DEMO_REQUESTS.slice(offset, offset + Number(params.get('limit') ?? 250)) as T);
+      return delay([...this.filed, ...DEMO_REQUESTS].filter((r) => !by || r.requester?.id === by)
+        .slice(offset, offset + Number(params.get('limit') ?? 250)) as T);
     }
     return Promise.reject(new Error(`demo: no fixture for GET ${path}`));
   }
@@ -290,13 +288,7 @@ export class DemoPluginService {
       this.forms.set(`f-${k}`, { k, state: 'ASSIGNED' });
       return delay({ interactiveProcessId: processId } as T, 400);
     }
-    if (/^\/workflows\/v1\/[^/]+\/test$/.test(path)) {
-      const input = body['input'] as { inc: string; approverId: string; partLabel?: string; accessLabel?: string };
-      const approver = DEMO_IDENTITIES.find((d) => d.id === input.approverId)?.displayName ?? 'the approver';
-      const k = this.runs++;
-      setTimeout(() => this.submitted.unshift(demoNewApproval(input.inc, approver, k, input.partLabel, input.accessLabel)), 1500);
-      return delay({ workflowExecutionId: demoExecutionId(k) } as T, 600);
-    }
+    if (path === '/access-requests/v1') return this.requestAccess(body) as Promise<T>;
     return Promise.reject(new Error(`demo: no fixture for POST ${path}`));
   }
 
@@ -315,16 +307,47 @@ export class DemoPluginService {
     }
     if (form.state !== 'COMPLETED') {
       form.state = 'COMPLETED';   // verified live: one PATCH can go ASSIGNED -> COMPLETED (the workflow took it)
-      const approverId = (data['approver'] as string[] | undefined)?.[0];
-      const approver = DEMO_IDENTITIES.find((d) => d.id === approverId)?.displayName ?? 'the approver';
-      // The Launcher workflow's own access label: "Temporary: " + duration + unit suffix.
-      const label = data['accessType'] ? `Temporary: ${data['duration']}${(data['durationUnit'] as string[])[0]}` : 'Permanent';
-      setTimeout(() => this.submitted.unshift(
-        demoNewApproval(String(data['inc']), approver, form.k, String(data['partLabel'] ?? ''), label)), 1500);
+      // The workflow files the requests in its owner's name, then posts its INFO message.
+      const people = (data['people'] as string[] | undefined)?.length ?? 0;
+      const items = (data['items'] as unknown[] | undefined)?.length ?? 0;
+      const process = [...this.processes.values()].find((p) => p.k === form.k);
+      setTimeout(() => process && (process.answer = {
+        title: `Requested: ${data['inc']}${data['partLabel'] ?? ''}`,
+        message: `${people * items} access requests filed. Each is approved the way it's set up in SailPoint.`,
+      }), 1500);
     }
     return delay({} as T);
   }
 
+  /**
+   * POST /access-requests/v1: one request per person and item, as the demo user. An item a person already has
+   * pending is skipped (existingRequests); one with no approval of its own is granted at once.
+   */
+  private requestAccess(body: Record<string, unknown>): Promise<unknown> {
+    if (!this.launcherAccess) return Promise.reject(apiError(403, 'Forbidden'));
+    const people = (body['requestedFor'] as string[]) ?? [];
+    const items = (body['requestedItems'] as { id: string; comment?: string; removeDate?: string }[]) ?? [];
+    const created = new Date().toISOString();
+    const newRequests: unknown[] = [];
+    const existingRequests: unknown[] = [];
+    for (const id of people) {
+      const doc = [...DEMO_IDENTITIES, ...DEMO_CROWD].find((d) => d.id === id);
+      const person = { id, name: doc?.displayName ?? id };
+      for (const item of items) {
+        const ref = { requestedFor: id, requestedItem: item.id };
+        if (DEMO_HELD[id]?.[item.id] === 'PENDING') {
+          existingRequests.push(ref);
+          continue;
+        }
+        newRequests.push(ref);
+        const name = String(DEMO_CATALOG.find((c) => c.row['id'] === item.id)?.row['name'] ?? item.id);
+        const free = !demoItemApproval(item.id);
+        this.filed.unshift(demoRequest(person, name, free ? 'REQUEST_COMPLETED' : 'EXECUTING', created,
+          item.comment ?? '', item.removeDate ?? null, free ? null : { status: 'PENDING' }));
+      }
+    }
+    return delay({ newRequests, existingRequests }, 500);
+  }
 }
 
 /** Fixed demo config instead of public/bulk-access.config.json. */
@@ -341,7 +364,11 @@ export class DemoConfigService extends BulkConfigService {
  */
 export function applyScenario(scenario: DemoScenario, store: RequestStore, nav: NavService,
                               more: { plugin?: unknown; approvals?: ApprovalsStore; config?: BulkConfigService } = {}): void {
-  if (scenario === 'submitted-test-endpoint') more.config?.config.update((c) => ({ ...c, submit: 'test-endpoint' }));
+  const big = scenario === 'people' || scenario === 'parts-review' || scenario === 'parts-submitted';
+  // 600 people through the Launcher: 3 runs of 250 (direct requests carry 10 people each).
+  if (scenario === 'parts-review' || scenario === 'parts-submitted') {
+    more.config?.config.update((c) => ({ ...c, submit: 'launcher' }));
+  }
   if (scenario === 'launcher-denied' && more.plugin instanceof DemoPluginService) {
     more.plugin.setOrgAdmin(false);
     more.plugin.launcherAccess = false;
@@ -364,9 +391,8 @@ export function applyScenario(scenario: DemoScenario, store: RequestStore, nav: 
   }
   if (scenario === 'new') return;
   const chosen = ['Alan Bradley', 'Andrei Popescu', 'Amelia Thornton', 'Beatriz Santos', 'Bruno Marchetti'].map((n) => demoPerson(n));
-  const big = scenario === 'people' || scenario === 'parts-review' || scenario === 'parts-submitted';
   if (scenario === 'people') {
-    // A pasted list of 600 people: no people limit, sent as 3 approvals of 250.
+    // A pasted list of 600 people: no people limit.
     store.people.set([...chosen.slice(0, 4), ...crowdPeople(596)]);
     store.peopleQuery.set('br');
     store.peopleResults.set(['Alan Bradley', 'Brenda Cooper', 'Bruno Marchetti'].map((n) => demoPerson(n)));
@@ -384,9 +410,8 @@ export function applyScenario(scenario: DemoScenario, store: RequestStore, nav: 
     store.step.set(2);
     return;
   }
-  // approver-error: the user picked themselves and mistyped the INC; both are refused live.
-  store.approver.set(demoPerson(scenario === 'approver-error' ? DEMO_ME.name : 'Aisha Bello'));
-  store.inc.set(scenario === 'approver-error' ? 'INC12345' : 'INC0048391');
+  // inc-error: a mistyped INC, refused as it's typed.
+  store.inc.set(scenario === 'inc-error' ? 'INC12345' : 'INC0048391');
   store.justification.set('Radiology is moving to the new PACS on 14 Oct; these readers need workstation access before go-live.');
   if (big || scenario === 'temporary') {
     store.accessMode.set('duration');
@@ -394,12 +419,12 @@ export function applyScenario(scenario: DemoScenario, store: RequestStore, nav: 
     store.durationUnit.set('DAYS');
   }
   if (big) store.justification.set('Hospital-wide move to the new PACS on 14 Oct: all clinical readers need workstation access for the cutover.');
-  if (scenario === 'approver' || scenario === 'approver-error' || scenario === 'temporary') {
+  if (scenario === 'details' || scenario === 'inc-error' || scenario === 'temporary') {
     store.step.set(3);
     return;
   }
   store.step.set(4);
-  if (['submitted', 'parts-submitted', 'submitted-test-endpoint', 'launcher-denied'].includes(scenario)) void store.submit();
+  if (['submitted', 'parts-submitted', 'launcher-denied'].includes(scenario)) void store.submit();
 }
 
 export function demoProviders(scenario: DemoScenario): (Provider | EnvironmentProviders)[] {

@@ -4,9 +4,10 @@ import {
   DEFAULT_CONFIG, MSG_LAUNCHER_ID, MSG_SUBMIT, parseRuntimeConfig, RuntimeConfigError, type DurationUnit, type RuntimeConfig,
 } from './runtime-config';
 import {
-  accessLabel, catalogOptions, clip, COMMENT_SEPARATOR, endDateHours, entitlementFilter, extractInc, incIsValid, justificationMax,
-  launcherFormAccess,
-  parseBulkComment, partLabel, requestableObjectTypes, partOf, removeDuration, splitIntoParts, temporaryModes, validateAccess, validateRequest, type AccessChoice,
+  accessLabel, bulkComment, catalogOptions, clip, COMMENT_SEPARATOR, endDateHours, entitlementFilter, extractInc, incIsValid,
+  JUSTIFICATION_MAX, launcherFormAccess, MSG_JUSTIFICATION, MSG_JUSTIFICATION_LONG, NO_APPROVAL_LABEL, parseBulkComment,
+  partLabel, removeDate, removeDuration, requestableObjectTypes, splitIntoParts, temporaryModes, validateAccess,
+  validateRequest, type AccessChoice,
 } from './rules';
 
 /**
@@ -17,11 +18,10 @@ import {
 const committed = {
   prefix: 'ACME',
   mode: 'dry-run',
-  submit: 'launcher',
-  launcherId: 'ln-1',            // null in the committed file; install.py writes the tenant's Launcher ID
+  submit: 'direct',
+  launcherId: null,
+  launcherAccessId: null,        // install.py writes the tenant's Launcher Access profile ID
   launcherAccessName: 'ACME Bulk Access Request - Launcher Access',
-  workflowName: 'ACME Bulk Access Request (Plugin)',
-  workflowId: null,
   incPattern: '^INC\\d{7}$',
   incMessage: 'Enter a ServiceNow incident number: INC followed by 7 digits, e.g. INC0012345.',
   incExample: 'INC0012345',
@@ -30,6 +30,7 @@ const committed = {
   itemsMax: 25,
   catalogTypes: ['ACCESS_PROFILE', 'ROLE', 'ENTITLEMENT'],
   nameStartsWith: null,
+  noApproval: [],                 // install.py lists the catalog items with no approval of their own
   launcherName: 'ACME Bulk Access Request',
   temporary: { enabled: true, allow: ['duration', 'endDate'], units: ['HOURS', 'DAYS', 'WEEKS', 'MONTHS'], maxDays: null },
   approvals: { enabled: true, concurrency: 4, useBulkEndpoint: 'auto', maxRows: 5000, showOther: false, denyCommentRequired: true },
@@ -51,7 +52,8 @@ describe('runtime config', () => {
     expect(EXAMPLE.temporary).toEqual(committed.temporary);
     expect(EXAMPLE.approvals).toEqual(committed.approvals);
     expect(EXAMPLE.catalogTypes).toEqual(['ACCESS_PROFILE', 'ROLE', 'ENTITLEMENT']);
-    expect(EXAMPLE.workflowName).toMatch(/Bulk Access Request \(Plugin\)$/);
+    expect(EXAMPLE.submit).toBe('direct');
+    expect(EXAMPLE.noApproval).toEqual([]);
   });
 
   it.each([
@@ -69,6 +71,8 @@ describe('runtime config', () => {
     [{ temporary: { maxDays: 0 } }, 'temporary.maxDays'],
     [{ temporary: { enabled: 'yes' } }, 'temporary.enabled'],
     [{ temporary: 'on' }, 'temporary'],
+    [{ noApproval: 'x' }, 'noApproval'],
+    [{ noApproval: [1] }, 'noApproval'],
   ])('rejects a bad config with a useful message (%o)', (override, fragment) => {
     expect(() => parseRuntimeConfig({ ...committed, ...override })).toThrow(RuntimeConfigError);
     expect(() => parseRuntimeConfig({ ...committed, ...override })).toThrow(fragment);
@@ -86,17 +90,23 @@ describe('runtime config', () => {
     expect(cfg.temporary).toEqual({ enabled: true, allow: ['duration'], units: ['DAYS'], maxDays: 90 });
   });
 
-  it('submits through the Launcher it names, or through the test endpoint (plugin.submit)', () => {
-    expect([EXAMPLE.submit, EXAMPLE.launcherId, EXAMPLE.launcherAccessName])
-      .toEqual(['launcher', 'ln-1', 'ACME Bulk Access Request - Launcher Access']);
-    // A file from an older install has no `submit`: it used the test endpoint.
-    const { submit: _s, launcherId: _l, ...old } = committed;
-    expect(parseRuntimeConfig(old).submit).toBe('test-endpoint');
-    expect(cfgWith({ submit: 'test-endpoint', launcherId: null }).submit).toBe('test-endpoint');
+  it('files the requests directly, or through the Launcher it names (plugin.submit)', () => {
+    expect([EXAMPLE.submit, EXAMPLE.launcherAccessName]).toEqual(['direct', 'ACME Bulk Access Request - Launcher Access']);
+    expect(cfgWith({ submit: 'launcher', launcherId: 'ln-1', launcherAccessId: 'lap-1' }))
+      .toMatchObject({ submit: 'launcher', launcherId: 'ln-1', launcherAccessId: 'lap-1' });
+    // A file from an older install: no `submit`, or the removed test endpoint. Both file directly now.
+    const { submit: _s, ...old } = committed;
+    expect(parseRuntimeConfig(old).submit).toBe('direct');
+    expect(cfgWith({ submit: 'test-endpoint' }).submit).toBe('direct');
     expect(() => cfgWith({ submit: 'backend' })).toThrow(MSG_SUBMIT);
-    // The committed neutral file (launcherId null) loads; submitting stops until install.py fills it in.
-    expect(cfgWith({ launcherId: null })).toMatchObject({ submit: 'launcher', launcherId: null });
+    // Launcher mode without an ID loads; submitting stops until install.py fills it in.
+    expect(cfgWith({ submit: 'launcher' })).toMatchObject({ submit: 'launcher', launcherId: null });
     expect(MSG_LAUNCHER_ID).toContain('plugin/install.py');
+  });
+
+  it('reads the items with no approval of their own (written by install.py)', () => {
+    expect(cfgWith({ noApproval: ['a', 'b'] }).noApproval).toEqual(['a', 'b']);
+    expect(cfgWith({ noApproval: null }).noApproval).toEqual([]);
   });
 
   it('leaves temporary access off for a config file from an older install (no `temporary` block)', () => {
@@ -119,43 +129,45 @@ describe('rules (core/bulkaccess/rules.py)', () => {
   });
 
   it('lists every problem with a request', () => {
-    const problems = validateRequest(EXAMPLE, { requesterId: 'me', approverId: 'me', people: [], items: [], inc: 'nope' });
-    expect(problems).toContain('Choose at least one person.');
-    expect(problems).toContain('Choose at least one access item.');
-    expect(problems).toContain('The approver must be someone other than you.');
-    expect(problems).toContain(EXAMPLE.incMessage);
+    const problems = validateRequest(EXAMPLE, { people: [], items: [], inc: 'nope', justification: '  ' });
+    expect(problems).toEqual(['Choose at least one person.', 'Choose at least one access item.', EXAMPLE.incMessage,
+      MSG_JUSTIFICATION]);
     const ok = validateRequest(EXAMPLE, {
-      requesterId: 'me', approverId: 'boss', people: ['p1'],
-      items: [{ id: 'a', type: 'ACCESS_PROFILE' }], inc: 'INC0012345',
+      people: ['p1'], items: [{ id: 'a', type: 'ACCESS_PROFILE' }], inc: 'INC0012345', justification: 'Quarter-end audit',
     });
     expect(ok).toEqual([]);
-    const onTheList = validateRequest(EXAMPLE, {
-      requesterId: 'me', approverId: 'boss', people: ['p1', 'boss'],
-      items: [{ id: 'a', type: 'ACCESS_PROFILE' }], inc: 'INC0012345',
-    });
-    expect(onTheList).toEqual(["The approver can't be one of the people getting the access."]);
+    // There is no approver any more: requesting access for yourself is allowed; SailPoint's own approvals decide.
+    expect(validateRequest(EXAMPLE, { people: ['me'], items: [{ id: 'a', type: 'ROLE' }], inc: 'INC0012345', justification: 'x' }))
+      .toEqual([]);
+  });
+
+  it('caps the justification for readability', () => {
+    const draft = { people: ['p'], items: [{ id: 'a', type: 'ROLE' }], inc: 'INC0012345' };
+    expect(validateRequest(EXAMPLE, { ...draft, justification: 'x'.repeat(JUSTIFICATION_MAX) })).toEqual([]);
+    expect(validateRequest(EXAMPLE, { ...draft, justification: 'x'.repeat(JUSTIFICATION_MAX + 1) }))
+      .toEqual([MSG_JUSTIFICATION_LONG]);
+    expect(MSG_JUSTIFICATION_LONG).toBe('Keep the justification to 1000 characters or fewer.');
   });
 
   it('has no people limit unless the config sets one', () => {
     const many = Array.from({ length: 1200 }, (_, i) => `p${i}`);
-    const draft = { requesterId: 'me', approverId: 'boss', people: many, items: [{ id: 'a', type: 'ACCESS_PROFILE' }], inc: 'INC0012345' };
+    const draft = { people: many, items: [{ id: 'a', type: 'ACCESS_PROFILE' }], inc: 'INC0012345', justification: 'why' };
     expect(validateRequest(EXAMPLE, draft)).toEqual([]);
     expect(validateRequest(cfgWith({ peopleMax: 1000 }), draft)).toEqual(['Choose at most 1000 people.']);
     // duplicates count once
     expect(validateRequest(cfgWith({ peopleMax: 1 }), { ...draft, people: ['a', 'a'] })).toEqual([]);
   });
 
-  it('enforces the limits, the allowed types and a chosen approver', () => {
+  it('enforces the limits and the allowed types', () => {
     const cfg = cfgWith({ peopleMax: 2, itemsMax: 1, catalogTypes: ['ROLE'] });
     const problems = validateRequest(cfg, {
-      requesterId: 'me', approverId: null, people: ['a', 'b', 'c'],
-      items: [{ id: 'x', type: 'ACCESS_PROFILE' }, { id: 'y', type: 'ROLE' }], inc: 'INC0012345',
+      people: ['a', 'b', 'c'], items: [{ id: 'x', type: 'ACCESS_PROFILE' }, { id: 'y', type: 'ROLE' }],
+      inc: 'INC0012345', justification: 'why',
     });
     expect(problems).toEqual([
       'Choose at most 2 people.',
       'Choose at most 1 access items.',
       'One of the chosen items is not an allowed type.',
-      'Choose an approver.',
     ]);
   });
 
@@ -181,6 +193,15 @@ describe('rules (core/bulkaccess/rules.py)', () => {
       .toBe('requestable eq true and name sw "AC\\"ME\\\\"');
   });
 
+  it('says which items are granted without approval', () => {
+    const opts = catalogOptions(cfgWith({ noApproval: ['2'] }), [
+      { id: '1', type: 'ACCESS_PROFILE', name: 'A', source: { name: 'AD' } },
+      { id: '2', type: 'ROLE', name: 'B' },
+    ]);
+    expect(opts.map((o) => o.subLabel)).toEqual(['Access profile · AD', 'Role · No approval: granted right away']);
+    expect(NO_APPROVAL_LABEL).toBe('No approval: granted right away');
+  });
+
   it('takes sources looked up separately and sorts by name', () => {
     const opts = catalogOptions(EXAMPLE, [
       { id: 'b', type: 'ENTITLEMENT', name: 'beta' },
@@ -194,13 +215,8 @@ describe('rules (core/bulkaccess/rules.py)', () => {
     expect(clip('abcdefghij', 5)).toBe('abcd…');
   });
 
-  it('keeps "<INC>: <justification>" within the approval comment limit', () => {
-    expect(justificationMax('INC0012345')).toBe(150 - 2 - 10);
-    expect(justificationMax('', 'INC0012345')).toBe(138);
-  });
-
   it('finds the INC in access request comments and approval names', () => {
-    expect(extractInc(EXAMPLE, 'INC0012345 | Bulk access request by admin.user | Approved by Aisha')).toBe('INC0012345');
+    expect(extractInc(EXAMPLE, 'INC0012345 | Bulk access request by admin.user | Permanent | why')).toBe('INC0012345');
     expect(extractInc(EXAMPLE, 'Bulk access INC0099999')).toBe('INC0099999');
     expect(extractInc(EXAMPLE, 'no ticket here INC12')).toBeNull();
     expect(extractInc(EXAMPLE, null)).toBeNull();
@@ -208,13 +224,15 @@ describe('rules (core/bulkaccess/rules.py)', () => {
 });
 
 describe('the bulk item comment (rules.parse_bulk_comment)', () => {
-  const BULK = 'INC0012345 | Bulk access request by Ada Lovelace | Approved by Grace Hopper | Temporary: 30 days | Quarterly audit';
+  const BULK = 'INC0012345 | Bulk access request by Ada Lovelace | Temporary: 30 days | Quarterly audit';
   const PARSED = {
-    inc: 'INC0012345', requester: 'Ada Lovelace', approver: 'Grace Hopper',
+    inc: 'INC0012345', requester: 'Ada Lovelace', approver: null,
     accessLabel: 'Temporary: 30 days', justification: 'Quarterly audit',
   };
-  const bulk = (justification: string, label = 'Permanent') =>
-    ({ inc: 'INC0012345', requester: 'Ada', approver: 'Grace', accessLabel: label, justification });
+  // Written while bulk requests had one approver: still read, so approvals already pending keep their INC grouping.
+  const OLD = 'INC0012345 | Bulk access request by Ada Lovelace | Approved by Grace Hopper | Temporary: 30 days | Quarterly audit';
+  const bulk = (justification: string, label = 'Permanent', approver: string | null = null) =>
+    ({ inc: 'INC0012345', requester: 'Ada', approver, accessLabel: label, justification });
 
   it('uses the separator definitions.py writes', () => {
     expect(COMMENT_SEPARATOR).toBe(' | ');
@@ -222,33 +240,40 @@ describe('the bulk item comment (rules.parse_bulk_comment)', () => {
 
   it.each([
     [BULK, PARSED],
-    // the justification is everything after the 4th separator, " | " included
-    ['INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent | move | to | finance', bulk('move | to | finance')],
+    [OLD, { ...PARSED, approver: 'Grace Hopper' }],
+    // the justification is everything after the 3rd separator, " | " included
+    ['INC0012345 | Bulk access request by Ada | Permanent | move | to | finance', bulk('move | to | finance')],
+    ['INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent | move | to | finance',
+      bulk('move | to | finance', 'Permanent', 'Grace')],
     // extra whitespace around the separators and inside the labels
-    ['  INC0012345   |  Bulk  access request   by  Ada Lovelace |Approved   by Grace Hopper|  Temporary: 30 days  |'
-      + '  Quarterly audit  ', PARSED],
+    ['  INC0012345   |  Bulk  access request   by  Ada Lovelace |  Temporary: 30 days  |  Quarterly audit  ', PARSED],
     // an empty justification (a trailing separator, with or without its space)
-    ['INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent | ', bulk('')],
-    ['INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent |', bulk('')],
+    ['INC0012345 | Bulk access request by Ada | Permanent | ', bulk('')],
+    ['INC0012345 | Bulk access request by Ada | Permanent |', bulk('')],
     // a multi-line justification is kept as written
-    ['INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent | line one\nline two', bulk('line one\nline two')],
+    ['INC0012345 | Bulk access request by Ada | Permanent | line one\nline two', bulk('line one\nline two')],
   ])('reads the bulk item comment (%j)', (text, expected) => {
     expect(parseBulkComment(EXAMPLE, text)).toEqual(expected);
+  });
+
+  it('writes what it reads (rules.bulk_comment)', () => {
+    const text = bulkComment(' INC0012345 ', 'Ada Lovelace', 'Temporary: 30 days', ' Quarterly audit ');
+    expect(text).toBe(BULK);
+    expect(parseBulkComment(EXAMPLE, text)).toEqual(PARSED);
   });
 
   it.each([
     null, undefined, '', 42, 'INC0012345', 'INC0012345: Quarterly audit',          // plain comments, the INC alone
     'Please approve, thanks',
-    'INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent',          // only 4 fields
-    'INC12345 | Bulk access request by Ada | Approved by Grace | Permanent | why',       // INC fails the pattern
-    'CHG0012345 | Bulk access request by Ada | Approved by Grace | Permanent | why',
-    'INC0012345 | Access request by Ada | Approved by Grace | Permanent | why',          // wrong labels
-    'INC0012345 | Bulk access request by Ada | Rejected by Grace | Permanent | why',
-    'INC0012345 | Approved by Grace | Bulk access request by Ada | Permanent | why',     // wrong order
-    'INC0012345 | Bulk access request by | Approved by Grace | Permanent | why',          // empty names or label
-    'INC0012345 | Bulk access request by Ada | Approved by  | Permanent | why',
-    'INC0012345 | Bulk access request by Ada | Approved by Grace |  | why',
-    'INC0012345 | Bulk access request byAda | Approved by Grace | Permanent | why',
+    'INC0012345 | Bulk access request by Ada | Permanent',                              // only 3 fields
+    'INC12345 | Bulk access request by Ada | Permanent | why',                           // INC fails the pattern
+    'CHG0012345 | Bulk access request by Ada | Permanent | why',
+    'INC0012345 | Access request by Ada | Permanent | why',                              // wrong label
+    'INC0012345 | Permanent | Bulk access request by Ada | why',                         // wrong order
+    'INC0012345 | Bulk access request by | Permanent | why',                             // empty name or label
+    'INC0012345 | Bulk access request by Ada |  | why',
+    'INC0012345 | Bulk access request byAda | Permanent | why',
+    'INC0012345 | Bulk access request by Ada | Approved by  | Permanent | why',          // old form, empty approver
   ])('ignores everything else (%j)', (text) => {
     expect(parseBulkComment(EXAMPLE, text)).toBeNull();
   });
@@ -260,14 +285,11 @@ describe('the bulk item comment (rules.parse_bulk_comment)', () => {
     expect(parseBulkComment(EXAMPLE, text)).toBeNull();
   });
 
-  it('reads back what the workflow writes (definitions.py loop comment, rendered)', () => {
-    const parts = {
-      inc: 'INC0012345', requester: 'Ada Lovelace', approver: 'Grace Hopper',
-      accessLabel: 'Temporary: until 2026-11-07', justification: 'Audit | see INC0099999: finance | Q4',
-    };
-    const rendered = [parts.inc, `Bulk access request by ${parts.requester}`, `Approved by ${parts.approver}`,
-      parts.accessLabel, parts.justification].join(COMMENT_SEPARATOR);
-    expect(parseBulkComment(EXAMPLE, rendered)).toEqual(parts);
+  it('reads back a justification that itself contains separators and an INC', () => {
+    const parts = { inc: 'INC0012345', requester: 'Ada Lovelace', approver: null,
+      accessLabel: 'Temporary: until 2026-11-07', justification: 'Audit | see INC0099999: finance | Q4' };
+    expect(parseBulkComment(EXAMPLE, bulkComment(parts.inc, parts.requester, parts.accessLabel, parts.justification)))
+      .toEqual(parts);
   });
 });
 
@@ -299,11 +321,6 @@ describe('parts (rules.split_into_parts / part_label)', () => {
     expect(`Bulk access INC0012345${partLabel(3, 3)}`).toBe('Bulk access INC0012345 (3/3)');
   });
 
-  it('reads the part back from an approval name, and the INC still parses', () => {
-    expect(partOf('Bulk access INC0012345 (2/3)')).toEqual({ part: 2, parts: 3 });
-    expect(partOf('Bulk access INC0012345')).toBeNull();
-    expect(extractInc(EXAMPLE, 'Bulk access INC0012345 (2/3)')).toBe('INC0012345');
-  });
 });
 
 describe('temporary access (CONTRACTS §2)', () => {
@@ -341,6 +358,20 @@ describe('temporary access (CONTRACTS §2)', () => {
     expect(removeDuration(until('2026-11-07'), NOW)).toBe(`${hours}h`);
     expect(accessLabel(until('2026-11-07'))).toBe('Temporary: until 2026-11-07');
     expect(endDateHours('2026-10-09', new Date(2026, 9, 9, 23, 0, 0))).toBe(1);
+  });
+
+  it('turns the choice into a direct request\'s removeDate', () => {
+    const at = new Date(Date.UTC(2026, 0, 31, 10, 0, 0));
+    expect(removeDate({ mode: 'permanent' }, at)).toBeNull();
+    expect(removeDate(d(2, 'HOURS'), at)).toBe('2026-01-31T12:00:00.000Z');
+    expect(removeDate(d(30, 'DAYS'), at)).toBe('2026-03-02T10:00:00.000Z');
+    expect(removeDate(d(1, 'WEEKS'), at)).toBe('2026-02-07T10:00:00.000Z');
+    // a calendar month, clamped to the last day of a shorter month
+    expect(removeDate(d(1, 'MONTHS'), at)).toBe('2026-02-28T10:00:00.000Z');
+    expect(removeDate(d(3, 'MONTHS'), at)).toBe('2026-04-30T10:00:00.000Z');
+    expect(removeDate(d(12, 'MONTHS'), at)).toBe('2027-01-31T10:00:00.000Z');
+    // an end date: the end of that day, local time
+    expect(removeDate(until('2026-11-07'), at)).toBe(new Date(2026, 10, 7, 23, 59, 59).toISOString());
   });
 
   it('accepts valid choices', () => {
@@ -409,16 +440,5 @@ describe('the Launcher form fields (rules.launcher_form_access)', () => {
     const now = new Date(2026, 9, 8, 10, 0, 0);
     const choice: AccessChoice = { mode: 'endDate', date: '2026-10-09' };
     expect(launcherFormAccess(removeDuration(choice, now))).toEqual({ accessType: true, duration: '38', durationUnit: ['h'] });
-  });
-});
-
-describe('assignedApproverNames', () => {
-  it('shows who was asked, not the admin who decided on their behalf', async () => {
-    const { assignedApproverNames } = await import('./bulk-api.service');
-    expect(assignedApproverNames({ assignedTo: [{ name: 'Aisha Bello' }], approvers: [{ name: 'admin.user' }] })).toEqual(['Aisha Bello']);
-    expect(assignedApproverNames({ approvers: [{ name: 'admin.user' }] })).toEqual(['admin.user']);
-    // decided by an admin on the approver's behalf: SailPoint records a reassignment
-    expect(assignedApproverNames({ assignedTo: null, approvers: [{ name: 'admin.user' }],
-      reassignmentHistory: [{ reassignedFrom: { name: 'Aisha Bello' } }] })).toEqual(['Aisha Bello']);
   });
 });

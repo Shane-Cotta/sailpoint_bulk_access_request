@@ -67,7 +67,7 @@ plugin's real pace (about 8 decisions a second).
 | Scene | Scenario | Shows |
 |---|---|---|
 | 00 title | – | What the solution is, and its parts |
-| 1–6 | `new` | People (search + paste 597 lines), items, temporary access, approver + INC validation, review in 3 parts, submit, My bulk requests |
+| 1–6 | `new` | People (search + paste 597 lines), items, temporary access, INC validation, review with the no-approval warning, submit (filed directly), My bulk requests |
 | 7 | `approvals` | Approvals tab as a non-admin item approver: groups by INC, drill-down, leave one out, approve with a comment, progress, result |
 | 8 | `approvals-partial` | Throttling, failures, decided by someone else, still pending, "Partly done", Retry |
 | 09 closing | – | The ISC features and APIs it uses |

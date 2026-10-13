@@ -2,36 +2,28 @@ import { Component, computed, inject, output } from '@angular/core';
 import { ButtonModule } from 'primeng/button';
 import { StepperModule } from 'primeng/stepper';
 
-import { BulkConfigService } from '../../bulk/bulk-config.service';
 import { RequestStore } from '../../bulk/request-store';
-import { incIsValid } from '../../bulk/rules';
-import { ApproverStepComponent } from './approver-step.component';
+import { DetailsStepComponent } from './details-step.component';
 import { ItemsStepComponent } from './items-step.component';
 import { PeopleStepComponent } from './people-step.component';
 import { ReviewStepComponent } from './review-step.component';
 
-/** The New request tab: a four-step guided page (people, items, approver + INC, review). */
+/** The New request tab: a four-step guided page (people, items, INC and details, review). */
 @Component({
   selector: 'app-new-request',
-  imports: [ApproverStepComponent, ButtonModule, ItemsStepComponent, PeopleStepComponent, ReviewStepComponent, StepperModule],
+  imports: [ButtonModule, DetailsStepComponent, ItemsStepComponent, PeopleStepComponent, ReviewStepComponent, StepperModule],
   templateUrl: './new-request.component.html',
   styleUrl: './steps.scss',
 })
 export class NewRequestComponent {
   protected readonly store = inject(RequestStore);
-  private readonly cfg = inject(BulkConfigService).config;
   readonly showHistory = output<void>();
 
   /** Can the user move past step n? */
   protected readonly ready = computed<Record<number, boolean>>(() => ({
     1: this.store.people().length > 0,
     2: this.store.items().length > 0,
-    3: !!this.store.approver()
-      && this.store.approver()!.id !== this.store.requesterId()
-      && !this.store.people().some((p) => p.id === this.store.approver()!.id)
-      && incIsValid(this.cfg(), this.store.inc())
-      && !!this.store.justification().trim()
-      && !this.store.accessProblems().length,
+    3: !this.store.problems().length,
   }));
 
   /** Steps after an unfinished one are locked; once submitted, only the last step is shown. */
