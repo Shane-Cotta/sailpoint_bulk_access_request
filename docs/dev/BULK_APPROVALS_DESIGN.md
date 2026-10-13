@@ -1,13 +1,15 @@
 # Design: bulk approvals for item approvers
 
-**Status:** 2026-10-08. Phases 0–3 done (Phase 0 live checks as a non-admin; Phases 1–3 on `feature/bulk-approvals-core`
-and `feature/bulk-approvals-ui`). Remaining: the optional `approval.bulkApprover: "skip"`, the admin view-only switch, and a
-live governance-group check. The decide/confirm contract is `docs/dev/CONTRACTS.md` §7.
+**Status:** 2026-10-13. Phases 0–3 done (Phase 0 live checks as a non-admin; Phases 1–3 on `feature/bulk-approvals-core`
+and `feature/bulk-approvals-ui`). The phase-3 idea of skipping the bulk approver is now the design for everyone
+(`feature/no-bulk-approver`): there is no bulk approval any more, so the item approvals below are the only ones.
+Remaining: the admin view-only switch and a live governance-group check. The decide/confirm contract is
+`docs/dev/CONTRACTS.md` §7. API paths below are the GA `/generic-approvals/v1` ones (they replaced `/v2025/…`).
 
 ## The problem
-A bulk request has one *bulk approver*. Once they approve, the workflow submits a normal access request for every person.
-Each item's own approval scheme (owner, manager, source owner, governance group) **still applies** to every one of those
-requests. So 1,000 people × 1 owner-approved item means 1,000 approvals for the owner.
+A bulk request files a normal access request for every person and item, and each item's own approval scheme (owner, manager,
+source owner, governance group) applies to every one of those requests. (When this was designed a single *bulk approver*
+approved the request first; that step is gone.) So 1,000 people × 1 owner-approved item means 1,000 approvals for the owner.
 
 ISC gives ordinary approvers no bulk action. Their **Approvals** page shows one card at a time, each with its own
 Approve or Deny. Only the admin page (*Approvals Administration*) has checkboxes with Approve, Cancel and Reassign,
@@ -19,19 +21,19 @@ recorded **as that approver's own decision**.
 ## Verified live (2026-10-08, test tenant)
 | Fact | Result |
 |---|---|
-| Item approval schemes on workflow requests | **Applied.** A live bulk run (3 people, an access profile with `approvalSchemes: [{approverType: OWNER}]`) created 3 approvals (`scheme ACCESS_PROFILE_OWNER`), all assigned to the non-admin owner, not forwarded. |
-| Requester of workflow requests | Always the **workflow owner** (the PAT user), not the person who filled in the form. |
-| Workflow owner is also the approver | ISC **escalates** that approval to an admin ("…because the Identity X is the Requester"). It doesn't approve it automatically. |
-| Access-request approvals in the unified API | `GET /v2025/generic-approvals` returns them as `type: ACCESS_REQUEST_APPROVAL`, with `requestee`, `requestedTarget`, `assignedTo`, `approvalConfig.serialChain`, `dueDate` and `referenceData[type=accessRequestId]`. |
+| Item approval schemes on bulk requests | **Applied.** A live bulk run (3 people, an access profile with `approvalSchemes: [{approverType: OWNER}]`) created 3 approvals (`scheme ACCESS_PROFILE_OWNER`), all assigned to the non-admin owner, not forwarded. |
+| Requester | Launcher runs: always the **workflow owner** (the PAT user). The plugin's direct requests (2026-10-13): the signed-in user. |
+| Requester is also the approver | ISC **escalates** that approval to an admin ("…because the Identity X is the Requester"). It doesn't approve it automatically. |
+| Access-request approvals in the unified API | `GET /generic-approvals/v1` returns them as `type: ACCESS_REQUEST_APPROVAL`, with `requestee`, `requestedTarget`, `assignedTo`, `approvalConfig.serialChain`, `dueDate` and `referenceData[type=accessRequestId]`. |
 | INC on those approvals | In `comments[]`, but **only with `include-comments=true`** (they're left out without it). |
 | Comment text search | Not possible (`search co` returns 0, and `comments` isn't a filter field). **Group by INC in the page.** |
 | `mine=true` | Returns only the caller's approvals (an admin with no parameters gets the whole org). For a **non-admin**, no parameters already returns only their own; `approverId=<someone else>` → 400 "approverId must match the calling user's identity ID". |
 | `include-comments=true` quirk | Rows then carry `comments[]` but **no `assignedTo`**; without it, `assignedTo` but no comments (also for a non-admin). So rely on `mine=true`, never on `assignedTo`. |
 | `generic-approvals/bulk-approve` / `bulk-reject` | `{approvalIds[], comment?}`, **max 50**, returns `202 {}`. **Unknown IDs are accepted too**, so a 202 proves nothing. **403 for a non-admin, even on their own approvals.** |
 | `access-request-approvals/bulk-approve` | Max 50, ORG_ADMIN or `idn:access-request-administration:write`. v3 `/access-request-approvals/pending` without `owner-id` → 400 "owner-id fields must be specified". |
-| Single approve / reject as a non-admin | `POST /v2025/generic-approvals/{id}/approve` → 200 with the approval; `/reject` → **also 200 with the approval** (not 204 as the spec says). Audit: `approvedBy`/`rejectedBy` = the caller, `actionedAs [{type: ACCESS_PROFILE_OWNER}]`; the access request's `approvalDetails` show *reviewedBy* = the caller. |
+| Single approve / reject as a non-admin | `POST /generic-approvals/v1/{id}/approve` → 200 with the approval; `/reject` → **also 200 with the approval** (not 204 as the spec says). Audit: `approvedBy`/`rejectedBy` = the caller, `actionedAs [{type: ACCESS_PROFILE_OWNER}]`; the access request's `approvalDetails` show *reviewedBy* = the caller. |
 | Someone else's approval, as a non-admin | `POST …/{id}/reject` → **403**, nothing changed. The server enforces "own approvals only" for non-admins. |
-| Confirming | The list (also with `filters=approvalId in (…)`) has `status` but **empty `approvedBy`/`rejectedBy`**; only the single `GET /v2025/generic-approvals/{id}` names the decider. |
+| Confirming | The list (also with `filters=approvalId in (…)`) has `status` but **empty `approvedBy`/`rejectedBy`**; only the single `GET /generic-approvals/v1/{id}` names the decider. |
 | Rate limit | 100 requests per 10 s per client and API version, then 429 with `Retry-After`. The plugin SDK doesn't expose response headers, so the page backs off instead of reading `Retry-After`. |
 
 From the docs, **not yet tested live**:
@@ -42,34 +44,34 @@ From the docs, **not yet tested live**:
 
 ### Where it lives
 A new **Approvals** tab in the existing UI plugin, next to *New request* and *My bulk requests*.
-- **Submitting** a bulk request still needs ORG_ADMIN, because it uses the workflow test endpoint.
+- **Submitting** needs the Launcher Access profile (no ORG_ADMIN).
 - **The Approvals tab** works for anyone who can see the plugin. It only ever reads and decides the signed-in user's own approvals.
 
 **Visibility:** each plugin slot has `restrictToUsers[]` (identity IDs; empty means everyone). Options:
-1. Make the plugin public. Everyone sees it; non-admins get the Approvals tab by default, and *New request* shows the
-   existing ORG_ADMIN banner and points them to the Launcher.
+1. Make the plugin public. Everyone sees it; only holders of the Launcher Access profile can submit from *New request*.
 2. Keep it private and add item owners to `restrictToUsers`. That's a manual list; an installer helper could fill it from
    the owners of the catalog items.
 
 ### Data
 ```
-GET /v2025/generic-approvals?mine=true&include-comments=true&limit=250&offset=…
+GET /generic-approvals/v1?mine=true&include-comments=true&limit=250&offset=…
     &filters=status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"
     &sorters=createdDate
 ```
 - **Paging:** page through 250 at a time, stopping at a cap (`approvals.maxRows`, default 5,000).
 - **Parsing:** `parseBulkComment()` reads each row's comments. It is a new shared rule in `rules.py` and `rules.ts`.
-  - The format is `INC… | Bulk access request by … | Approved by … | <access> | <justification>`.
-  - The justification is everything after the 4th separator, since it may contain `|`.
+  - The format is `INC… | Bulk access request by … | <access> | <justification>`; the older
+    `INC… | Bulk access request by … | Approved by … | <access> | <justification>` is still read.
+  - The justification is everything after the last fixed field, since it may contain `|`.
 - **Grouping:** by INC. Rows without a bulk comment go in an *Other* group, hidden by default.
-- **Group card fields:** INC, number of approvals / people / items, requester, bulk approver, access label, the schemes
+- **Group card fields:** INC, number of approvals / people / items, requester, access label, the schemes
   (from `serialChain[].identityType`), the oldest created date and the earliest due date.
 
 ### Deciding
 Approve all or Deny all for an INC, minus any rows excluded in the drill-down. One comment covers all of them; it's
 required to deny.
 
-1. **Default path (everyone):** single `POST /v2025/generic-approvals/{id}/approve` or `/reject` with `{comment}`.
+1. **Default path (everyone):** single `POST /generic-approvals/v1/{id}/approve` or `/reject` with `{comment}`.
    - Up to `approvals.concurrency` calls at a time (default 4), held under ~8 requests per second.
    - A 429 or 5xx is retried with a growing back-off (the SDK hides `Retry-After`).
    - 1,000 items take about 2 minutes, with progress shown.
@@ -101,12 +103,11 @@ required to deny.
 - `show-config` warns when approvals are on but the plugin is private and `restrictToUsers` is empty.
 
 ### Request-side changes (fewer approvals, less confusion)
-- **Dedicated service identity as workflow owner** (`owner` in the config). If the owner is a person who also approves
-  items, those approvals are escalated to an admin. `show-config` should warn about this.
-- **Email wording:** "Approved" means approved by the bulk approver. Add: "Item owners may still need to approve; they
-  can use the Approvals tab." The bulk approval's description should say the same.
-- **Optional, phase 3:** `approval.bulkApprover: "skip"`, which drops the bulk step and relies only on the item
-  schemes. This is a governance decision and stays off by default.
+- **Dedicated service identity as Launcher workflow owner** (`owner` in the config). If the owner is a person who also
+  approves items, those approvals are escalated to an admin. `show-config` warns about this.
+- **No bulk approver** (done, `feature/no-bulk-approver`): the bulk approval step, its settings and emails are removed; each
+  item is approved only by its own scheme. The plugin files the requests as the signed-in user by default, the *Requested*
+  email points item approvers to the Approvals tab, and items with no approval of their own are flagged before submitting.
 
 ## Files
 - **Plugin:**
@@ -136,9 +137,8 @@ required to deny.
   6. `restrictToUsers` makes the plugin visible to that user.
 - **Phase 1 (done):** core rules and config, runtime config, manifest and installer, Python tests.
 - **Phase 2 (done):** plugin API, store, component, demo mode, specs.
-- **Phase 3 (done):** docs (README, USAGE, plugin/README, INSTALL `owner`, CONTRACTS §7); "Email Approved" says item
-  approvals still apply and points to the Approvals tab (live mode only; left out of the bulk approval's description,
-  which could pass 150 characters with the templated name and label); `show-config` and the installers print a note
-  recommending a service identity when `owner` is null.
-- **Remaining (optional):** `approval.bulkApprover: "skip"`; the admin "show everyone's pending (view only)" switch; an
-  installer helper to fill `restrictToUsers` from item owners; a live governance-group test.
+- **Phase 3 (done):** docs (README, USAGE, plugin/README, INSTALL `owner`, CONTRACTS §7); the email points item approvers
+  to the Approvals tab; `show-config` and the installers print a note recommending a service identity when `owner` is null.
+  The bulk approver was then removed altogether (`feature/no-bulk-approver`).
+- **Remaining (optional):** the admin "show everyone's pending (view only)" switch; an installer helper to fill
+  `restrictToUsers` from item owners; a live governance-group test.

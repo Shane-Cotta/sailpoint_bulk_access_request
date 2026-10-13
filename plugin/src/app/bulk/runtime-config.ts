@@ -19,9 +19,11 @@ export const DURATION_UNIT_NAMES: readonly DurationUnit[] = ['HOURS', 'DAYS', 'W
 
 /**
  * SailPoint's workflow Loop rejects more than 250 iterations (config.LOOP_MAX, verified
- * live), so one workflow run, and so one approval, covers at most this many people.
+ * live), so one Launcher run covers at most this many people.
  */
 export const LOOP_MAX = 250;
+/** One access request names at most 10 people (config.ACCESS_REQUEST_PEOPLE_MAX): direct requests go in batches. */
+export const ACCESS_REQUEST_PEOPLE_MAX = 10;
 
 export interface TemporaryConfig {
   enabled: boolean;
@@ -33,13 +35,15 @@ export interface TemporaryConfig {
 
 /**
  * How the page submits a request (config.PLUGIN_SUBMIT_MODES, `plugin.submit`):
- *  - launcher: it starts the Launcher deployment's Launcher and submits its form as the signed-in user, so anyone
- *    holding the Launcher Access profile can submit (CONTRACTS §9);
- *  - test-endpoint: it starts the disabled plugin workflow through the workflow test endpoint (ORG_ADMIN only).
+ *  - direct: it files the access requests itself, as the signed-in user (POST /access-requests, 10 people at a time),
+ *    so every request carries the requester and each item is approved the way it's set up in SailPoint;
+ *  - launcher: it starts the Launcher deployment's Launcher and submits its form as the signed-in user; the
+ *    Launcher's workflow then files the requests (CONTRACTS §9).
+ * Either way only holders of the Launcher Access profile may submit.
  */
-type SubmitMode = 'launcher' | 'test-endpoint';
-const SUBMIT_MODES: readonly SubmitMode[] = ['launcher', 'test-endpoint'];
-export const MSG_SUBMIT = 'submit must be "launcher" or "test-endpoint".';
+export type SubmitMode = 'direct' | 'launcher';
+const SUBMIT_MODES: readonly SubmitMode[] = ['direct', 'launcher'];
+export const MSG_SUBMIT = 'submit must be "direct" or "launcher".';
 export const MSG_LAUNCHER_ID = 'This page doesn\'t know which Launcher to use yet (launcherId is missing): run plugin/install.py, '
   + 'which writes it when submit is "launcher".';
 
@@ -66,28 +70,29 @@ export interface ApprovalsConfig {
 export interface RuntimeConfig {
   /** Names every object install.py created, e.g. "ACME". */
   prefix: string;
-  /** "dry-run" (approve, but request nothing) or "live". */
+  /** "dry-run" (check everything, but request nothing) or "live". */
   mode: 'dry-run' | 'live';
-  /** How the page submits (see SubmitMode). A file without it comes from an older install: test-endpoint. */
+  /** How the page submits (see SubmitMode). */
   submit: SubmitMode;
   /** The Launcher to start in launcher mode (a non-admin can't list launchers, so install.py writes its ID). */
   launcherId: string | null;
-  /** The access profile that lets people use the Launcher: what a user without it is told to request. */
+  /** The access profile whose holders may submit (null: not installed, so nobody is turned away). */
+  launcherAccessId: string | null;
+  /** Its name: what a user without it is told to request. */
   launcherAccessName: string;
-  /** The plugin workflow (test-endpoint mode), found by name when workflowId is empty. */
-  workflowName: string;
-  workflowId: string | null;
   incPattern: string;
   incMessage: string;
   incExample: string;
   /** null = no limit. */
   peopleMax: number | null;
-  /** People per workflow run (one approval each), 1..LOOP_MAX. */
+  /** People per Launcher run (launcher mode), 1..LOOP_MAX. */
   partSize: number;
   itemsMax: number;
   catalogTypes: ItemType[];
   nameStartsWith: string | null;
-  /** The Launcher's name: where people without ORG_ADMIN go instead in test-endpoint mode. */
+  /** Catalog items SailPoint grants without any approval (worked out by install.py): the page labels them. */
+  noApproval: string[];
+  /** The Launcher's name, for messages. */
   launcherName: string;
   temporary: TemporaryConfig;
   approvals: ApprovalsConfig;
@@ -96,11 +101,10 @@ export interface RuntimeConfig {
 export const DEFAULT_CONFIG: RuntimeConfig = {
   prefix: '',
   mode: 'dry-run',
-  submit: 'test-endpoint',
+  submit: 'direct',
   launcherId: null,
+  launcherAccessId: null,
   launcherAccessName: 'Bulk Access Request - Launcher Access',
-  workflowName: 'Bulk Access Request (Plugin)',
-  workflowId: null,
   incPattern: '^INC\\d{7}$',
   incMessage: 'Enter a ServiceNow incident number: INC followed by 7 digits, e.g. INC0012345.',
   incExample: 'INC0012345',
@@ -109,6 +113,7 @@ export const DEFAULT_CONFIG: RuntimeConfig = {
   itemsMax: 25,
   catalogTypes: [...ITEM_TYPES],
   nameStartsWith: null,
+  noApproval: [],
   launcherName: 'Bulk Access Request',
   // Off when the file has no `temporary` block: that file comes from an older install,
   // whose workflow would ignore the duration and grant the access permanently.
@@ -145,15 +150,16 @@ export function parseRuntimeConfig(raw: unknown): RuntimeConfig {
   cfg.prefix = str('prefix') ?? cfg.prefix;
   cfg.mode = data['mode'] === 'live' ? 'live' : 'dry-run';
   if (data['submit'] !== undefined && data['submit'] !== null) {
-    if (!SUBMIT_MODES.includes(data['submit'] as SubmitMode)) throw new RuntimeConfigError(MSG_SUBMIT);
-    cfg.submit = data['submit'] as SubmitMode;
+    // "test-endpoint" (an install from before the direct mode) is what "direct" replaced.
+    const submit = data['submit'] === 'test-endpoint' ? 'direct' : data['submit'];
+    if (!SUBMIT_MODES.includes(submit as SubmitMode)) throw new RuntimeConfigError(MSG_SUBMIT);
+    cfg.submit = submit as SubmitMode;
   }
   // Launcher mode without an ID (the committed neutral file) still loads, so the page can be browsed; submitting
   // then stops with MSG_LAUNCHER_ID. plugin/install.py always writes the ID in launcher mode.
   cfg.launcherId = str('launcherId') || null;
+  cfg.launcherAccessId = str('launcherAccessId') || null;
   cfg.launcherAccessName = str('launcherAccessName') || cfg.launcherAccessName;
-  cfg.workflowName = str('workflowName') || cfg.workflowName;
-  cfg.workflowId = str('workflowId') || null;
   cfg.incPattern = str('incPattern') || cfg.incPattern;
   cfg.incMessage = str('incMessage') || cfg.incMessage;
   cfg.incExample = str('incExample') || cfg.incExample;
@@ -169,6 +175,13 @@ export function parseRuntimeConfig(raw: unknown): RuntimeConfig {
   cfg.temporary = parseTemporary(data['temporary']);
   cfg.approvals = parseApprovals(data['approvals']);
   cfg.nameStartsWith = str('nameStartsWith') || null;
+  const noApproval = data['noApproval'];
+  if (noApproval !== undefined && noApproval !== null) {
+    if (!Array.isArray(noApproval) || noApproval.some((id) => typeof id !== 'string')) {
+      throw new RuntimeConfigError('noApproval must be a list of item IDs.');
+    }
+    cfg.noApproval = [...noApproval] as string[];
+  }
   cfg.launcherName = str('launcherName') || cfg.launcherName;
   const types = Array.isArray(data['catalogTypes']) ? (data['catalogTypes'] as unknown[]) : null;
   if (types) {

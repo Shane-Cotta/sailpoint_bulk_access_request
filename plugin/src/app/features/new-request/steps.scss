@@ -5,6 +5,7 @@
 .step__intro { margin: 0; color: var(--spds-text-muted-color, #667085); }
 
 .columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 1rem; }
+.columns--one { grid-template-columns: minmax(0, 46rem); }
 .panel {
   display: flex; flex-direction: column; gap: 0.5rem; padding: 1rem;
   border: 1px solid var(--spds-content-border-color, #d0d5dd); border-radius: 0.5rem;
@@ -18,14 +19,10 @@
 .field__ok { color: var(--p-green-700, #15803d); font-weight: 500; }
 
 .results { list-style: none; margin: 0.25rem 0 0; padding: 0; max-height: 18rem; overflow: auto; }
-.result, .approver {
+.result {
   display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
   padding: 0.45rem 0.25rem; border-bottom: 1px solid var(--spds-content-border-color, #eaecf0);
 }
-.approver {
-  padding: 0.6rem 0.75rem; border: 1px solid var(--spds-content-border-color, #d0d5dd); border-radius: 0.5rem;
-}
-.approver--bad { border-color: var(--p-red-500, #ef4444); }
 .result__text { display: flex; flex-direction: column; min-width: 0; }
 .result__name { font-weight: 600; }
 .result__meta { color: var(--spds-text-muted-color, #667085); font-size: 0.875rem; overflow: hidden; text-overflow: ellipsis; }
@@ -72,9 +69,9 @@
   display: flex; flex-direction: column; gap: 1rem; padding: 1.25rem;
   border: 1px solid var(--spds-content-border-color, #d0d5dd); border-left-width: 5px; border-radius: 0.5rem;
 }
-.outcome--waiting, .outcome--starting, .outcome--still-waiting, .outcome--mixed { border-left-color: var(--p-orange-500, #f97316); }
-.outcome--approved { border-left-color: var(--p-green-600, #16a34a); }
-.outcome--denied, .outcome--failed, .outcome--error { border-left-color: var(--p-red-600, #dc2626); }
+.outcome--sending, .outcome--partial { border-left-color: var(--p-orange-500, #f97316); }
+.outcome--requested { border-left-color: var(--p-green-600, #16a34a); }
+.outcome--error { border-left-color: var(--p-red-600, #dc2626); }
 .outcome__head { display: flex; align-items: center; gap: 1rem; }
 .outcome__title { margin: 0; font-size: 1.25rem; }
 .outcome__message { margin: 0.25rem 0 0; }
@@ -82,9 +79,9 @@
   display: inline-flex; align-items: center; justify-content: center; width: 2.5rem; height: 2.5rem;
   border-radius: 50%; font-size: 1.3rem; font-weight: 700; color: #fff; background: var(--p-gray-500, #667085);
 }
-.outcome--approved .outcome__icon { background: var(--p-green-600, #16a34a); }
-.outcome--mixed .outcome__icon { background: var(--p-orange-500, #f97316); }
-.outcome--denied .outcome__icon, .outcome--failed .outcome__icon, .outcome--error .outcome__icon { background: var(--p-red-600, #dc2626); }
+.outcome--requested .outcome__icon { background: var(--p-green-600, #16a34a); }
+.outcome--partial .outcome__icon { background: var(--p-orange-500, #f97316); }
+.outcome--error .outcome__icon { background: var(--p-red-600, #dc2626); }
 :host ::ng-deep .outcome__spinner { width: 2.5rem; height: 2.5rem; margin: 0; }
 
 // Chosen people: a filtered, paged list (a request can hold thousands of people).
@@ -122,7 +119,7 @@
   clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
 }
 
-// Parts (a request split into several approvals)
+// Parts (a request sent as several Launcher runs)
 .parts-card { display: flex; flex-direction: column; gap: 0.5rem; }
 .summary__more { margin-top: 0.4rem; padding-left: 1.1rem; }
 .mini { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
@@ -131,4 +128,3 @@
   padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--spds-content-border-color, #d0d5dd);
 }
 .mini td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--spds-content-border-color, #eaecf0); vertical-align: top; }
-.parts__id { font-size: 0.8rem; }

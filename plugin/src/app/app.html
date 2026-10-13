@@ -3,7 +3,8 @@
     <div class="page__heading">
       <h1 class="page__title">{{ title() }}</h1>
       <p class="page__subtitle">
-        Request access for several people at once. One approver decides; the ServiceNow INC number goes on every item.
+        Request access for several people at once, with the ServiceNow INC number on every request. Each item is approved
+        the way it's set up in SailPoint.
         @if (approvalsOn()) { Item approvers decide a whole bulk request at once on the Approvals tab. }
       </p>
     </div>
@@ -38,16 +39,6 @@
     </p-tablist>
     <p-tabpanels>
       <p-tabpanel value="new">
-        @if (adminOnly()) {
-          <p-message [severity]="isAdmin() ? 'info' : 'warn'" class="banner">
-            <div class="banner__text">
-              <strong>{{ isAdmin() ? 'For administrators.' : 'You need ORG_ADMIN to submit from this page.' }}</strong>
-              This page starts the bulk request workflow through SailPoint's workflow test endpoint, which only users who may
-              test workflows (ORG_ADMIN) can call. Everyone else: open the Launchpad and use the
-              <strong>{{ cfg().launcherName }}</strong> Launcher. It does the same thing for any user.
-            </div>
-          </p-message>
-        }
         <!-- Each tab's code is a lazy chunk (next to main-*.js), so the first paint only waits for the shell. -->
         @defer (on immediate) {
           <app-new-request (showHistory)="tab.set('mine')" />

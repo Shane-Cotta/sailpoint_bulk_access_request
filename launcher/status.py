@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bulkaccess import config as config_mod  # noqa: E402
-from bulkaccess import definitions  # noqa: E402
+from bulkaccess import api, definitions  # noqa: E402
 from bulkaccess.tenant import Tenant, TenantError  # noqa: E402
 import install  # noqa: E402
 
@@ -44,7 +44,7 @@ def main(argv=None) -> int:
 
     wf = install.find_workflow(t, cfg.launcher_workflow_name)
     if wf:
-        full = t.call("GET", f"/v2025/workflows/{wf['id']}")
+        full = t.call("GET", f"{api.WORKFLOWS}/{wf['id']}")
         live = "Request Access" in full["definition"]["steps"]
         manage = (full["definition"]["steps"].get("Request Access") or {}).get("attributes", {}).get("steps", {}).get("Manage Access", {})
         scoped = "filter.$" in (full.get("trigger") or {}).get("attributes", {})
@@ -54,9 +54,6 @@ def main(argv=None) -> int:
             print("     note: installed mode differs from the config; re-run install.py to apply the config.")
         if live and manage.get("versionNumber") != 2:
             print("     note: Manage Access is not version 2 (no temporary access); re-run install.py.")
-        runs = t.call("GET", f"/v2025/workflows/{wf['id']}/executions?limit=5") or []
-        for r in runs:
-            print(f"     run {r.get('id')}  {r.get('status'):9}  {r.get('startTime', '')[:19]}")
         ok &= bool(full.get("enabled")) and scoped
     else:
         ok = False; print(f"[--] Workflow  missing: {cfg.launcher_workflow_name}")

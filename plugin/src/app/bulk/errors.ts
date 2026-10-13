@@ -40,7 +40,7 @@ export function describeError(err: unknown, context: ErrorContext = 'read', what
 
 /**
  * Starting a Launcher without its access: 401/403, or (verified live for a user without Launcher access on
- * GET /v2025/launchers) a 500 whose message says "insufficient authorization".
+ * GET /launchers/v1) a 500 whose message says "insufficient authorization".
  */
 export function isLauncherAccessDenied(err: unknown): boolean {
   const e = err as ApiErrorLike;
@@ -48,20 +48,25 @@ export function isLauncherAccessDenied(err: unknown): boolean {
   return e?.status === 500 && /insufficient authori[sz]ation/i.test(`${bodyText(e.body)} ${e.message ?? ''}`);
 }
 
-type SubmitConfig = Pick<RuntimeConfig, 'submit' | 'launcherName' | 'launcherAccessName'>;
+type SubmitConfig = Pick<RuntimeConfig, 'submit' | 'launcherAccessName'>;
+
+/** What a user without the Launcher Access profile is told (before anything is sent). */
+export function msgNeedsLauncherAccess(cfg: Pick<RuntimeConfig, 'launcherAccessName'>): string {
+  return `To submit, you need '${cfg.launcherAccessName}'. Request it in the Request Center.`;
+}
 
 /**
  * An error while submitting, worded for the submit mode: through the Launcher a refusal means the user lacks the
- * Launcher Access profile; through the workflow test endpoint it means they aren't ORG_ADMIN.
+ * Launcher Access profile; a direct request that SailPoint refuses means the user may not request access for those
+ * people (the tenant's "request for others" settings), or the session expired.
  */
 export function describeSubmitError(err: unknown, cfg: SubmitConfig): string {
   if (cfg.submit === 'launcher') {
-    if (isLauncherAccessDenied(err)) {
-      return `To submit, you need '${cfg.launcherAccessName}'. Request it in the Request Center.`;
-    }
+    if (isLauncherAccessDenied(err)) return msgNeedsLauncherAccess(cfg);
   } else if (refused(err)) {
-    return `SailPoint refused the call (HTTP ${(err as ApiErrorLike).status}). Submitting from this page needs ORG_ADMIN `
-      + `(the right to test workflows). Use the ${cfg.launcherName} Launcher in the Launchpad instead.`;
+    return `SailPoint refused the request (HTTP ${(err as ApiErrorLike).status}). Your account may not be allowed to `
+      + 'request access for these people (the tenant\'s "request for others" settings), or your session expired: '
+      + 'reload the page and try again.';
   }
   return describeError(err);
 }

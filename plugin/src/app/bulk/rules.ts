@@ -11,12 +11,21 @@ export const TYPE_LABELS: Record<ItemType, string> = {
   ENTITLEMENT: 'Entitlement',
 };
 
-/** SailPoint limits on a generic approval task's text fields (rules.py). */
-export const APPROVAL_NAME_MAX = 50;
-export const APPROVAL_DESCRIPTION_MAX = 150;
-export const APPROVAL_COMMENT_MAX = 150;
+/**
+ * The justification travels in every access request's comment. SailPoint accepts long comments (4,000 characters
+ * verified live); this keeps them readable for the item approvers (rules.JUSTIFICATION_MAX).
+ */
+export const JUSTIFICATION_MAX = 1000;
+export const MSG_JUSTIFICATION = 'Enter a business justification.';
+export const MSG_JUSTIFICATION_LONG = `Keep the justification to ${JUSTIFICATION_MAX} characters or fewer.`;
 
-/** One access item as the workflow's Manage Access step needs it. */
+/**
+ * Shown next to catalog items whose own approval setup has no approver (install.py works it out: `noApproval`):
+ * SailPoint grants them as soon as they're requested (rules.NO_APPROVAL_LABEL).
+ */
+export const NO_APPROVAL_LABEL = 'No approval: granted right away';
+
+/** One access item as an access request (and the Launcher workflow's Manage Access step) needs it. */
 export interface AccessItem {
   id: string;
   type: ItemType;
@@ -30,17 +39,19 @@ export function incIsValid(cfg: Pick<RuntimeConfig, 'incPattern'>, value: string
 }
 
 export interface RequestDraft {
-  requesterId: string;
-  approverId: string | null | undefined;
   people: string[];
   items: { id: string; type: string }[];
   inc: string;
+  justification: string;
 }
 
-/** Everything wrong with a bulk request, as sentences (empty list = OK). Same order as rules.py. */
+/**
+ * Everything wrong with a bulk request, as sentences (empty list = OK). Same order as rules.py. Each item is then
+ * approved the way SailPoint has it set up; there is no approval for the request as a whole.
+ */
 export function validateRequest(cfg: RuleConfig, draft: RequestDraft): string[] {
   const problems: string[] = [];
-  const { requesterId, approverId, people, items, inc } = draft;
+  const { people, items, inc, justification } = draft;
   if (!people.length) problems.push('Choose at least one person.');
   // No upper bound unless the config sets one: big lists go out in parts (splitIntoParts).
   if (cfg.peopleMax !== null && new Set(people).size > cfg.peopleMax) problems.push(`Choose at most ${cfg.peopleMax} people.`);
@@ -49,30 +60,11 @@ export function validateRequest(cfg: RuleConfig, draft: RequestDraft): string[] 
   if (items.some((i) => !cfg.catalogTypes.includes(i.type as ItemType))) {
     problems.push('One of the chosen items is not an allowed type.');
   }
-  if (!approverId) {
-    problems.push('Choose an approver.');
-  } else if (approverId === requesterId) {
-    // SailPoint reassigns self-approvals to another admin, so refuse up front.
-    problems.push('The approver must be someone other than you.');
-  } else if (people.includes(approverId)) {
-    // Nobody approves access for themselves, even inside a bulk request.
-    problems.push("The approver can't be one of the people getting the access.");
-  }
   if (!incIsValid(cfg, inc)) problems.push(cfg.incMessage);
+  const text = (justification ?? '').trim();
+  if (!text) problems.push(MSG_JUSTIFICATION);
+  else if (text.length > JUSTIFICATION_MAX) problems.push(MSG_JUSTIFICATION_LONG);
   return problems;
-}
-
-export function clip(text: string, limit: number): string {
-  const flat = String(text).split(/\s+/).filter(Boolean).join(' ');
-  return flat.length <= limit ? flat : flat.slice(0, limit - 1) + '…';
-}
-
-/**
- * The workflow writes "<INC>: <justification>" into the generic approval's
- * comment, which SailPoint caps at APPROVAL_COMMENT_MAX characters.
- */
-export function justificationMax(inc: string, example = ''): number {
-  return APPROVAL_COMMENT_MAX - 2 - Math.max(inc.trim().length, example.length);
 }
 
 /** A catalog entry as the Items step shows it. */
@@ -85,13 +77,13 @@ export interface CatalogOption {
 }
 
 /**
- * Where the catalog comes from (CONTRACTS §8, rules.py): /v3/requestable-objects only lists
+ * Where the catalog comes from (CONTRACTS §8, rules.py): /requestable-objects/v1 only lists
  * access profiles and roles (ENTITLEMENT alone is a 400, next to another type it is silently
- * dropped), so requestable entitlements come from /v2025/entitlements.
+ * dropped), so requestable entitlements come from /entitlements/v1.
  */
 export const REQUESTABLE_OBJECT_TYPES: readonly ItemType[] = ['ACCESS_PROFILE', 'ROLE'];
 
-/** The configured types /v3/requestable-objects can list (empty: don't call it). */
+/** The configured types /requestable-objects/v1 can list (empty: don't call it). */
 export function requestableObjectTypes(cfg: Pick<RuntimeConfig, 'catalogTypes'>): ItemType[] {
   return cfg.catalogTypes.filter((t) => REQUESTABLE_OBJECT_TYPES.includes(t));
 }
@@ -101,33 +93,37 @@ export function filterQuote(value: string): string {
   return `"${value.replace(/["\\]/g, (c) => `\\${c}`)}"`;
 }
 
-/** The /v2025/entitlements filter for the catalog's entitlements (null: not offered). */
+/** The /entitlements/v1 filter for the catalog's entitlements (null: not offered). */
 export function entitlementFilter(cfg: Pick<RuntimeConfig, 'catalogTypes' | 'nameStartsWith'>): string | null {
   if (!cfg.catalogTypes.includes('ENTITLEMENT')) return null;
   return 'requestable eq true' + (cfg.nameStartsWith ? ` and name sw ${filterQuote(cfg.nameStartsWith)}` : '');
 }
 
 /**
- * Catalog rows -> catalog options, filtered by type and name prefix (rules.catalog_options).
- * Rows from /v2025/entitlements carry no `type`; the caller tags them ENTITLEMENT.
+ * Catalog rows -> catalog options, filtered by type and name prefix (rules.catalog_options). The profile that
+ * grants this tool (the Launcher Access profile) is never offered. Rows from /entitlements/v1 carry no `type`; the
+ * caller tags them ENTITLEMENT. Items in `noApproval` say so in their sub-label, so whoever picks them sees they're
+ * granted at once.
  */
 export function catalogOptions(
-  cfg: Pick<RuntimeConfig, 'catalogTypes' | 'nameStartsWith'>,
+  cfg: Pick<RuntimeConfig, 'catalogTypes' | 'nameStartsWith' | 'noApproval' | 'launcherAccessName'>,
   requestable: Iterable<Record<string, unknown>>,
   sources: Record<string, string> = {},
 ): CatalogOption[] {
   const options: CatalogOption[] = [];
+  const grantedAtOnce = new Set(cfg.noApproval);
   for (const obj of requestable) {
     const kind = obj['type'] as ItemType;
     const id = String(obj['id']);
     const name = String(obj['name'] || id);
+    if (name === cfg.launcherAccessName) continue;
     if (!cfg.catalogTypes.includes(kind)) continue;
     if (cfg.nameStartsWith && !name.startsWith(cfg.nameStartsWith)) continue;
     const embedded = obj['source'] as { name?: string } | undefined;
     const source = sources[id] ?? (embedded && typeof embedded === 'object' ? embedded.name ?? null : null);
     options.push({
       label: name,
-      subLabel: TYPE_LABELS[kind] + (source ? ` · ${source}` : ''),
+      subLabel: TYPE_LABELS[kind] + (source ? ` · ${source}` : '') + (grantedAtOnce.has(id) ? ` · ${NO_APPROVAL_LABEL}` : ''),
       description: typeof obj['description'] === 'string' ? (obj['description'] as string) : '',
       source,
       value: { id, type: kind, name },
@@ -141,8 +137,7 @@ export function catalogOptions(
 
 /**
  * Find the INC number in free text (an access request comment such as
- * "INC0012345 | Bulk access request by …", or an approval name such as
- * "Bulk access INC0012345"). Each word is tested against the configured
+ * "INC0012345 | Bulk access request by …"). Each word is tested against the configured
  * pattern, so anchors like ^…$ keep working.
  */
 export function extractInc(cfg: Pick<RuntimeConfig, 'incPattern'>, text: string | null | undefined): string | null {
@@ -154,51 +149,66 @@ export function extractInc(cfg: Pick<RuntimeConfig, 'incPattern'>, text: string 
   return null;
 }
 
-/** The generic approval name the workflow gives each bulk request (definitions.py: "Bulk access {inc}"). */
-export const APPROVAL_NAME_PREFIX = 'Bulk access ';
-
-// ── The item comment (rules.parse_bulk_comment, CONTRACTS §4) ─────────────────
+// ── The item comment (rules.bulk_comment / rules.parse_bulk_comment, CONTRACTS §4) ──
 /**
- * Every access request the workflow submits carries one comment (definitions.py):
- * "<INC> | Bulk access request by <requester> | Approved by <approver> | <access label> | <justification>".
+ * Every access request of a bulk request carries one comment (bulkComment here, the Launcher workflow in
+ * definitions.py): "<INC> | Bulk access request by <requester> | <access label> | <justification>". Requests filed
+ * while bulk requests had an approver carry "Approved by <approver>" after the requester; they are still read.
  */
 export const COMMENT_SEPARATOR = ' | ';
+const REQUESTER_LABEL = 'Bulk access request by';
 
-/** A bulk request's item comment, read back. */
+/** A bulk request's item comment, read back; `approver` only on comments from before the approver was removed. */
 export interface BulkComment {
   inc: string;
   requester: string;
-  approver: string;
+  approver: string | null;
   accessLabel: string;
   justification: string;
 }
 
-// Four fields without "|", then the justification (everything after the 4th separator, "|" allowed).
-// The same patterns as rules.py.
-const BULK_COMMENT = /^\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([\s\S]*?)\s*$/;
+// Three fields without "|", then the justification (everything after the 3rd separator, "|" allowed); the old form
+// has four. The same patterns as rules.py.
+const BULK_COMMENT = /^\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([\s\S]*?)\s*$/;
+const OLD_BULK_COMMENT = /^\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([\s\S]*?)\s*$/;
 const REQUESTER = /^Bulk\s+access\s+request\s+by\s+(\S[\s\S]*)$/;
-const APPROVER = /^Approved\s+by\s+(\S[\s\S]*)$/;
+const OLD_APPROVER_LABEL = /^Approved\s+by\b/;
+const OLD_APPROVER = /^Approved\s+by\s+(\S[\s\S]*)$/;
+
+/** The comment every access request of a bulk request carries (parseBulkComment reads it back). */
+export function bulkComment(inc: string, requester: string, accessLabel: string, justification: string): string {
+  return [inc.trim(), `${REQUESTER_LABEL} ${requester}`, accessLabel, justification.trim()].join(COMMENT_SEPARATOR);
+}
 
 /**
- * The parts of a bulk request's item comment, or null for any other comment. The INC must
- * match the configured pattern; requester, approver and access label must not be empty; the
- * justification may be empty and may itself contain " | ". Extra whitespace is tolerated.
+ * The parts of a bulk request's item comment, or null for any other comment. The INC must match the configured
+ * pattern; requester and access label must not be empty; the justification may be empty and may itself contain
+ * " | ". Extra whitespace is tolerated.
  */
 export function parseBulkComment(cfg: Pick<RuntimeConfig, 'incPattern'>, text: unknown): BulkComment | null {
   if (typeof text !== 'string') return null;
-  const m = BULK_COMMENT.exec(text);
-  if (!m) return null;
-  const [, inc, by, approved, label, justification] = m;
+  let inc: string, by: string, label: string, justification: string;
+  let approver: string | null = null;
+  const old = OLD_BULK_COMMENT.exec(text);
+  if (old && OLD_APPROVER_LABEL.test(old[3])) {   // the old form: its approver must be named
+    const named = OLD_APPROVER.exec(old[3]);
+    if (!named) return null;
+    [, inc, by, , label, justification] = old;
+    approver = named[1];
+  } else {
+    const m = BULK_COMMENT.exec(text);
+    if (!m) return null;
+    [, inc, by, label, justification] = m;
+  }
   const requester = REQUESTER.exec(by);
-  const approver = APPROVER.exec(approved);
-  if (!incIsValid(cfg, inc) || !requester || !approver || !label) return null;
-  return { inc, requester: requester[1], approver: approver[1], accessLabel: label, justification };
+  if (!incIsValid(cfg, inc) || !requester || !label) return null;
+  return { inc, requester: requester[1], approver, accessLabel: label, justification };
 }
 
 // ── Parts (rules.split_into_parts / rules.part_label) ─────────────────────────
 /**
- * The de-duplicated list, in order, cut into chunks of `partSize`. Each chunk is one
- * workflow run with its own approval: SailPoint's Loop takes at most 250 items.
+ * The de-duplicated list, in order, cut into chunks of `partSize`: one Launcher run each (SailPoint's Loop takes
+ * at most 250 items), or one direct access request each (at most 10 people).
  * `key` says what makes two entries the same person (default: the value itself).
  */
 export function splitIntoParts<T>(people: readonly T[], partSize: number, key: (p: T) => unknown = (p) => p): T[][] {
@@ -213,15 +223,9 @@ export function splitIntoParts<T>(people: readonly T[], partSize: number, key: (
   return parts;
 }
 
-/** "" for a single part, else " (i/n)" (leading space, 1-based): appended to the INC in the approval name. */
+/** "" for a single part, else " (i/n)" (leading space, 1-based): appended to the INC on a Launcher run's emails. */
 export function partLabel(i: number, n: number): string {
   return n === 1 ? '' : ` (${i}/${n})`;
-}
-
-/** The part a workflow-created approval belongs to, read back from its name ("Bulk access INC… (2/3)"). */
-export function partOf(approvalName: string): { part: number; parts: number } | null {
-  const m = /\((\d+)\/(\d+)\)\s*$/.exec(approvalName);
-  return m ? { part: Number(m[1]), parts: Number(m[2]) } : null;
 }
 
 // ── Temporary access (rules.py, CONTRACTS §2) ─────────────────────────────────
@@ -293,6 +297,30 @@ export function removeDuration(choice: AccessChoice, now: Date = new Date()): st
     case 'permanent': return '';
     case 'duration': return `${choice.n}${DURATION_UNITS[choice.unit!]}`;
     case 'endDate': return `${endDateHours(choice.date, now)}h`;
+  }
+}
+
+/**
+ * When a direct request's access is removed (its `removeDate`, an ISO instant), or null for permanent access.
+ * A duration counts from `now` the way Manage Access counts it (a month is a calendar month, clamped to the
+ * month's last day); an end date is the end of that day, local time. Validate first.
+ */
+export function removeDate(choice: AccessChoice, now: Date = new Date()): string | null {
+  switch (choice.mode) {
+    case 'permanent': return null;
+    case 'endDate': return endOfDay(choice.date)!.toISOString();
+    case 'duration': {
+      const n = choice.n!;
+      const hours = { HOURS: n, DAYS: 24 * n, WEEKS: 168 * n, MONTHS: 0 }[choice.unit!];
+      if (hours) return new Date(now.getTime() + hours * 3_600_000).toISOString();
+      const end = new Date(now.getTime());
+      const day = end.getUTCDate();
+      end.setUTCDate(1);
+      end.setUTCMonth(end.getUTCMonth() + n);
+      const last = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() + 1, 0)).getUTCDate();
+      end.setUTCDate(Math.min(day, last));
+      return end.toISOString();
+    }
   }
 }
 

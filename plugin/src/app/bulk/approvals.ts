@@ -45,9 +45,8 @@ export interface ApprovalGroup {
   people: number;
   items: number;
   itemNames: string[];
-  /** From the bulk comment: who asked, who approved the bulk request, the access label (joined if several). */
+  /** From the bulk comment: who asked and the access label (joined if several). */
   requester: string;
-  bulkApprover: string;
   accessLabel: string;
   justification: string;
   schemes: string[];
@@ -102,7 +101,6 @@ function summarize(key: string, rows: ApprovalRow[]): ApprovalGroup {
     items: itemNames.length,
     itemNames,
     requester: uniq(bulk.map((b) => b.requester)).join(', '),
-    bulkApprover: uniq(bulk.map((b) => b.approver)).join(', '),
     accessLabel: uniq(bulk.map((b) => b.accessLabel)).join(', '),
     justification: uniq(bulk.map((b) => b.justification)).join(' / '),
     schemes: uniq(rows.flatMap((r) => r.schemes)),
@@ -133,11 +131,11 @@ export function groupApprovals(cfg: Pick<RuntimeConfig, 'incPattern'>, approvals
     || a.oldest.localeCompare(b.oldest) || a.key.localeCompare(b.key));
 }
 
-/** Does a group match the filter text (its INC, a person, an item, the requester or bulk approver)? */
+/** Does a group match the filter text (its INC, a person, an item or the requester)? */
 export function groupMatches(g: ApprovalGroup, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return [g.key, g.requester, g.bulkApprover, ...g.itemNames].some((v) => v.toLowerCase().includes(q))
+  return [g.key, g.requester, ...g.itemNames].some((v) => v.toLowerCase().includes(q))
     || g.rows.some((r) => r.person.toLowerCase().includes(q));
 }
 

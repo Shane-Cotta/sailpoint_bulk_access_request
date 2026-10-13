@@ -67,7 +67,6 @@ describe('SailpointPluginService', () => {
     const service = createService(makeSdk(), new Promise<PluginContext>(() => {}));
     expect(service.status()).toBe('pending');
     expect(service.context()).toBeNull();
-    expect(service.tenant()).toBeNull();
     expect(service.user()).toBeNull();
   });
 
@@ -76,7 +75,6 @@ describe('SailpointPluginService', () => {
     await service.whenReady();
     expect(service.status()).toBe('ready');
     expect(service.context()).toEqual(CONTEXT);
-    expect(service.tenant()).toEqual(CONTEXT.tenant);
     expect(service.user()).toEqual(CONTEXT.user);
   });
 
@@ -93,12 +91,11 @@ describe('SailpointPluginService', () => {
     await service.whenReady().catch(() => undefined);
     expect(service.status()).toBe('failed');
     expect(service.context()).toBeNull();
-    expect(() => service.sdk).toThrow(/not available/i);
     await expect(service.get('/v3/thing')).rejects.toThrow(/not available/i);
     await expect(service.post('/v3/thing', {})).rejects.toThrow(/not available/i);
   });
 
-  it('delegates get()/post() to the SDK api and exposes the raw sdk', async () => {
+  it('delegates get()/post() to the SDK api', async () => {
     const get = vi.fn().mockResolvedValue({ ok: true });
     const post = vi.fn().mockResolvedValue({ created: true });
     const sdk = makeSdk({ get, post });
@@ -110,7 +107,6 @@ describe('SailpointPluginService', () => {
     await expect(service.post('/v3/thing', { a: 1 })).resolves.toEqual({ created: true });
     expect(post).toHaveBeenCalledWith('/v3/thing', { a: 1 });
 
-    expect(service.sdk).toBe(sdk);
   });
 
   it('whenReady() resolves with the plugin context', async () => {

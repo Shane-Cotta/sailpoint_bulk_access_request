@@ -45,21 +45,18 @@ _LOCAL_MODULES = ("install", "status", "uninstall", "e2e", "pluginlib")
 
 
 # ───────────────────────────────────────────────────────────── show-config ──
-def _plural(n: int, word: str) -> str:
-    return f"{n} {word}{'' if n == 1 else 's'}"
-
-
 def people_summary(cfg: Config) -> str:
-    """e.g. "no limit, sent as approvals of up to 250 (plugin) · up to 30 (Launcher form, SailPoint limit)"."""
+    """e.g. "no limit, 10 people per access request (plugin) · up to 30 (Launcher form, SailPoint limit)"."""
     parts = []
     if cfg.deploy_plugin:
-        size = cfg.part_size
-        if cfg.people_max is None:
-            parts.append(f"no limit, sent as approvals of up to {size} (plugin)")
-        elif cfg.people_max <= size:
-            parts.append(f"up to {cfg.people_max}, in one approval (plugin)")
+        limit = "no limit" if cfg.people_max is None else f"up to {cfg.people_max}"
+        if cfg.plugin_submits_via_launcher:
+            size = cfg.part_size
+            fits = cfg.people_max is not None and cfg.people_max <= size
+            parts.append(f"{limit}, " + ("in one Launcher run" if fits else f"sent as Launcher runs of up to {size}")
+                         + " (plugin)")
         else:
-            parts.append(f"up to {cfg.people_max}, sent as approvals of up to {size} (plugin)")
+            parts.append(f"{limit}, {config_mod.ACCESS_REQUEST_PEOPLE_MAX} people per access request (plugin)")
     if cfg.deploy_launcher:
         cap = cfg.launcher_people_cap
         capped = cfg.people_max is None or cfg.people_max > FORM_SELECT_MAX
@@ -94,19 +91,19 @@ def temporary_summary(cfg: Config, route: str) -> str:
     if "duration" in modes:
         out.append(f"duration in {_units(cfg.temporary_units)}")
     if "endDate" in modes:
-        out.append("end date (sent as hours)")
+        out.append("end date (sent as hours)" if cfg.plugin_submits_via_launcher else "end date")
     return " or ".join(out)
 
 
 def submit_summary(cfg: Config) -> str:
     """How the plugin submits (`plugin.submit`) and so who can submit from it."""
+    who = (f"holders of '{cfg.launcher_access_profile_name}' can submit" if cfg.deploy_launcher
+           else "anyone who can open the plugin can submit (no Launcher Access profile without the Launcher)")
     if cfg.plugin_submits_via_launcher:
         return (f"plugin.submit \"launcher\": the plugin launches the '{cfg.launcher_name}' Launcher and submits its "
-                f"form as the signed-in user, so anyone holding '{cfg.launcher_access_profile_name}' can submit "
-                "(no ORG_ADMIN, no plugin workflow)")
-    return (f"plugin.submit \"test-endpoint\": the plugin starts '{cfg.plugin_workflow_name}' through the workflow "
-            "test endpoint, so only ORG_ADMIN users can submit from it"
-            + (f"; everyone else uses the '{cfg.launcher_name}' Launcher" if cfg.deploy_launcher else ""))
+                f"form as the signed-in user; {who}")
+    return ("plugin.submit \"direct\": the plugin files the access requests itself, as the signed-in user (the tenant "
+            f"must let users request access for others; plugin/install.py checks); {who}")
 
 
 APPROVALS_PRIVATE_WARNING = ("non-admin approvers can't open a private plugin unless they are listed in the plugin's "
@@ -133,7 +130,7 @@ def describe(cfg: Config) -> list[str]:
     lines = [
         f"Config:      {cfg.source_path or '(in memory)'}",
         f"Prefix:      {cfg.prefix}  ·  mode {cfg.mode}"
-        + ("" if cfg.live else " (approvals run, nothing is requested)"),
+        + ("" if cfg.live else " (the checks and emails run, nothing is requested)"),
         f"Deployments: {', '.join(routes)}"
         + "".join(f"  ({d} off)" for d in config_mod.DEPLOYMENTS if d not in routes),
     ]
@@ -143,8 +140,7 @@ def describe(cfg: Config) -> list[str]:
                      f"(approval: {'manager' if cfg.launcher_access_approval == 'MANAGER' else 'none, auto-approved'})")
     if cfg.deploy_plugin:
         lines.append(f"  plugin:    plugin '{cfg.plugin_display_name}' "
-                     f"(alias {cfg.plugin_alias}, {'visible to everyone' if cfg.plugin_public else 'private'})"
-                     + ("" if cfg.plugin_submits_via_launcher else f", workflow '{cfg.plugin_workflow_name}' (disabled)"))
+                     f"(alias {cfg.plugin_alias}, {'visible to everyone' if cfg.plugin_public else 'private'})")
         lines.append(f"Submit:      {submit_summary(cfg)}")
     lines += [
         f"INC:         {cfg.inc_pattern}  e.g. {cfg.inc_example}",
@@ -158,12 +154,11 @@ def describe(cfg: Config) -> list[str]:
     if cfg.temporary_enabled:
         for route in routes:
             lines.append(f"  {route + ':':10} {temporary_summary(cfg, route)}")
-    lines += [
-        f"Approval:    one approver; expires after {_plural(cfg.approval_timeout_days, 'day')} "
-        f"({cfg.approval_action_at_timeout}), priority {cfg.approval_priority}",
-        "Email:       " + (f"all mail goes to {', '.join(cfg.override_recipients)} (override)" if cfg.override_recipients
-                           else "the requester" + (", cc the approver" if cfg.cc_approver else "")),
-    ]
+    lines.append("Approval:    each item the way it's set up in SailPoint (items with no approval are granted "
+                 "right away; the installers list them)")
+    if cfg.deploy_launcher:
+        lines.append("Email:       " + (f"all mail goes to {', '.join(cfg.override_recipients)} (override)"
+                                        if cfg.override_recipients else "the requester (Launcher requests)"))
     lines.append("Approvals:   " + approvals_summary(cfg))
     if cfg.plugin_approvals_enabled and not cfg.plugin_public:
         lines.append(f"Warning:     {APPROVALS_PRIVATE_WARNING}")
@@ -274,7 +269,7 @@ def cmd_uninstall(cfg: Config, a: argparse.Namespace) -> int:
 
 # ────────────────────────────────────────────────────────────────── export ──
 # Fields SailPoint fills in itself. They're dropped so exports diff cleanly between runs and
-# can be imported elsewhere (Admin > Workflows > Import, or POST /v2025/workflows).
+# can be imported elsewhere (Admin > Workflows > Import, or POST /workflows/v1).
 _SERVER_FIELDS = ("id", "created", "modified", "creator", "modifiedBy", "executionCount", "failureCount",
                   "dailyExecutionCount", "usedBy", "tenantId")
 _PLACEHOLDER = {"owner": "<OWNER_IDENTITY_ID>", "form": "<FORM_DEFINITION_ID>", "workflow": "<WORKFLOW_ID>",
@@ -292,15 +287,12 @@ def offline_objects(cfg: Config, only: str | None = None) -> dict[str, dict]:
         if d == "launcher":
             out["launcher/form.json"] = definitions.bulk_form(cfg, _PLACEHOLDER["owner"], [])
             out["launcher/workflow.json"] = definitions.bulk_workflow(
-                cfg, variant="launcher", owner_id=_PLACEHOLDER["owner"], form_id=_PLACEHOLDER["form"],
+                cfg, owner_id=_PLACEHOLDER["owner"], form_id=_PLACEHOLDER["form"],
                 workflow_id=_PLACEHOLDER["workflow"], links=definitions.EmailLinks(ui=cfg.ui_base_url_override))
             out["launcher/launcher.json"] = definitions.bulk_launcher(cfg, _PLACEHOLDER["workflow"])
             out["launcher/access-profile.json"] = definitions.launcher_access_profile(
                 cfg, _PLACEHOLDER["owner"], {"id": _PLACEHOLDER["entitlement"], "name": cfg.launcher_name,
                                              "source": {"id": _PLACEHOLDER["source"], "name": "IdentityNow"}})
-        elif cfg.plugin_needs_workflow:   # plugin.submit "launcher" uses the Launcher's workflow instead
-            out["plugin/workflow.json"] = definitions.bulk_workflow(cfg, variant="plugin", owner_id=_PLACEHOLDER["owner"],
-                                                                    links=definitions.EmailLinks(ui=cfg.ui_base_url_override))
     return out
 
 
@@ -317,8 +309,6 @@ def tenant_objects(cfg: Config, only: str | None = None) -> tuple[str, dict[str,
             out["launcher/workflow.json"] = lib.find_workflow(t, cfg.launcher_workflow_name)
             out["launcher/launcher.json"] = lib.find_launcher(t, cfg.launcher_name)
             out["launcher/access-profile.json"] = lib.find_access_profile(t, cfg.launcher_access_profile_name)
-        elif cfg.plugin_needs_workflow:
-            out["plugin/workflow.json"] = lib.find_workflow(t, cfg.plugin_workflow_name)
     return t.tenant_name, {k: _clean(v) for k, v in out.items()}
 
 

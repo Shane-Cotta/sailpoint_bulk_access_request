@@ -95,8 +95,7 @@ export class SailpointPluginService {
   /** Handshake lifecycle: 'pending' until it settles, then 'ready' or 'failed'. */
   readonly status = this._status.asReadonly();
 
-  /** Convenience slices for components that only need part of the context. */
-  readonly tenant = computed(() => this._context()?.tenant ?? null);
+  /** The signed-in user, for components that only need that part of the context. */
   readonly user = computed(() => this._context()?.user ?? null);
 
   /** True once the COIP handshake completes and API calls may be made. */
@@ -111,14 +110,6 @@ export class SailpointPluginService {
         this._status.set('ready');
       })
       .catch(() => this._status.set('failed'));
-  }
-
-  /** The raw SDK, for capabilities not wrapped here (events, getToken, etc.). */
-  get sdk(): SailPointPluginSDK {
-    if (!this.singleton.sdk) {
-      throw new Error(SDK_UNAVAILABLE);
-    }
-    return this.singleton.sdk;
   }
 
   /**
@@ -151,16 +142,16 @@ export class SailpointPluginService {
    * Authenticated PATCH (the SDK only wraps GET and POST). Same token, base URL and error shape as
    * `get` / `post`: the SDK's token and the tenant's `apiUrl.idn`, one retry with a fresh token on 401,
    * and an `ApiError` (status, body) on failure. Used to submit a Launcher's form
-   * (`PATCH /v2025/form-instances/{id}`, `application/json-patch+json`).
+   * (`PATCH /form-instances/v1/{id}`, `application/json-patch+json`).
    */
-  async patch<T>(path: string, data: unknown, contentType = 'application/json-patch+json'): Promise<T> {
+  async patch<T>(path: string, data: unknown): Promise<T> {
     const sdk = this.singleton.sdk;
     if (!sdk) throw new Error(SDK_UNAVAILABLE);
     const context = await this.singleton.context;
     const url = `${context.tenant.apiUrl.idn.replace(/\/+$/, '')}/${path.trim().replace(/^\/+/, '')}`;
     const send = async (forceRefresh: boolean) => fetch(url, {
       method: 'PATCH',
-      headers: { Authorization: `Bearer ${await sdk.api.getToken(forceRefresh)}`, 'Content-Type': contentType, Accept: 'application/json' },
+      headers: { Authorization: `Bearer ${await sdk.api.getToken(forceRefresh)}`, 'Content-Type': 'application/json-patch+json', Accept: 'application/json' },
       body: JSON.stringify(data),
     });
     let response = await send(false);
@@ -176,18 +167,5 @@ export class SailpointPluginService {
       throw new ApiError({ status: response.status, statusText: response.statusText || '', path: path.trim(), body });
     }
     return body as T;
-  }
-
-  /**
-   * Report the plugin's current internal route to the App Shell so it mirrors it
-   * in the host browser URL (via history.replaceState, so no history entry is
-   * pushed). `subPath` is plugin-relative, e.g. 'workflows'. Resolves once the
-   * host accepts it; rejects if the SDK is unavailable or the handshake failed.
-   */
-  setRoute(subPath: string): Promise<void> {
-    if (!this.singleton.sdk) {
-      return Promise.reject(new Error(SDK_UNAVAILABLE));
-    }
-    return this.singleton.sdk.navigation.setRoute(subPath);
   }
 }

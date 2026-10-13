@@ -12,13 +12,21 @@ describe('approvals (pure)', () => {
     const r = toApprovalRow(DEMO_CONFIG, DEMO_PENDING[0]);
     expect(r).toMatchObject({
       id: DEMO_PENDING[0].id, person: 'Ada Abara', item: 'PACS Radiologist Workstation', itemType: 'ACCESS_PROFILE',
-      requestType: 'GRANT_ACCESS', requester: DEMO_SERVICE.name, schemes: ['ACCESS_PROFILE_OWNER'], removalDate: null,
+      requestType: 'GRANT_ACCESS', requester: 'Carmen Ruiz', schemes: ['ACCESS_PROFILE_OWNER'], removalDate: null,
     });
     // The justification keeps its own " | ".
     expect(r.bulk).toEqual({
-      inc: DEMO_PENDING_INCS.big, requester: 'Carmen Ruiz', approver: 'Aisha Bello', accessLabel: 'Permanent',
+      inc: DEMO_PENDING_INCS.big, requester: 'Carmen Ruiz', approver: null, accessLabel: 'Permanent',
       justification: 'Hospital-wide move to the new PACS on 14 Oct | cutover weekend',
     });
+  });
+
+  it('still reads approvals from before the bulk approver was removed (the old comment, filed by the Launcher)', () => {
+    const old = DEMO_PENDING.find((a) => a.comments?.[0]?.comment?.startsWith(DEMO_PENDING_INCS.small))!;
+    const r = toApprovalRow(DEMO_CONFIG, old);
+    expect(r.requester).toBe(DEMO_SERVICE.name);
+    expect(r.bulk).toMatchObject({ inc: DEMO_PENDING_INCS.small, requester: 'Diego Alvarez', approver: 'Carmen Ruiz',
+      accessLabel: 'Temporary: 30 days' });
   });
 
   it('finds the bulk comment among several, and ignores plain or missing comments', () => {
@@ -42,7 +50,7 @@ describe('approvals (pure)', () => {
     expect(big).toMatchObject({
       inc: DEMO_PENDING_INCS.big, approvals: 300, people: 150, items: 2,
       itemNames: ['Epic - Clinician Read Only', 'PACS Radiologist Workstation'],
-      requester: 'Carmen Ruiz', bulkApprover: 'Aisha Bello', accessLabel: 'Permanent',
+      requester: 'Carmen Ruiz', accessLabel: 'Permanent',
       schemes: ['ACCESS_PROFILE_OWNER'], oldest: '2026-10-07T13:15:00Z', earliestDue: '2026-10-14T13:15:00Z',
     });
     expect(small).toMatchObject({ approvals: 40, people: 40, items: 1, accessLabel: 'Temporary: 30 days', schemes: ['MANAGER'] });
@@ -63,13 +71,13 @@ describe('approvals (pure)', () => {
 
   it('joins differing requesters or labels within one INC instead of hiding them', () => {
     const a = row();
-    const b = row({ id: 'other', comments: [{ comment: `${DEMO_PENDING_INCS.big} | Bulk access request by Ann | Approved by Bo | Temporary: 1 day | x` }] });
+    const b = row({ id: 'other', comments: [{ comment: `${DEMO_PENDING_INCS.big} | Bulk access request by Ann | Temporary: 1 day | x` }] });
     const [g] = groupApprovals(DEMO_CONFIG, [a, b], false);
     expect(g.requester).toBe('Carmen Ruiz, Ann');
     expect(g.accessLabel).toBe('Permanent, Temporary: 1 day');
   });
 
-  it('filters groups by INC, person, item, requester or bulk approver', () => {
+  it('filters groups by INC, person, item or requester', () => {
     const [small, big] = groupApprovals(DEMO_CONFIG, DEMO_PENDING, false);
     expect(groupMatches(big, '')).toBe(true);
     expect(groupMatches(big, 'inc0048502')).toBe(true);

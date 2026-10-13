@@ -9,7 +9,7 @@ import { demoScenario } from './demo/scenario';
 import { providePluginTesting } from './testing/plugin.testing';
 
 describe('App', () => {
-  async function render(isOrgAdmin = true, approvalsEnabled = true, submit: 'launcher' | 'test-endpoint' = 'launcher') {
+  async function render(isOrgAdmin = true, approvalsEnabled = true) {
     TestBed.configureTestingModule({ imports: [App], providers: providePluginTesting() });
     await TestBed.compileComponents();   // the tabs are @defer blocks (lazy chunks)
     if (!isOrgAdmin) {
@@ -20,7 +20,6 @@ describe('App', () => {
     const config = TestBed.inject(BulkConfigService);
     await config.load();
     if (!approvalsEnabled) config.config.update((c) => ({ ...c, approvals: { ...c.approvals, enabled: false } }));
-    config.config.update((c) => ({ ...c, submit }));
     const fixture = TestBed.createComponent(App);
     fixture.detectChanges();
     await fixture.whenStable();
@@ -33,44 +32,29 @@ describe('App', () => {
     const { el } = await render();
     expect(el.querySelector('.page__title')?.textContent).toContain('ACME Bulk Access Request');
     expect(tabs(el)).toEqual(['New request', 'My bulk requests', 'Approvals']);
-    expect(TestBed.inject(NavService).tab()).toBe('new');               // admins start on New request
+    expect(TestBed.inject(NavService).tab()).toBe('new');
+    expect(el.querySelector('.page__subtitle')?.textContent).toContain('approved the way it\'s set up in SailPoint');
+    expect(el.textContent).not.toMatch(/bulk approver|ORG_ADMIN/i);
   });
 
   it('hides the Approvals tab when the config turns it off (or the runtime config predates it)', async () => {
     const { el } = await render(false, false);
     expect(tabs(el)).toEqual(['New request', 'My bulk requests']);
     expect(TestBed.inject(NavService).tab()).toBe('new');
+    expect(el.querySelector('.page__subtitle')?.textContent).not.toContain('Approvals tab');
   });
 
-  it('submitting through the Launcher: no ORG_ADMIN banner, and people who are not ORG_ADMIN start on New request', async () => {
-    const { el } = await render(false);
-    expect(TestBed.inject(NavService).tab()).toBe('new');
-    expect(el.textContent).not.toContain('ORG_ADMIN');
-  });
-
-  it('test-endpoint mode: explains the ORG_ADMIN requirement on the New request tab and points to the Launcher', async () => {
-    const { el } = await render(true, true, 'test-endpoint');
-    const panel = el.querySelector('p-tabpanel[value="new"]') ?? el;
-    expect(panel.textContent).toContain('ORG_ADMIN');
-    expect(panel.textContent).toContain('ACME Bulk Access Request Launcher');
-  });
-
-  it('test-endpoint mode: opens the Approvals tab first for people who are not ORG_ADMIN, without the submit banner', async () => {
-    const { el, fixture } = await render(false, true, 'test-endpoint');
+  it('people who are not ORG_ADMIN start on New request too, and can open the Approvals tab', async () => {
+    const { el, fixture } = await render(false);
     const nav = TestBed.inject(NavService);
-    expect(nav.tab()).toBe('approvals');
-    expect(el.querySelector('app-approvals')).not.toBeNull();
+    expect(nav.tab()).toBe('new');
+    nav.tab.set('approvals');
+    fixture.detectChanges();
     await vi.waitFor(() => {
       fixture.detectChanges();
       expect(el.querySelectorAll('app-approvals .group').length).toBe(3);   // two INCs and Other
     }, { timeout: 3000 });
     expect(el.querySelector('app-approvals')?.textContent).toContain('INC0048502');
-    expect(el.querySelector('app-approvals')?.textContent).not.toContain('You need ORG_ADMIN to submit');
-
-    nav.tab.set('new');
-    fixture.detectChanges();
-    await fixture.whenStable();
-    expect(el.textContent).toContain('You need ORG_ADMIN to submit from this page.');
   });
 
   it('only turns on demo mode at the top level with ?demo=', () => {

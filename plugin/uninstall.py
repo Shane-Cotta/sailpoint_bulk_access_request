@@ -3,8 +3,9 @@
 
     python plugin/uninstall.py --config config/<tenant>.json [--yes] [--plugin]
 
-Deletes the workflow named exactly "<prefix> Bulk Access Request (Plugin)" and,
-with --plugin, the UI plugin instance whose alias and name match the config.
+Deletes the plugin's old workflow, if an earlier version installed it (named exactly
+"<prefix> Bulk Access Request (Plugin)"; the plugin no longer needs one) and, with --plugin,
+the UI plugin instance whose alias and name match the config.
 Each object is checked against the prefix before it is touched. Without --yes it
 asks first. The Launcher deployment and anything else in the tenant is left alone.
 """
@@ -23,8 +24,8 @@ def plan(cfg: lib.Config, workflow: dict | None, plugin: dict | None) -> list[tu
     """What would be removed, as (kind, id, name). Refuses anything that is not ours."""
     out = []
     if workflow:
-        if not lib.owned_by_us(cfg, workflow.get("name")):
-            raise TenantError(0, f"Refusing to delete workflow {workflow.get('name')!r}: not {cfg.plugin_workflow_name!r}.")
+        if not lib.is_old_plugin_workflow(cfg, workflow.get("name")):
+            raise TenantError(0, f"Refusing to delete workflow {workflow.get('name')!r}: not {cfg.old_plugin_workflow_name!r}.")
         out.append(("workflow", workflow["id"], workflow["name"]))
     if plugin:
         name = plugin.get("name")
@@ -47,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config_mod.load(a.config)
     tenant = lib.Tenant.from_env(cfg.env_file)
     workdir = Path(a.workdir)
-    workflow = lib.find_workflow(tenant, cfg.plugin_workflow_name)
+    workflow = lib.find_workflow(tenant, cfg.old_plugin_workflow_name)
     plugin = lib.find_plugin(cfg, workdir) if a.plugin else None
     targets = plan(cfg, workflow, plugin)
     if not targets:
@@ -63,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for kind, oid, name in targets:
         if kind == "workflow":
-            tenant.call("DELETE", f"{lib.WORKFLOWS}/{oid}")
+            tenant.call("DELETE", f"{lib.api.WORKFLOWS}/{oid}")
         else:
             lib.sail(cfg, ["ui-plugins", "delete", oid, "--force"], workdir)
         print(f"Deleted {kind} {oid}  {name}")

@@ -12,33 +12,35 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PLUGIN_DIR.parent / "core"))
 
 from bulkaccess import config as config_mod  # noqa: E402
-from bulkaccess import definitions  # noqa: E402
+from bulkaccess import api, catalog, definitions, rules  # noqa: E402
 from bulkaccess.config import Config  # noqa: E402
 from bulkaccess.tenant import Tenant, TenantError, load_env_file  # noqa: E402
 
-WORKFLOWS = "/v2025/workflows"
-LAUNCHERS = "/v2025/launchers"
 RUNTIME_CONFIG = Path("public") / "bulk-access.config.json"
 MANIFEST = Path("sp-ui-plugin.json")
 BUILD_OUT_DIR = "./dist/bulk-access-request-plugin/browser"
 
-__all__ = ["Config", "Tenant", "TenantError", "config_mod", "definitions"]
+__all__ = ["Config", "Tenant", "TenantError", "catalog", "config_mod", "definitions"]
 
 
 # ─────────────────────────────────────────────────────────── pure builders ──
-def runtime_config(cfg: Config, workflow_id: str | None = None, launcher_id: str | None = None) -> dict[str, Any]:
+def runtime_config(cfg: Config, launcher_id: str | None = None, launcher_access_id: str | None = None,
+                   no_approval: Iterable[str] = ()) -> dict[str, Any]:
     """public/bulk-access.config.json: everything the page needs from the tenant config.
 
-    `submit` says how the page submits (CONTRACTS §5, §9): "launcher" (it launches `launcherId` and submits
-    the Launcher form as the signed-in user; a non-admin can't list launchers, so the ID is written here)
-    or "test-endpoint" (the disabled plugin workflow `workflowId`, ORG_ADMIN only).
+    `submit` says how the page submits (CONTRACTS §5, §9): "direct" (it files the access requests itself, as the
+    signed-in user) or "launcher" (it launches `launcherId` and submits the Launcher form as the signed-in user; a
+    non-admin can't list launchers, so the ID is written here). Either way only holders of the Launcher Access
+    profile (`launcherAccessId`) may submit. `noApproval`: the catalog items SailPoint grants without any approval
+    (catalog.no_approval_ids), which the page labels.
     """
     modes = cfg.plugin_temporary_modes
     return {
@@ -47,18 +49,18 @@ def runtime_config(cfg: Config, workflow_id: str | None = None, launcher_id: str
         "mode": cfg.mode,
         "submit": cfg.plugin_submit,
         "launcherId": launcher_id if cfg.plugin_submits_via_launcher else None,
+        "launcherAccessId": launcher_access_id,
         "launcherAccessName": cfg.launcher_access_profile_name,
-        "workflowName": cfg.plugin_workflow_name,
-        "workflowId": None if cfg.plugin_submits_via_launcher else workflow_id,
         "incPattern": cfg.inc_pattern,
         "incMessage": cfg.inc_message,
         "incExample": cfg.inc_example,
-        # null = no limit; bigger lists go out as several approvals of `partSize` (the loop limit).
+        # null = no limit; through the Launcher, bigger lists go out as several runs of `partSize` (the loop limit).
         "peopleMax": cfg.plugin_people_max,
         "partSize": cfg.part_size,
         "itemsMax": cfg.catalog_max_items,
         "catalogTypes": list(cfg.catalog_types),
         "nameStartsWith": cfg.catalog_name_starts_with,
+        "noApproval": sorted(set(no_approval)),
         "launcherName": cfg.launcher_name,
         # What the plugin offers (config.plugin_temporary_modes): in launcher submit mode, only what the
         # Launcher form can carry.
@@ -87,12 +89,9 @@ def manifest(cfg: Config) -> dict[str, Any]:
         "manifest": {
             "alias": cfg.plugin_alias,
             "name": {"en": cfg.plugin_display_name},
-            "description": {"en": "Request access for several people at once: one approver for the whole request, "
-                                  "and a ServiceNow INC number on every item. "
-                                  + (f"Submitting needs the '{cfg.launcher_access_profile_name}' access (it uses the "
-                                     f"'{cfg.launcher_name}' Launcher as you)." if cfg.plugin_submits_via_launcher else
-                                     "Submitting requires ORG_ADMIN (it starts a workflow through the workflow test "
-                                     "endpoint).")},
+            "description": {"en": "Request access for several people at once, with a ServiceNow INC number on every "
+                                  "request; each item is approved the way it's set up in SailPoint. Submitting needs "
+                                  f"the '{cfg.launcher_access_profile_name}' access."},
             "apiScopes": ["sp:scopes:all"],
             "permissionPolicy": {},
             "iframeAllow": {},
@@ -104,16 +103,23 @@ def manifest(cfg: Config) -> dict[str, Any]:
     }
 
 
-def plugin_workflow(cfg: Config, owner_id: str, owner_name: str | None,
-                    links: definitions.EmailLinks | None = None) -> dict[str, Any]:
-    """The plugin workflow body, always DISABLED (it only runs through the test endpoint). `links`: where its
-    emails point (the tenant's UI and the plugin page)."""
-    return definitions.bulk_workflow(cfg, variant="plugin", owner_id=owner_id, owner_name=owner_name, links=links)
+def is_old_plugin_workflow(cfg: Config, name: str | None) -> bool:
+    """The plugin's own workflow from before the "direct" submit mode, by exact prefixed name: the only workflow
+    the plugin scripts still touch (uninstall removes it)."""
+    return bool(name) and name == cfg.old_plugin_workflow_name and name.startswith(cfg.prefix + " ")
 
 
-def owned_by_us(cfg: Config, name: str | None) -> bool:
-    """Only touch objects whose name carries our prefix and the plugin suffix."""
-    return bool(name) and name == cfg.plugin_workflow_name and name.startswith(cfg.prefix + " ")
+def may_request_for_others(tenant: Tenant) -> bool:
+    """Whether the tenant lets any user request access for anyone: what "direct" submit needs (non-admins file
+    requests for the people they chose). Admin > Global > Access Request Settings, "Request for others"."""
+    config = tenant.call("GET", api.ACCESS_REQUEST_CONFIG) or {}
+    return bool((config.get("requestOnBehalfOfConfig") or {}).get("allowRequestOnBehalfOfAnyoneByAnyone"))
+
+
+def find_access_profile(tenant: Tenant, name: str) -> dict[str, Any] | None:
+    flt = urllib.parse.quote(f"name eq {rules.filter_quote(name)}")
+    return next((a for a in tenant.call("GET", f"{api.ACCESS_PROFILES}?filters={flt}&limit=5") or []
+                 if a.get("name") == name), None)
 
 
 def write_json(path: Path, data: Any) -> None:
@@ -131,22 +137,13 @@ def write_json(path: Path, data: Any) -> None:
 
 
 # ──────────────────────────────────────────────────────────────── tenant ──
-def whoami(tenant: Tenant) -> dict[str, Any]:
-    """The PAT's identity. Calls /v2025/identities directly (older core used a v3 path that 404s)."""
-    claims = json.loads(_b64url(tenant.token().split(".")[1]))
-    identity_id = claims.get("identity_id")
-    if not identity_id:
-        raise TenantError(0, "The PAT has no identity_id claim; use a personal access token, not a client app.")
-    return tenant.call("GET", f"/v2025/identities/{identity_id}")
-
-
 def find_workflow(tenant: Tenant, name: str) -> dict[str, Any] | None:
-    return next((w for w in tenant.call("GET", f"{WORKFLOWS}?limit=250") or [] if w.get("name") == name), None)
+    return next((w for w in tenant.call("GET", f"{api.WORKFLOWS}?limit=250") or [] if w.get("name") == name), None)
 
 
 def find_launcher(tenant: Tenant, name: str) -> dict[str, Any] | None:
     """The Launcher deployment's Launcher, by name (the same lookup as launcher/install.py)."""
-    res = tenant.call("GET", f"{LAUNCHERS}?limit=100") or {}
+    res = tenant.call("GET", f"{api.LAUNCHERS}?limit=100") or {}
     items = res.get("items") if isinstance(res, dict) else res
     return next((x for x in items or [] if x.get("name") == name), None)
 
@@ -154,12 +151,8 @@ def find_launcher(tenant: Tenant, name: str) -> dict[str, Any] | None:
 def launcher_missing(cfg: Config) -> str:
     return (f"The Launcher '{cfg.launcher_name}' isn't installed, and the plugin submits through it "
             "(plugin.submit is \"launcher\"). Install the Launcher deployment first "
-            "(`bulkaccess.py apply` installs it before the plugin), or set plugin.submit to \"test-endpoint\".")
+            "(`bulkaccess.py apply` installs it before the plugin), or set plugin.submit to \"direct\".")
 
-
-def _b64url(segment: str) -> str:
-    import base64
-    return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)).decode()
 
 
 # ─────────────────────────────────────────────────────────── SailPoint CLI ──
@@ -173,12 +166,12 @@ def sail_env(cfg: Config) -> dict[str, str]:
     return env
 
 
-def sail(cfg: Config, args: list[str], workdir: Path, *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def sail(cfg: Config, args: list[str], workdir: Path) -> subprocess.CompletedProcess[str]:
     """Run `sail <args>` in `workdir`. stdin is /dev/null: some commands prompt and would hang."""
     exe = os.environ.get("SAIL") or shutil.which("sail") or str(Path.home() / ".local/bin/sail")
     proc = subprocess.run([exe, *args], cwd=workdir, env=sail_env(cfg), stdin=subprocess.DEVNULL,
                           capture_output=True, text=True)
-    if check and proc.returncode != 0:
+    if proc.returncode != 0:
         raise TenantError(proc.returncode, f"sail {' '.join(args)} failed:\n{proc.stdout}{proc.stderr}")
     return proc
 

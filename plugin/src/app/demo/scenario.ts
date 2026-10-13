@@ -4,8 +4,8 @@
  * dynamic import() when a scenario is named.
  */
 export const DEMO_SCENARIOS = [
-  'new', 'people', 'items', 'approver', 'approver-error', 'temporary', 'review', 'parts-review', 'submitted',
-  'parts-submitted', 'submitted-test-endpoint', 'launcher-denied', 'history', 'approvals', 'approvals-partial',
+  'new', 'people', 'items', 'details', 'inc-error', 'temporary', 'review', 'submitted', 'parts-review',
+  'parts-submitted', 'launcher-denied', 'history', 'approvals', 'approvals-partial',
 ] as const;
 
 export type DemoScenario = (typeof DEMO_SCENARIOS)[number];

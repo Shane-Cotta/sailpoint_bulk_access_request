@@ -17,6 +17,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from . import api
+
 USER_AGENT = "bulk-access-request/1.0"
 REQUIRED_ENV = ("SAIL_BASE_URL", "SAIL_CLIENT_ID", "SAIL_CLIENT_SECRET")
 
@@ -24,10 +26,9 @@ REQUIRED_ENV = ("SAIL_BASE_URL", "SAIL_CLIENT_ID", "SAIL_CLIENT_SECRET")
 class TenantError(RuntimeError):
     """An API call failed; carries the HTTP status and SailPoint's message."""
 
-    def __init__(self, status: int, message: str, body: Any = None):
+    def __init__(self, status: int, message: str):
         super().__init__(f"HTTP {status}: {message}")
         self.status = status
-        self.body = body
 
 
 def load_env_file(path: str | os.PathLike[str] | None) -> None:
@@ -76,8 +77,8 @@ class Tenant:
     def tenant_name(self) -> str:
         return urllib.parse.urlsplit(self.base_url).hostname.split(".", 1)[0]
 
-    def _open(self, req: urllib.request.Request, timeout: float = 60):
-        return urllib.request.urlopen(req, timeout=timeout)  # honours HTTPS_PROXY / NO_PROXY
+    def _open(self, req: urllib.request.Request):
+        return urllib.request.urlopen(req, timeout=60)  # honours HTTPS_PROXY / NO_PROXY
 
     def token(self) -> str:
         if self._token and time.monotonic() < self._token_expires:
@@ -99,9 +100,8 @@ class Tenant:
         return self._token
 
     def call(self, method: str, path: str, body: Any = None, *,
-             content_type: str = "application/json", ok: tuple[int, ...] = (200, 201, 202, 204),
-             headers: dict[str, str] | None = None) -> Any:
-        """Call `path` (e.g. "/v2025/workflows") and return parsed JSON (or None)."""
+             content_type: str = "application/json", headers: dict[str, str] | None = None) -> Any:
+        """Call `path` (e.g. "/workflows/v1", see api.py) and return parsed JSON (or None)."""
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(f"{self.base_url}{path}", data=data, method=method, headers={
             "Authorization": f"Bearer {self.token()}",
@@ -121,8 +121,8 @@ class Tenant:
             parsed = json.loads(raw) if raw else None
         except json.JSONDecodeError:
             parsed = raw.decode(errors="replace")
-        if status not in ok:
-            raise TenantError(status, _messages(parsed), parsed)
+        if status not in (200, 201, 202, 204):
+            raise TenantError(status, _messages(parsed))
         return parsed
 
     # ── small helpers used by the installers ─────────────────────────────────
@@ -131,8 +131,8 @@ class Tenant:
         claims = json.loads(_b64url(self.token().split(".")[1]))
         identity_id = claims.get("identity_id")
         if not identity_id:
-            return {}
-        return self.call("GET", f"/v2025/identities/{identity_id}")   # there is no v3 identities API
+            raise TenantError(0, "The PAT has no identity_id claim; use a personal access token, not a client app.")
+        return self.call("GET", f"{api.IDENTITIES}/{identity_id}")
 
 
     def plugin_instance_id(self, alias: str) -> str | None:
@@ -140,7 +140,7 @@ class Tenant:
         Uses the endpoint the SailPoint CLI uses (`/ui-plugins/v1/resolve-alias`, preview: it needs the
         X-SailPoint-Experimental header; 404 when the alias is unknown; verified with the PAT)."""
         try:
-            found = self.call("GET", "/ui-plugins/v1/resolve-alias?alias=" + urllib.parse.quote(alias),
+            found = self.call("GET", f"{api.UI_PLUGINS}/resolve-alias?alias=" + urllib.parse.quote(alias),
                               headers={"X-SailPoint-Experimental": "true"})
         except TenantError:
             return None

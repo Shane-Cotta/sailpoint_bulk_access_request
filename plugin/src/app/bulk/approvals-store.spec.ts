@@ -55,7 +55,7 @@ describe('ApprovalsStore', () => {
     ]);
     expect(store.truncated()).toBe(false);
     const url = decodeURIComponent(get.mock.calls[0][0] as string);
-    expect(url).toContain('/v2025/generic-approvals?mine=true&include-comments=true&limit=250&offset=0');
+    expect(url).toContain('/generic-approvals/v1?mine=true&include-comments=true&limit=250&offset=0');
     expect(url).toContain('filters=status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"&sorters=createdDate');
     expect(get).toHaveBeenCalledTimes(2);   // 343 rows: two pages
 
@@ -74,7 +74,7 @@ describe('ApprovalsStore', () => {
     await settle(store.decide('approve'));
     const calls = post.mock.calls.map((c) => c[0] as string);
     expect(calls).toHaveLength(300);
-    expect(calls.every((p) => /^\/v2025\/generic-approvals\/b0000000-[^/]+\/approve$/.test(p))).toBe(true);
+    expect(calls.every((p) => /^\/generic-approvals\/v1\/b0000000-[^/]+\/approve$/.test(p))).toBe(true);
     expect(post.mock.calls[0][1]).toEqual({ comment: 'Checked against the staff list.' });
     expect(store.run()).toMatchObject({ phase: 'done', inc: BIG, done: 300 });
     expect(store.counts()).toMatchObject({ confirmed: 300, failed: 0, pending: 0, elsewhere: 0 });
@@ -133,7 +133,7 @@ describe('ApprovalsStore', () => {
     const post = vi.spyOn(plugin, 'post');
     store.toggleGroup(BIG);
     await settle(store.decide('approve'));
-    expect(post.mock.calls.map((c) => c[0])).toEqual(Array(6).fill('/v2025/generic-approvals/bulk-approve'));
+    expect(post.mock.calls.map((c) => c[0])).toEqual(Array(6).fill('/generic-approvals/v1/bulk-approve'));
     expect((post.mock.calls[0][1] as { approvalIds: string[] }).approvalIds).toHaveLength(50);
     expect(store.run()?.bulk).toBe(true);
     expect(store.counts().confirmed).toBe(300);
@@ -145,7 +145,7 @@ describe('ApprovalsStore', () => {
     store.toggleGroup(DEMO_PENDING_INCS.small);
     await settle(store.decide('approve'));
     const paths = post.mock.calls.map((c) => c[0] as string);
-    expect(paths[0]).toBe('/v2025/generic-approvals/bulk-approve');
+    expect(paths[0]).toBe('/generic-approvals/v1/bulk-approve');
     expect(paths.slice(1).every((p) => p.endsWith('/approve') && !p.includes('bulk'))).toBe(true);
     expect(paths).toHaveLength(41);
     expect(store.counts().confirmed).toBe(40);

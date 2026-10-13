@@ -24,7 +24,7 @@
   "people": {
     "max": null,
     "partSize": 250,
-    "_comment": "max: null = no limit (the Launcher form is always capped at 30 by SailPoint). Requests above partSize (at most 250, SailPoint's workflow loop limit) are sent as several approvals with the same INC."
+    "_comment": "max: null = no limit (the Launcher form is always capped at 30 by SailPoint). The plugin files direct requests 10 people at a time. Through the Launcher, requests above partSize (at most 250, SailPoint's workflow loop limit) are sent as several Launcher runs with the same INC."
   },
   "temporaryAccess": {
     "enabled": true,
@@ -41,30 +41,23 @@
     "maxDays": null,
     "_comment": "Lets requesters choose access that is removed automatically. The Launcher offers durations only; the plugin also offers an end date."
   },
-  "approval": {
-    "timeoutDays": 7,
-    "actionAtTimeout": "EXPIRED",
-    "priority": "MEDIUM"
-  },
   "notifications": {
     "overrideRecipients": [],
-    "ccApprover": true,
-    "pendingEmail": true,
     "helpContact": null,
     "uiBaseUrl": null,
-    "_comment": "Every email says what was asked, why, what was decided and where to go next, with links into the tenant. pendingEmail: also email when a request starts waiting for the bulk approver. helpContact: the 'Need help?' line (text; web and email addresses become links), null = 'Contact your SailPoint administrator.' uiBaseUrl: the tenant's UI address for the links, null = derived from SAIL_BASE_URL (https://acme.api.identitynow.com -> https://acme.identitynow.com)."
+    "_comment": "The Launcher workflow emails the requester once the access is requested (or when it stops a request), saying what was asked, why and where to go next, with links into the tenant. overrideRecipients: send all mail there instead (demo and test tenants). helpContact: the 'Need help?' line (text; web and email addresses become links), null = 'Contact your SailPoint administrator.' uiBaseUrl: the tenant's UI address for the links, null = derived from SAIL_BASE_URL (https://acme.api.identitynow.com -> https://acme.identitynow.com)."
   },
   "owner": null,
   "access": {
     "launcherApproval": "MANAGER",
-    "_comment": "Who approves requests for the Launcher Access profile: MANAGER (the requester's manager) or NONE (auto-approved)."
+    "_comment": "The Launcher Access profile decides who may make bulk requests (the Launchpad form and the plugin). Who approves requests for it: MANAGER (the requester's manager) or NONE (auto-approved)."
   },
   "plugin": {
     "alias": "acme-bulk-access",
     "displayName": "ACME Bulk Access Request",
     "public": false,
-    "submit": null,
-    "_comment": "submit: null = launcher when deployments.launcher is true, else test-endpoint. launcher = the plugin starts the Launcher and submits its form as the signed-in user, so anyone with the Launcher Access profile can submit and no plugin workflow is installed; test-endpoint (default otherwise) = the plugin starts its own disabled workflow through the workflow test endpoint, ORG_ADMIN only."
+    "submit": "direct",
+    "_comment": "submit: direct (default) = the plugin files the access requests itself, as the signed-in user, so they carry the requester's name and each item is approved the way it's set up in SailPoint (the tenant must let users request access for others; plugin/install.py checks and otherwise uses the Launcher). launcher = the plugin starts the Launcher and submits its form as the signed-in user; the Launcher workflow then files the requests. Either way only holders of the Launcher Access profile may submit."
   },
   "approvals": {
     "enabled": true,
