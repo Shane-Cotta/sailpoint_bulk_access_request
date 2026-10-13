@@ -153,8 +153,10 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
     so the installer writes `launcherId` into the runtime config. The admin PAT (client credentials) gets 401 on
     `/beta/interactive-processes` (and on `/interactive-processes/v1`): it needs a user session.
   - Through the API the form takes what its pickers don't: 250 people, items and SELECT values outside its STATIC options, and
-    unknown formData keys. Its REGEX rules still apply. A `HIDDEN` element is accepted; the Launchpad leaves it out of formData,
-    and `StringMatches` on that missing path simply takes the default branch.
+    unknown formData keys (the workflow sees them). Its REGEX rules still apply. **Never put a `HIDDEN` element on a
+    Launcher form:** the API accepts it, but the Launchpad then renders an empty form (no fields at all; seen live
+    2026-10-13). So the plugin's `partLabel` is an extra formData key with no field; when it's missing (Launchpad),
+    `StringMatches` on that path simply takes the default branch.
   - The SDK only has `get`/`post`, so `SailpointPluginService.patch` calls `fetch` with the SDK's token and `tenant.apiUrl.idn`.
 - **APIs:**
   - Every `/v1` path in `api.py` / `api-paths.ts` answers without `X-SailPoint-Experimental`, with the same filters and shapes

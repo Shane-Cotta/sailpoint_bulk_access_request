@@ -217,7 +217,7 @@ stops after 50 items) [L].
 ## 6. Objects created, and the features they rely on
 | Object | API | Features relied on |
 |---|---|---|
-| **Form definition** "<prefix> Bulk Access Request Form" | `/form-definitions/v1` | SECTION. SELECT with an **INTERNAL IDENTITY** data source (`maximum` ≤ 30) and with **STATIC** options holding full `{id,type,name}` objects (`maximum` ≤ 25). TEXT with **REGEX** validation. TEXTAREA (no MAX_LENGTH). **TOGGLE**. **HIDDEN** (`partLabel`, set only by the plugin). `formConditions` HIDE effects [L]. No approver field |
+| **Form definition** "<prefix> Bulk Access Request Form" | `/form-definitions/v1` | SECTION. SELECT with an **INTERNAL IDENTITY** data source (`maximum` ≤ 30) and with **STATIC** options holding full `{id,type,name}` objects (`maximum` ≤ 25). TEXT with **REGEX** validation. TEXTAREA (no MAX_LENGTH). **TOGGLE**. No HIDDEN element (it makes the Launchpad render an empty form); the plugin's `partLabel` is an extra formData key. `formConditions` HIDE effects [L]. No approver field |
 | **Workflow** "<prefix> Bulk Access Request" | `/workflows/v1` | Enabled, Interactive trigger scoped to its own ID [L] |
 | **Launcher** "<prefix> Bulk Access Request" | `/launchers/v1` | `type: INTERACTIVE_PROCESS`, `reference: {type: WORKFLOW}`. ISC auto-creates an `assignedLaunchers` entitlement on the IdentityNow source [L] |
 | **Access profile** "<prefix> Bulk Access Request - Launcher Access" | `/access-profiles/v1` | Wraps the `assignedLaunchers` entitlement. Requestable, with `approvalSchemes: [{approverType: MANAGER}]` or none [L]. Also the plugin's submit gate |

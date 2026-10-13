@@ -25,7 +25,7 @@ it groups their pending approvals by INC and decides a whole bulk request at onc
   3 at a time, each with every item. **Every request carries the same INC**, items, justification and access choice.
 - **Through the Launcher** (`plugin.submit: "launcher"`), SailPoint's workflow loop refuses more than **250** items, so one
   Launcher run covers at most 250 people (`people.partSize`, 1 to 250). A bigger request is sent as several runs, one after
-  another, with the hidden part label `(1/3)`, `(2/3)`, … The page says so on the People step ("600 people → sent as 3
+  another, with the part label `(1/3)`, `(2/3)`, … The page says so on the People step ("600 people → sent as 3
   Launcher runs of up to 250, same INC") and lists the runs on the review step.
 - **If some requests (or runs) can't be sent**, the submitted view says which ones, and **Retry** sends just those again.
   A permission error (401/403) stops the rest.
@@ -153,7 +153,7 @@ It uses `../launcher/`, as the signed-in user. For each part it
 2. waits for its form: `GET /beta/interactive-processes/{id}/blocks` until the FORM block names the form instance (up to
    30 s). This is the plugin's only beta call: there is no GA path for a Launcher run's blocks;
 3. fills in and submits that form: `PATCH /form-instances/v1/{id}` with the people, items, INC, justification, access
-   fields and the hidden part label (`" (2/3)"`). The page checks everything first with the same rules as the form;
+   fields and the part label (`" (2/3)"`, an extra form data key). The page checks everything first with the same rules as the form;
 4. reads the run's answer from the same blocks: its *Requested* (or, dry run, *Checked*) message, or the error that
    stopped it. If none comes within 2 minutes, the page says an email will follow.
 

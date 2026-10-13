@@ -563,7 +563,7 @@ def test_launcher_form_offers_temporary_access_only_when_configured():
 
     for off in (cfg_with(temporaryAccess__enabled=False), cfg_with(temporaryAccess__allow=["endDate"])):
         form = definitions.bulk_form(off, "o", [])
-        assert set(_form_elements(form)) == {"people", "items", "inc", "justification", "partLabel"}
+        assert set(_form_elements(form)) == {"people", "items", "inc", "justification"}
         assert form["formConditions"] == []
 
     # A unit that can never fit maxDays isn't offered.
@@ -955,9 +955,12 @@ def test_launcher_workflow_takes_hours_from_the_plugin_for_end_dates():
         assert definitions.launcher_workflow_units(same) == ("DAYS",)
 
 
-def test_launcher_form_has_a_hidden_part_label_the_workflow_checks():
-    el = _form_elements(definitions.bulk_form(config.load(EXAMPLE), "o", []))["partLabel"]
-    assert el["elementType"] == "HIDDEN" and el["config"]["default"] == "" and el["validations"] == []
+def test_the_workflow_checks_a_part_label_the_launcher_form_has_no_field_for():
+    # A HIDDEN element makes the Launchpad render an empty form (verified live), so the plugin sends partLabel as an
+    # extra form data key and the form has no field for it.
+    els = _form_elements(definitions.bulk_form(config.load(EXAMPLE), "o", []))
+    assert definitions.F_PART_LABEL not in els
+    assert all(e.get("elementType") != "HIDDEN" for e in els.values())
     steps = _steps(definitions.bulk_workflow(config.load(EXAMPLE), owner_id="o", form_id="f"))
     define = {v["name"]: v for v in steps["Define Variable Access"]["attributes"]["variables"]}
     # Defined as a placeholder emptied by a replace transform (a literal "" can't be defined).

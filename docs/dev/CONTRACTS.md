@@ -175,8 +175,7 @@ when the tenant doesn't allow it, it writes `submit: "launcher"` (or stops with 
 - **Manage Access:** `sp:access:manage` `versionNumber: 2` inside `sp:loop:iterator` over the people (`context.$: "$"`,
   `$.loop.context.…` paths): `addIdentities` = one person, `requestedItems` = every item, `removeDuration` from the access
   variables, `comments` = the item comment. Not built in dry-run mode.
-- **Launcher form fields** (keys): `people`, `items`, `inc` (REGEX), `justification` (TEXTAREA, no length rule), `partLabel`
-  (HIDDEN), and, when `launcher_temporary_modes` contains `duration`: `accessType` (TOGGLE, Permanent/Temporary), `duration`
+- **Launcher form fields** (keys): `people`, `items`, `inc` (REGEX), `justification` (TEXTAREA, no length rule), and, when `launcher_temporary_modes` contains `duration`: `accessType` (TOGGLE, Permanent/Temporary), `duration`
   (whole number), `durationUnit` (from `temporary_units`). Items without an approval of their own carry the no-approval
   sub-label. The Launcher's access label is `Temporary: {n}{suffix}` (e.g. `Temporary: 30d`).
 - **Emails:** see §10.
@@ -323,9 +322,10 @@ UI picker's only), `items` (`{id,type,name}`; an item outside the form's STATIC 
 form ✔ PAT; the Launcher workflow accepts hours whenever the plugin offers an end date (`definitions.launcher_workflow_units`).
 Unknown formData keys are kept ✔ PAT. The form's REGEX rules apply on submit, so the plugin validates first (rules.ts).
 
-**The hidden part label:** the workflow defines `partLabel` as `"single"` emptied by a replace transform (in *Define Variable
-Access*), then *Part Given?* (`StringMatches` `PART_LABEL_REGEX` `^ \([1-9][0-9]*/[1-9][0-9]*\)$` on the form field) → *Set Part*.
-A missing field (Launchpad) or a malformed one (`" (1/2) evil"`) leaves it empty ✔ PAT.
+**The part label:** an extra formData key, `partLabel`, with no field on the form (a `HIDDEN` element makes the Launchpad
+render an empty form ✔). The workflow defines `partLabel` as `"single"` emptied by a replace transform (in *Define Variable
+Access*), then *Part Given?* (`StringMatches` `PART_LABEL_REGEX` `^ \([1-9][0-9]*/[1-9][0-9]*\)$` on that key) → *Set Part*.
+A missing key (Launchpad) or a malformed one (`" (1/2) evil"`) leaves it empty ✔ PAT.
 
 **Errors:** a 401/403, or a 500 whose message says "insufficient authorization", on any of these calls →
 `To submit, you need '{launcherAccessName}'. Request it in the Request Center.` (`errors.ts` `describeSubmitError`),

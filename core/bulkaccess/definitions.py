@@ -11,8 +11,8 @@ There is no approval for the bulk request itself: each item is approved the way
 SailPoint has it set up (its owner, the person's manager, ...; or not at all).
 Results are reported back as Interactive Messages and email. The UI plugin
 either files the requests itself ("direct", no workflow) or fills in this
-Launcher's form as the signed-in user ("launcher", setting the hidden
-`partLabel` field when a request is sent in parts).
+Launcher's form as the signed-in user ("launcher", adding a `partLabel`
+key to the form data when a request is sent in parts; the form has no such field).
 
 Everything below was confirmed against a live tenant (see INSTALL.md
 "How it works"): REGEX validation shape, STATIC options carrying full access
@@ -94,10 +94,9 @@ def bulk_form(cfg: Config, owner_id: str, options: list[dict[str, Any]]) -> dict
         {"id": "justification", "key": F_JUSTIFICATION, "elementType": "TEXTAREA", "validations": required,
          "config": {"label": "Business justification", "rows": 3,
                     "helpText": "Stored on every access request, where the item approvers see it."}},
-        # Hidden: the Launchpad never shows it and leaves it empty. The plugin (launcher submit mode) sets
-        # it to " (2/3)" when a request goes out in parts; the workflow checks it (PART_LABEL_REGEX).
-        {"id": "partLabel", "key": F_PART_LABEL, "elementType": "HIDDEN", "validations": [],
-         "config": {"label": "Part (set by the plugin)", "default": ""}},
+        # No field for F_PART_LABEL: a HIDDEN element makes the Launchpad render an empty form (verified live).
+        # The plugin (launcher submit mode) adds it to the form data anyway (the API takes keys the form doesn't
+        # have) when a request goes out in parts; the workflow checks it (PART_LABEL_REGEX).
     ]
     conditions: list[dict[str, Any]] = []
     units = launcher_duration_units(cfg)
@@ -408,7 +407,7 @@ def bulk_workflow(cfg: Config, *, owner_id: str, owner_name: str | None = None, 
     p = PATHS
     links = links or EmailLinks()
     inc = _t(p["inc"])
-    part = _t(p["partLabel"])     # "" or " (2/3)"; only the plugin sets it (hidden field)
+    part = _t(p["partLabel"])     # "" or " (2/3)"; only the plugin sends it
     label = _t(p["accessLabel"])
     live = cfg.live
     temporary_units = launcher_workflow_units(cfg)
@@ -443,7 +442,7 @@ def bulk_workflow(cfg: Config, *, owner_id: str, owner_name: str | None = None, 
     stop("Reject Bad INC", "Invalid INC number", "ServiceNow incident (INC) number", cfg.inc_message, entered=(p["inc"],))
 
     # The access choice: permanent ("" / "Permanent") unless the form asks for temporary access;
-    # and the part label: "" (one part) unless the plugin set the hidden field to " (k/n)".
+    # and the part label: "" (one part) unless the plugin sent " (k/n)".
     after_part = "Temporary?" if temporary_units else "Notify Requested"
     steps[DEFINE_ACCESS] = {
         "attributes": {"id": "sp:define-variable", "variables": [
@@ -457,7 +456,7 @@ def bulk_workflow(cfg: Config, *, owner_id: str, owner_name: str | None = None, 
              "transforms": [{"id": "sp:transform:replace:string", "input": {"pattern": "single", "replacement": ""}}]}]},
         "type": "Mutation", "displayName": "Access: permanent unless temporary was chosen; one part",
         "nextStep": "Part Given?"}
-    # The Launchpad leaves the hidden field empty (or out); only a well-formed " (k/n)" is used.
+    # The Launchpad never sends it; only a well-formed " (k/n)" is used.
     steps["Part Given?"] = _choice("Sent in parts?", "StringMatches", p["partLabelInput"], PART_LABEL_REGEX,
                                    "Set Part", after_part)
     steps["Set Part"] = {

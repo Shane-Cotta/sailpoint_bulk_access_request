@@ -333,7 +333,7 @@ export class RequestStore implements OnDestroy {
 
   /**
    * One part through the Launcher, as the signed-in user (CONTRACTS §9): launch it, wait for its form, then
-   * submit the form with this part's people and the hidden part label; then look for the workflow's answer.
+   * submit the form with this part's people and its part label; then look for the workflow's answer.
    * Returns a message when no other part can be sent either (the user may not use the Launcher), else null.
    */
   private async sendViaLauncher(n: number, duration: string): Promise<string | null> {

@@ -14,7 +14,7 @@ What it does, as the PAT user (who must be allowed to launch the Launcher):
      label in its comment (no "Approved by"), and (for temporary access) a removeDate of about now + the duration.
      Each request then goes through the item's own approval, as SailPoint has it set up.
 
---part k/n sets the form's hidden `partLabel` field to " (k/n)", as the UI plugin does when it submits a big request
+--part k/n adds `partLabel` " (k/n)" to the form data (the form has no field for it), as the UI plugin does when it submits a big request
 through the Launcher in parts. Without it the field is left out, as the Launchpad does.
 
 Scenarios: request (default), and bad-duration (temporary access with an invalid duration), which must be stopped
@@ -93,7 +93,7 @@ def main(argv=None) -> int:
     ap.add_argument("--access", choices=["permanent", "temporary"], default="permanent")
     ap.add_argument("--duration", default="1", help="with --access temporary: the duration (sent as the form's text)")
     ap.add_argument("--unit", choices=list(DURATION_UNITS), default="DAYS", help="with --access temporary")
-    ap.add_argument("--part", default="", help="k/n: send the hidden part label \" (k/n)\" like the plugin does")
+    ap.add_argument("--part", default="", help="k/n: send the part label \" (k/n)\" like the plugin does")
     a = ap.parse_args(argv)
     if a.part:
         k, _, n = a.part.partition("/")

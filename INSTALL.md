@@ -104,8 +104,9 @@ name and updates them.
 **Deployment A creates:**
 1. **Form** "<prefix> Bulk Access Request Form". Its item list is the Request Center catalog filtered by your config.
    When temporary access is on, it also asks for an access type (Permanent or Temporary), a duration and a unit.
-   A hidden field, `partLabel`, stays empty in the Launchpad; the plugin sets it to " (2/3)" when it sends a big request
-   through the Launcher in parts, so each run's messages and email say which part it was.
+   When the plugin sends a big request through the Launcher in parts, it also passes a `partLabel` (" (2/3)") with the
+   form data, so each run's messages and email say which part it was. The form has no field for it (a hidden field
+   makes the Launchpad show an empty form).
 2. **Workflow** "<prefix> Bulk Access Request". It's enabled, and it only reacts to *its own* Launcher.
 3. **Launcher** "<prefix> Bulk Access Request". Users see it in their **Launchpad**.
 4. **Access profile** "<prefix> Bulk Access Request - Launcher Access". SailPoint only shows a Launcher to people
@@ -138,7 +139,7 @@ python launcher/e2e.py --config config/<tenant>.json --people <testIdentityId>,<
 #   --items "A,B"             → the form's items to request, by name (default: all of them; required in live mode)
 #   --scenario bad-duration   → temporary access with an invalid duration: stopped before anything is requested
 #   --access temporary --duration 1 --unit DAYS   → temporary access
-#   --part 2/3                → also set the hidden part field, as the plugin does for a big request
+#   --part 2/3                → also send the part label, as the plugin does for a big request
 ```
 - **Who it runs as:** the PAT user, who needs Launcher access (`--grant me`).
 - **What it does:** submits the form with a random INC and checks the workflow run: the requests are filed straight

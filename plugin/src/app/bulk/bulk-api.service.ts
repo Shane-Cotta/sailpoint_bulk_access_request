@@ -35,7 +35,7 @@ export type ResolveProgress = (done: number, total: number) => void;
 
 /**
  * What the page writes into the Launcher form when it submits through the Launcher (CONTRACTS §9): the
- * Launchpad's own formData shapes (a TOGGLE boolean, a TEXT string, a SELECT list), plus the hidden `partLabel`.
+ * Launchpad's own formData shapes (a TOGGLE boolean, a TEXT string, a SELECT list), plus `partLabel` (an extra key; the form has no field for it).
  * The 30-person and catalog-option limits are the Launchpad picker's only; the API takes up to 250 people and any
  * `{id, type, name}` item (verified live).
  */
