@@ -2,7 +2,8 @@
 """End-to-end test of the Launcher deployment, driven entirely through the API.
 
     python launcher/e2e.py --config config/<tenant>.json --people <identityId>,<identityId> \\
-        [--scenario request|bad-duration] [--access temporary --duration 1 --unit DAYS] [--part 2/3]
+        [--items "<item name>,<item name>"] [--scenario request|bad-duration]
+        [--access temporary --duration 1 --unit DAYS] [--part 2/3]
 
 What it does, as the PAT user (who must be allowed to launch the Launcher):
   1. starts the Launcher                         (POST /launchers/v1/{id}/launch)
@@ -18,6 +19,9 @@ through the Launcher in parts. Without it the field is left out, as the Launchpa
 
 Scenarios: request (default), and bad-duration (temporary access with an invalid duration), which must be stopped
 before anything is requested.
+
+--items picks items on the form by name (default: every item on the form). In live mode it is required, so a run
+only ever requests the test items it names.
 
 Use only test identities and test items: runs really request access when the config's mode is "live". Every run
 uses a fresh random INC number.
@@ -80,6 +84,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", required=True)
     ap.add_argument("--people", required=True, help="comma-separated identity IDs (test identities only)")
+    ap.add_argument("--items", default="", help="comma-separated item names on the form (test items only); "
+                    "required in live mode. Default: every item on the form")
     ap.add_argument("--justification", default="", help="override the justification text (e.g. to test long input)")
     ap.add_argument("--scenario", choices=["request", "bad-duration"], default="request",
                     help="bad-duration = temporary access with an invalid duration (default: none entered); it must be "
@@ -116,7 +122,16 @@ def main(argv=None) -> int:
     if not (form and wf and launcher):
         raise SystemExit("FAIL: not installed. Run launcher/install.py first.")
     items = install.catalog_items(form)
-    print(f"Items on the form: {[i['name'] for i in items]}")
+    if a.items:
+        wanted = [n.strip() for n in a.items.split(",") if n.strip()]
+        missing = [n for n in wanted if n not in {i["name"] for i in items}]
+        if missing:
+            raise SystemExit(f"FAIL: not on the form: {missing}")
+        items = [i for i in items if i["name"] in wanted]
+    elif cfg.mode == "live" and a.scenario == "request":
+        raise SystemExit("FAIL: mode is live, so name the test items to request with --items (the form offers "
+                         f"{len(items)}).")
+    print(f"Items: {[i['name'] for i in items]}")
     has_temporary = install.form_element(form, definitions.F_ACCESS_TYPE) is not None
     if temporary and not has_temporary:
         raise SystemExit("FAIL: the installed form has no temporary access fields (temporaryAccess is off for the Launcher).")

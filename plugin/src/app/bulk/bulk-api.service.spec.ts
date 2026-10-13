@@ -390,7 +390,7 @@ describe('BulkApiService', () => {
       expect(launcherInfoMessage([
         { type: 'FORM', config: { formInstanceId: 'x' } },
         { type: 'MESSAGE', config: { category: 'INFO' }, data: { title: 'Requested: INC0012345', message: '<p>4 requests.</p>' } },
-      ])).toBe('Requested: INC0012345: 4 requests.');
+      ])).toBe('4 requests.');
       expect(launcherInfoMessage([{ type: 'MESSAGE', config: { category: 'INFO' } }])).toBe('The Launcher workflow accepted the request.');
     });
   });

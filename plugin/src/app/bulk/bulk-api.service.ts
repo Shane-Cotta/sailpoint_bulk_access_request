@@ -86,15 +86,18 @@ const LAUNCHER_FORM_TIMEOUT_MS = 30_000;
 
 const plainText = (v: unknown) => (typeof v === 'string' ? v.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() : '');
 
-/** The first message block of a category ("ERROR" or "INFO") the Launcher's workflow posted, as plain text. */
-function launcherMessage(blocks: LauncherBlock[], wanted: 'ERROR' | 'INFO'): string | null {
+/**
+ * The first message block of a category ("ERROR" or "INFO") the Launcher's workflow posted, as plain text:
+ * "title: message", or just the message with `bodyOnly`.
+ */
+function launcherMessage(blocks: LauncherBlock[], wanted: 'ERROR' | 'INFO', bodyOnly = false): string | null {
   for (const b of blocks) {
     if (b.type === 'FORM') continue;
     const category = String(b.config?.['category'] ?? b.data?.['category'] ?? '').toUpperCase();
     if (category !== wanted && !new RegExp(wanted, 'i').test(b.type ?? '')) continue;
     const title = plainText(b.data?.['title'] ?? b.config?.['title']);
     const message = plainText(b.data?.['message'] ?? b.config?.['message']);
-    return [title, message].filter(Boolean).join(': ') || (wanted === 'ERROR'
+    return (bodyOnly && message) || [title, message].filter(Boolean).join(': ') || (wanted === 'ERROR'
       ? 'The Launcher workflow stopped with an error.' : 'The Launcher workflow accepted the request.');
   }
   return null;
@@ -109,9 +112,12 @@ export function launcherStopMessage(blocks: LauncherBlock[]): string | null {
   return launcherMessage(blocks, 'ERROR');
 }
 
-/** The message the Launcher's workflow showed once it passed every check ("Requested: …" or, dry run, "Checked: …"). */
+/**
+ * The message the Launcher's workflow showed once it passed every check. Its title ("Requested: <INC>" or, dry run,
+ * "Checked: <INC>") repeats the page's own heading, so only the body is returned when there is one (verified live).
+ */
 export function launcherInfoMessage(blocks: LauncherBlock[]): string | null {
-  return launcherMessage(blocks, 'INFO');
+  return launcherMessage(blocks, 'INFO', true);
 }
 
 /** The fields of a /generic-approvals/v1 row the Approvals tab reads (item access-request approvals). */

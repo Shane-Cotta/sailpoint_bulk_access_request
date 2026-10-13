@@ -220,7 +220,7 @@ describe('RequestStore', () => {
 
       await vi.advanceTimersByTimeAsync(5000);
       expect(store.submission()).toMatchObject({ state: 'requested', submit: 'launcher',
-        message: 'Requested: INC0048391: 10 access requests filed. Each is approved the way it\'s set up in SailPoint.' });
+        message: '10 access requests filed. Each is approved the way it\'s set up in SailPoint.' });
       // Nothing a non-admin can't read, and no workflow calls.
       expect(get.mock.calls.some((c) => /workflow|identities\/v1/.test(String(c[0])))).toBe(false);
     });
