@@ -25,8 +25,6 @@ import {
 } from './fixtures';
 import type { DemoScenario } from './scenario';
 
-// The URL check lives in scenario.ts so main.ts can load this file (and the fixtures) only in demo mode.
-export { DEMO_SCENARIOS, demoScenario, type DemoScenario } from './scenario';
 
 /**
  * Trouble the demo's approvals API makes, by an approval's position in DEMO_PENDING (1-based):
@@ -69,7 +67,6 @@ export class DemoPluginService {
   });
   readonly context = this._context.asReadonly();
   readonly status = signal<'ready'>('ready').asReadonly();
-  readonly tenant = computed(() => this._context()?.tenant ?? null);
   readonly user = computed(() => this._context()?.user ?? null);
   readonly apiReady = computed(() => true);
 

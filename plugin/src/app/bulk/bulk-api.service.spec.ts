@@ -17,7 +17,7 @@ function setup(routes: Record<string, unknown>, isOrgAdmin = true) {
 const ALAN = '0123456789abcdef0123456789abcdef';
 
 describe('BulkApiService', () => {
-  describe('submitting directly (CONTRACTS §9)', () => {
+  describe('submitting directly (CONTRACTS §3)', () => {
     const items = [{ id: 'ap-1', type: 'ACCESS_PROFILE' as const, name: 'ACME Bulk Test Access' },
       { id: 'en-1', type: 'ENTITLEMENT' as const, name: 'Zoom' }];
 

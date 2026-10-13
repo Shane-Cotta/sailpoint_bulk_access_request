@@ -56,11 +56,6 @@ def validate_request(cfg: Config, *, people: list[str], items: list[dict[str, An
     return problems
 
 
-def clip(text: str, limit: int) -> str:
-    text = " ".join(str(text).split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
 # ── where the catalog comes from (CONTRACTS §8) ──────────────────────────────
 # /requestable-objects only lists access profiles and roles: ENTITLEMENT is outside its
 # `types` enum (alone -> 400; repeated next to another type -> silently dropped). Requestable

@@ -998,14 +998,6 @@ def test_show_config_says_who_can_submit_from_the_plugin(tmp_path, capsys):
     assert 'plugin.submit "launcher": the plugin launches' in out
 
 
-def test_clip_flattens_whitespace_and_cuts_with_an_ellipsis():
-    # Mirrors rules.ts clip (rules.spec.ts has the same cases).
-    assert rules.clip("  a\n b\t c  ", 10) == "a b c"
-    assert rules.clip("abcdefghij", 10) == "abcdefghij"
-    assert rules.clip("abcdefghijk", 10) == "abcdefghi…"
-    assert len(rules.clip("x" * 500, 145)) == 145
-
-
 # ── emails (what / why / what happens next, links, Velocity safety) ───────────
 import velocity_lite  # noqa: E402  (renders a send-email step the way SailPoint does; checked live, CONTRACTS §10)
 

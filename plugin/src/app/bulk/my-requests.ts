@@ -20,7 +20,6 @@ export type RequestStatus = 'WAITING' | 'IN_PROGRESS' | 'DONE' | 'NOT_GRANTED';
 export interface RequestRow {
   person: string;
   item: string;
-  type: string;
   state: string;
   status: RequestStatus;
   /** Who the request waits for (its pending approvals' current owners), when WAITING. */
@@ -45,7 +44,6 @@ export interface BulkGroup {
   items: number;
   waiting: number;
   done: number;
-  notGranted: number;
   lastActivity: string;
 }
 
@@ -93,7 +91,6 @@ export function groupByInc(cfg: Pick<RuntimeConfig, 'incPattern'>, requesterId: 
     g.rows.push({
       person: r.requestedFor?.name ?? r.requestedFor?.id ?? '?',
       item: r.name,
-      type: r.type,
       state: r.state,
       status,
       waitingFor: status === 'WAITING' ? uniq((r.approvalDetails ?? []).filter((a) => a.status === 'PENDING')
@@ -118,7 +115,6 @@ export function groupByInc(cfg: Pick<RuntimeConfig, 'incPattern'>, requesterId: 
       items: new Set(rows.map((r) => r.item)).size,
       waiting: count('WAITING'),
       done: count('DONE'),
-      notGranted: count('NOT_GRANTED'),
       lastActivity: rows.map((r) => r.created).filter(Boolean).sort().at(-1) ?? '',
     });
   }

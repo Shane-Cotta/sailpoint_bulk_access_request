@@ -142,7 +142,7 @@ answers with the requests it filed (`newRequests`) and the ones it skipped becau
 (`existingRequests`); the page shows both counts. The requests carry the user as requester, so they're in the user's
 Request Center and *My bulk requests*, and ISC never lets the user approve their own request (it escalates such an
 approval to an admin). This needs the tenant to let users request access for others (**Admin → Global → Access Request
-Settings**, *Request for others*); verified live as a non-admin (see `docs/dev/CONTRACTS.md` §9). A refusal says so:
+Settings**, *Request for others*); verified live as a non-admin (see `docs/dev/CONTRACTS.md` §3). A refusal says so:
 *"SailPoint refused the request (HTTP 403). Your account may not be allowed to request access for these people…"*.
 
 **`"launcher"` (the installer's fallback when the tenant doesn't allow that): the page drives the Launcher deployment.**

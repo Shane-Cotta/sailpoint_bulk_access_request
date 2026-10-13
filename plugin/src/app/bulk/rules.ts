@@ -67,11 +67,6 @@ export function validateRequest(cfg: RuleConfig, draft: RequestDraft): string[] 
   return problems;
 }
 
-export function clip(text: string, limit: number): string {
-  const flat = String(text).split(/\s+/).filter(Boolean).join(' ');
-  return flat.length <= limit ? flat : flat.slice(0, limit - 1) + '…';
-}
-
 /** A catalog entry as the Items step shows it. */
 export interface CatalogOption {
   label: string;

@@ -4,7 +4,7 @@ import {
   DEFAULT_CONFIG, MSG_LAUNCHER_ID, MSG_SUBMIT, parseRuntimeConfig, RuntimeConfigError, type DurationUnit, type RuntimeConfig,
 } from './runtime-config';
 import {
-  accessLabel, bulkComment, catalogOptions, clip, COMMENT_SEPARATOR, endDateHours, entitlementFilter, extractInc, incIsValid,
+  accessLabel, bulkComment, catalogOptions, COMMENT_SEPARATOR, endDateHours, entitlementFilter, extractInc, incIsValid,
   JUSTIFICATION_MAX, launcherFormAccess, MSG_JUSTIFICATION, MSG_JUSTIFICATION_LONG, NO_APPROVAL_LABEL, parseBulkComment,
   partLabel, removeDate, removeDuration, requestableObjectTypes, splitIntoParts, temporaryModes, validateAccess,
   validateRequest, type AccessChoice,
@@ -216,11 +216,6 @@ describe('rules (core/bulkaccess/rules.py)', () => {
       { id: 'a', type: 'ROLE', name: 'Alpha' },
     ], { b: 'Active Directory' });
     expect(opts.map((o) => o.subLabel)).toEqual(['Role', 'Entitlement · Active Directory']);
-  });
-
-  it('clips long text like rules.clip', () => {
-    expect(clip('a  b\n c', 10)).toBe('a b c');
-    expect(clip('abcdefghij', 5)).toBe('abcd…');
   });
 
   it('finds the INC in access request comments and approval names', () => {

@@ -717,7 +717,7 @@ export class BulkApiService {
     return (rows ?? []).some((r) => r['requestStatus'] === 'ASSIGNED');
   }
 
-  // ── Submitting directly (CONTRACTS §9; verified live as a non-admin) ──────
+  // ── Submitting directly (CONTRACTS §3; verified live as a non-admin) ──────
   /**
    * File the access requests as the signed-in user: every item for every person (at most 10 people per call),
    * each item carrying the bulk comment and, for temporary access, its removal date. Each request then goes

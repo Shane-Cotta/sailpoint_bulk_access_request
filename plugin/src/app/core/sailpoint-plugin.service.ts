@@ -168,11 +168,4 @@ export class SailpointPluginService {
     }
     return body as T;
   }
-
-  /**
-   * Report the plugin's current internal route to the App Shell so it mirrors it
-   * in the host browser URL (via history.replaceState, so no history entry is
-   * pushed). `subPath` is plugin-relative, e.g. 'workflows'. Resolves once the
-   * host accepts it; rejects if the SDK is unavailable or the handshake failed.
-   */
 }

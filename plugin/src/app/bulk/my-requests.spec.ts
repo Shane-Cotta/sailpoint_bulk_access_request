@@ -14,7 +14,7 @@ describe('My bulk requests grouping', () => {
 
   it('counts people, items and requests per status', () => {
     const big = groups.find((g) => g.inc === 'INC0048120')!;
-    expect([big.people, big.items, big.waiting, big.done, big.notGranted]).toEqual([500, 1, 10, 490, 0]);
+    expect([big.people, big.items, big.waiting, big.done]).toEqual([500, 1, 10, 490]);
     const small = groups.find((g) => g.inc === 'INC0047950')!;
     expect([small.people, small.items, small.waiting, small.done]).toEqual([3, 2, 1, 5]);
     expect(small.lastActivity).toBe('2026-10-06T10:03:00Z');
