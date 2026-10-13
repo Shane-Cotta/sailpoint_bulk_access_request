@@ -102,7 +102,7 @@ class Tenant:
     def call(self, method: str, path: str, body: Any = None, *,
              content_type: str = "application/json", ok: tuple[int, ...] = (200, 201, 202, 204),
              headers: dict[str, str] | None = None) -> Any:
-        """Call `path` (e.g. "/v2025/workflows") and return parsed JSON (or None)."""
+        """Call `path` (e.g. "/workflows/v1", see api.py) and return parsed JSON (or None)."""
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(f"{self.base_url}{path}", data=data, method=method, headers={
             "Authorization": f"Bearer {self.token()}",
@@ -157,7 +157,7 @@ class Tenant:
         identity_id = self.claims().get("identity_id")
         if not identity_id:
             return {}
-        return self.call("GET", f"/v2025/identities/{identity_id}")   # there is no v3 identities API
+        return self.call("GET", f"/identities/v1/{identity_id}")
 
 
 def _b64url(segment: str) -> str:

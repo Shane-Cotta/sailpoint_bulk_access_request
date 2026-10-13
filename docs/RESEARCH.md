@@ -1,5 +1,9 @@
 # Research: SailPoint ISC APIs and object ownership
 
+> **Paths:** this research used the `v3`/`v2025` paths of the time. Since 2026-10-13 the tool calls their GA
+> `/<service>/v1` equivalents (`reassign/api.py`, e.g. `/roles/v1`, `/workgroups/v1`), re-checked live with the same
+> filters and shapes.
+
 The facts behind this workflow's design, gathered 2026-10-12 from SailPoint's documentation, the published OpenAPI
 specs, the developer community, and a live demo tenant. **Live** means checked against the tenant (the details are in
 `CLAUDE.md`). **Docs** means from SailPoint's documentation or specs, without a live check.

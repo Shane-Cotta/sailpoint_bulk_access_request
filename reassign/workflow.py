@@ -19,6 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from . import api
 from .config import Config
 
 TRIGGER_ID = "idn:identity-lifecycle-state-changed"
@@ -94,19 +95,18 @@ class ObjectType:
 
 EXPERIMENTAL = "X-SailPoint-Experimental:true"
 OBJECT_TYPES: dict[str, ObjectType] = {
-    "roles": ObjectType("roles", "Roles", "Role", "/v3/roles", "/v3/roles"),
+    "roles": ObjectType("roles", "Roles", "Role", api.ROLES, api.ROLES),
     "accessProfiles": ObjectType("accessProfiles", "Access Profiles", "Access Profile",
-                                 "/v3/access-profiles", "/v3/access-profiles"),
-    "entitlements": ObjectType("entitlements", "Entitlements", "Entitlement",
-                               "/v2025/entitlements", "/v2025/entitlements"),
-    "sources": ObjectType("sources", "Sources", "Source", "/v3/sources", "/v3/sources"),
+                                 api.ACCESS_PROFILES, api.ACCESS_PROFILES),
+    "entitlements": ObjectType("entitlements", "Entitlements", "Entitlement", api.ENTITLEMENTS, api.ENTITLEMENTS),
+    "sources": ObjectType("sources", "Sources", "Source", api.SOURCES, api.SOURCES),
     # /source-apps lists only the caller's assigned apps; /source-apps/all is the admin list (it filters on owner.id).
-    "apps": ObjectType("apps", "Apps", "App", "/v2025/source-apps/all", "/v2025/source-apps", headers=EXPERIMENTAL),
+    "apps": ObjectType("apps", "Apps", "App", f"{api.SOURCE_APPS}/all", api.SOURCE_APPS, headers=EXPERIMENTAL),
     # These two lists reject an owner.id filter (400): the workflow lists them and filters with JSONPath.
     "governanceGroups": ObjectType("governanceGroups", "Governance Groups", "Governance Group",
-                                   "/v2025/workgroups", "/v2025/workgroups", server_filter=False),
+                                   api.WORKGROUPS, api.WORKGROUPS, server_filter=False),
     "identityProfiles": ObjectType("identityProfiles", "Identity Profiles", "Identity Profile",
-                                   "/v2025/identity-profiles", "/v2025/identity-profiles", server_filter=False),
+                                   api.IDENTITY_PROFILES, api.IDENTITY_PROFILES, server_filter=False),
 }
 
 
@@ -258,7 +258,7 @@ def description(cfg: Config) -> str:
 
 
 def build(cfg: Config, t: Target = Target()) -> dict[str, Any]:
-    """The workflow body for POST/PUT /v2025/workflows (created disabled; `apply --enable` turns it on)."""
+    """The workflow body for POST/PUT /workflows/v1 (created disabled; `apply --enable` turns it on)."""
     types = [OBJECT_TYPES[k] for k in cfg.object_types]
     steps: dict[str, Any] = {}
 
@@ -382,7 +382,7 @@ def ref_ids_of(workflow: Mapping[str, Any]) -> dict[str, str]:
 
 
 def test_input(identity_id: str, identity_name: str, new_state: str, old_state: str = "active") -> dict[str, Any]:
-    """A trigger payload for POST /v2025/workflows/{id}/test (the trigger's documented input shape)."""
+    """A trigger payload for POST /workflows/v1/{id}/test (the trigger's documented input shape)."""
     return {"identity": {"id": identity_id, "name": identity_name, "type": "IDENTITY"},
             "identityProfile": None, "newLifecycleState": new_state, "oldLifecycleState": old_state}
 

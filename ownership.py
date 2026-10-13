@@ -23,6 +23,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from reassign import api
 from reassign import config as config_mod
 from reassign import ops
 from reassign import workflow as wf
@@ -87,12 +88,12 @@ def cmd_doctor(cfg: config_mod.Config, _a: argparse.Namespace) -> int:
     except TenantError as exc:
         bad(str(exc))
 
-    triggers = tenant.call("GET", "/v2025/workflow-library/triggers?limit=250") or []
+    triggers = tenant.call("GET", f"{api.WORKFLOW_LIBRARY}/triggers?limit=250") or []
     if any(t.get("id") == wf.TRIGGER_ID for t in triggers):
         ok(f"trigger {wf.TRIGGER_ID} available")
     else:
         bad(f"trigger {wf.TRIGGER_ID} not offered by this tenant")
-    actions = tenant.call("GET", "/v2025/workflow-library/actions?limit=250") or []
+    actions = tenant.call("GET", f"{api.WORKFLOW_LIBRARY}/actions?limit=250") or []
     for aid, version in (("sp:http", 3), ("sp:get-identity", 2), ("sp:loop:iterator", 1), ("sp:send-email", 2)):
         if any(x.get("id") == aid and x.get("versionNumber") == version for x in actions):
             ok(f"action {aid} v{version} available")
@@ -103,18 +104,18 @@ def cmd_doctor(cfg: config_mod.Config, _a: argparse.Namespace) -> int:
     for state, want in ((cfg.termination_states[0], True), ("active" if "active" not in cfg.termination_states else "x", False)):
         sample = wf.test_input("0" * 32, "sample", state)
         try:
-            res = tenant.call("POST", "/beta/trigger-subscriptions/validate-filter", {"input": sample, "filter": flt})
+            res = tenant.call("POST", f"{api.TRIGGER_SUBSCRIPTIONS}/validate-filter", {"input": sample, "filter": flt})
             matched = bool((res or {}).get("isValid"))
             (ok if matched == want else bad)(f"trigger filter {'matches' if matched else 'skips'} newLifecycleState={state!r}")
         except TenantError as exc:
             warn(f"could not validate the trigger filter ({exc})")
             break
 
-    profiles = tenant.call("GET", "/v2025/identity-profiles?limit=250") or []
+    profiles = tenant.call("GET", f"{api.IDENTITY_PROFILES}?limit=250") or []
     seen: dict[str, list[str]] = {s: [] for s in cfg.termination_states}
     enabled: dict[str, list[str]] = {s: [] for s in cfg.termination_states}
     for p in profiles:
-        for st in tenant.call("GET", f"/v2025/identity-profiles/{p['id']}/lifecycle-states") or []:
+        for st in tenant.call("GET", f"{api.IDENTITY_PROFILES}/{p['id']}/lifecycle-states") or []:
             name = st.get("technicalName")
             if name in seen:
                 seen[name].append(p["name"])

@@ -7,13 +7,14 @@ import time
 import urllib.parse
 from typing import Any
 
+from . import api
 from .tenant import Tenant, TenantError
 from .workflow import OAUTH_PARAMETER_TYPE, OBJECT_TYPES, ObjectType
 
-WORKFLOWS = "/v2025/workflows"
-EXECUTIONS = "/v2025/workflow-executions"
-IDENTITIES = "/v2025/identities"          # there is no v3 identities API
-PARAMETERS = "/v2025/parameter-storage/parameters"
+WORKFLOWS = api.WORKFLOWS
+EXECUTIONS = api.WORKFLOW_EXECUTIONS
+IDENTITIES = api.IDENTITIES
+PARAMETERS = api.PARAMETERS
 FINISHED = ("Completed", "Failed", "Canceled")
 
 
@@ -43,7 +44,7 @@ def resolve_identity(tenant: Tenant, ref: str) -> dict[str, Any]:
 
 
 def lifecycle_state(identity: dict[str, Any]) -> str | None:
-    """The technical lifecycle state name from a /v2025/identities row (None when the identity has none)."""
+    """The technical lifecycle state name from an /identities/v1 row (None when the identity has none)."""
     return ((identity.get("lifecycleState") or {}).get("stateName")
             or (identity.get("attributes") or {}).get("cloudLifecycleState"))
 
@@ -153,7 +154,8 @@ def run_test(tenant: Tenant, wid: str, payload: dict[str, Any], timeout: float =
 
 
 def history(tenant: Tenant, exec_id: str) -> list[dict[str, Any]]:
-    return tenant.call("GET", f"{EXECUTIONS}/{exec_id}/history") or []
+    """The run's events (`history-v2` returns {definition, trigger, history})."""
+    return (tenant.call("GET", f"{EXECUTIONS}/{exec_id}/history-v2") or {}).get("history") or []
 
 
 def history_summary(events: list[dict[str, Any]]) -> list[str]:
@@ -163,7 +165,8 @@ def history_summary(events: list[dict[str, Any]]) -> list[str]:
         kind = e.get("type", "")
         if kind in ("ActivityTaskScheduled", "WorkflowExecutionStarted"):
             continue
-        name = e.get("displayName") or (e.get("attributes") or {}).get("displayName") or ""
+        attrs = e.get("attributes") or {}
+        name = e.get("displayName") or attrs.get("displayName") or attrs.get("stepName") or ""
         err = (e.get("attributes") or {}).get("error") or (e.get("attributes") or {}).get("reason")
         lines.append(f"{kind:<28} {name}" + (f"  ERROR: {str(err)[:300]}" if err else ""))
     return lines
@@ -191,7 +194,7 @@ def _wait_for_entitlement(tenant: Tenant, source_id: str, name: str, timeout: fl
     f = q(f'source.id eq "{source_id}"')
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        rows = tenant.call("GET", f"/v2025/entitlements?filters={f}&limit=10") or []
+        rows = tenant.call("GET", f"{api.ENTITLEMENTS}?filters={f}&limit=10") or []
         hit = next((r for r in rows if r.get("name") == name), None)
         if hit:
             return hit
@@ -207,7 +210,7 @@ def create_test_objects(tenant: Tenant, prefix: str, owner_id: str, log=print) -
     made: dict[str, dict[str, Any]] = {}
     name = lambda key: f"{prefix} {TEST_SUFFIX[key]}"  # noqa: E731
     try:
-        src = tenant.call("POST", "/v3/sources", {
+        src = tenant.call("POST", api.SOURCES, {
             "name": name("sources"), "description": ABOUT, "owner": owner, "connector": "delimited-file",
             "connectorAttributes": {"group.columnNames": GROUP_COLUMNS, "group.indexColumn": "id",
                                     "group.delimiter": ","}})
@@ -215,22 +218,22 @@ def create_test_objects(tenant: Tenant, prefix: str, owner_id: str, log=print) -
         ref = {"type": "SOURCE", "id": src["id"], "name": src["name"]}
         log("  loading the test entitlement (an entitlement aggregation; usually under a minute)…")
         csv = (",".join(GROUP_COLUMNS) + "\n" + f"ownership-test,ownership-test,{name('entitlements')},,{ABOUT},,,,\n")
-        tenant.upload(f"/v2025/sources/{src['id']}/load-entitlements", "file", "entitlements.csv", csv.encode())
+        tenant.upload(f"{api.SOURCES}/{src['id']}/load-entitlements", "file", "entitlements.csv", csv.encode())
         ent = _wait_for_entitlement(tenant, src["id"], name("entitlements"))
         _set_owner(tenant, OBJECT_TYPES["entitlements"], ent["id"], owner_id)
         made["entitlements"] = ent
-        made["accessProfiles"] = tenant.call("POST", "/v3/access-profiles", {
+        made["accessProfiles"] = tenant.call("POST", api.ACCESS_PROFILES, {
             "name": name("accessProfiles"), "description": ABOUT, "owner": owner, "source": ref,
             "entitlements": [{"type": "ENTITLEMENT", "id": ent["id"], "name": ent["name"]}],
             "enabled": False, "requestable": False})
         ap = made["accessProfiles"]
-        made["roles"] = tenant.call("POST", "/v3/roles", {
+        made["roles"] = tenant.call("POST", api.ROLES, {
             "name": name("roles"), "description": ABOUT, "owner": owner,
             "accessProfiles": [{"type": "ACCESS_PROFILE", "id": ap["id"], "name": ap["name"]}],
             "enabled": False, "requestable": False})
-        made["governanceGroups"] = tenant.call("POST", "/v2025/workgroups", {
+        made["governanceGroups"] = tenant.call("POST", api.WORKGROUPS, {
             "name": name("governanceGroups"), "description": ABOUT, "owner": owner})
-        made["identityProfiles"] = tenant.call("POST", "/v2025/identity-profiles", {
+        made["identityProfiles"] = tenant.call("POST", api.IDENTITY_PROFILES, {
             "name": name("identityProfiles"), "description": ABOUT, "owner": owner, "authoritativeSource": ref,
             "identityAttributeConfig": {"enabled": True, "attributeTransforms": []}})
         apps = OBJECT_TYPES["apps"]

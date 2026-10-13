@@ -265,8 +265,8 @@ def test_apps_use_the_admin_list_and_the_experimental_header():
     top = wf.build(cfg(objectTypes=only("apps")))["definition"]["steps"]
     get = top["Get Owned Apps"]["attributes"]
     patch = top["Reassign Apps"]["attributes"]["steps"]["Patch App Owner"]["attributes"]
-    assert get["url"].endswith("/v2025/source-apps/all")              # /source-apps lists only the caller's apps
-    assert patch["url"].endswith("/v2025/source-apps/{{$.loop.loopInput.id}}")
+    assert get["url"].endswith("/source-apps/v1/all")              # /source-apps lists only the caller's apps
+    assert patch["url"].endswith("/source-apps/v1/{{$.loop.loopInput.id}}")
     assert get["requestHeaders"] == patch["requestHeaders"] == "X-SailPoint-Experimental:true"
 
 

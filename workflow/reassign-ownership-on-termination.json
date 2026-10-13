@@ -181,7 +181,7 @@
             "refID": "3d03d7fd-6b42-581a-91f5-56720d021dcd"
           },
           "method": "get",
-          "url": "__API_URL__/v3/roles",
+          "url": "__API_URL__/roles/v1",
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:250",
           "requestContentType": "json"
         },
@@ -228,7 +228,7 @@
                   "refID": "378da299-7b10-5842-a908-6b359c7f07ad"
                 },
                 "method": "patch",
-                "url": "__API_URL__/v3/roles/{{$.loop.loopInput.id}}",
+                "url": "__API_URL__/roles/v1/{{$.loop.loopInput.id}}",
                 "requestContentType": "json-patch+json",
                 "jsonPatchRequestBody": [
                   {
@@ -271,7 +271,7 @@
             "refID": "5bc03599-c4a3-5158-9e68-69dbc1164e8a"
           },
           "method": "get",
-          "url": "__API_URL__/v3/access-profiles",
+          "url": "__API_URL__/access-profiles/v1",
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:250",
           "requestContentType": "json"
         },
@@ -318,7 +318,7 @@
                   "refID": "545c3ddd-a7f7-5d4b-b20b-89a43c8bf390"
                 },
                 "method": "patch",
-                "url": "__API_URL__/v3/access-profiles/{{$.loop.loopInput.id}}",
+                "url": "__API_URL__/access-profiles/v1/{{$.loop.loopInput.id}}",
                 "requestContentType": "json-patch+json",
                 "jsonPatchRequestBody": [
                   {
@@ -361,7 +361,7 @@
             "refID": "2032e823-9185-5b7f-9f90-28afb9f21715"
           },
           "method": "get",
-          "url": "__API_URL__/v2025/entitlements",
+          "url": "__API_URL__/entitlements/v1",
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:250",
           "requestContentType": "json"
         },
@@ -408,7 +408,7 @@
                   "refID": "3ac1e5f3-21bb-5c4e-add3-35bc2a1432b1"
                 },
                 "method": "patch",
-                "url": "__API_URL__/v2025/entitlements/{{$.loop.loopInput.id}}",
+                "url": "__API_URL__/entitlements/v1/{{$.loop.loopInput.id}}",
                 "requestContentType": "json-patch+json",
                 "jsonPatchRequestBody": [
                   {
@@ -451,7 +451,7 @@
             "refID": "1a2c6db0-83cc-5d41-a447-32614afbb10d"
           },
           "method": "get",
-          "url": "__API_URL__/v3/sources",
+          "url": "__API_URL__/sources/v1",
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:250",
           "requestContentType": "json"
         },
@@ -498,7 +498,7 @@
                   "refID": "a48430e6-2613-5c0e-96d1-d58b710b448b"
                 },
                 "method": "patch",
-                "url": "__API_URL__/v3/sources/{{$.loop.loopInput.id}}",
+                "url": "__API_URL__/sources/v1/{{$.loop.loopInput.id}}",
                 "requestContentType": "json-patch+json",
                 "jsonPatchRequestBody": [
                   {
@@ -541,7 +541,7 @@
             "refID": "57780503-9a17-53b4-9bd7-3a20e95226f3"
           },
           "method": "get",
-          "url": "__API_URL__/v2025/source-apps/all",
+          "url": "__API_URL__/source-apps/v1/all",
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:250",
           "requestHeaders": "X-SailPoint-Experimental:true",
           "requestContentType": "json"
@@ -589,7 +589,7 @@
                   "refID": "a12dc348-c7b6-51f6-94d4-0e8d7686a8c8"
                 },
                 "method": "patch",
-                "url": "__API_URL__/v2025/source-apps/{{$.loop.loopInput.id}}",
+                "url": "__API_URL__/source-apps/v1/{{$.loop.loopInput.id}}",
                 "requestHeaders": "X-SailPoint-Experimental:true",
                 "requestContentType": "json-patch+json",
                 "jsonPatchRequestBody": [
@@ -633,7 +633,7 @@
             "refID": "210dead9-3a56-5431-92de-f69ecb8aabb0"
           },
           "method": "get",
-          "url": "__API_URL__/v2025/workgroups",
+          "url": "__API_URL__/workgroups/v1",
           "urlParams": "limit:250",
           "requestContentType": "json"
         },
@@ -680,7 +680,7 @@
                   "refID": "0f0574ed-c49f-5a65-b98c-0ea842b7805d"
                 },
                 "method": "patch",
-                "url": "__API_URL__/v2025/workgroups/{{$.loop.loopInput.id}}",
+                "url": "__API_URL__/workgroups/v1/{{$.loop.loopInput.id}}",
                 "requestContentType": "json-patch+json",
                 "jsonPatchRequestBody": [
                   {
@@ -723,7 +723,7 @@
             "refID": "1ebcfd28-640b-51ff-bd24-8aeec894f2c6"
           },
           "method": "get",
-          "url": "__API_URL__/v2025/identity-profiles",
+          "url": "__API_URL__/identity-profiles/v1",
           "urlParams": "limit:250",
           "requestContentType": "json"
         },
@@ -770,7 +770,7 @@
                   "refID": "56191541-aa4a-5cea-8a5e-93ca7a525bc4"
                 },
                 "method": "patch",
-                "url": "__API_URL__/v2025/identity-profiles/{{$.loop.loopInput.id}}",
+                "url": "__API_URL__/identity-profiles/v1/{{$.loop.loopInput.id}}",
                 "requestContentType": "json-patch+json",
                 "jsonPatchRequestBody": [
                   {
@@ -813,7 +813,7 @@
             "refID": "c6f0bb2b-edca-5b0f-883f-8175688ce3bb"
           },
           "method": "get",
-          "url": "__API_URL__/v3/roles",
+          "url": "__API_URL__/roles/v1",
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:1",
           "requestContentType": "json"
         },
@@ -838,7 +838,7 @@
             "refID": "b75ffb8f-8f44-558a-9a6f-53b89ca201a7"
           },
           "method": "get",
-          "url": "__API_URL__/v3/access-profiles",
+          "url": "__API_URL__/access-profiles/v1",
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:1",
           "requestContentType": "json"
         },
@@ -863,7 +863,7 @@
             "refID": "04bd1fdb-4e99-5cfb-a28e-404bda7d7e84"
           },
           "method": "get",
-          "url": "__API_URL__/v2025/entitlements",
+          "url": "__API_URL__/entitlements/v1",
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:1",
           "requestContentType": "json"
         },
@@ -888,7 +888,7 @@
             "refID": "b4ddd920-8bf9-5c41-bebb-0ff3553e3c71"
           },
           "method": "get",
-          "url": "__API_URL__/v3/sources",
+          "url": "__API_URL__/sources/v1",
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:1",
           "requestContentType": "json"
         },
@@ -913,7 +913,7 @@
             "refID": "ec633bf2-1820-5b47-87cb-90496f7e0e5d"
           },
           "method": "get",
-          "url": "__API_URL__/v2025/source-apps/all",
+          "url": "__API_URL__/source-apps/v1/all",
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:1",
           "requestHeaders": "X-SailPoint-Experimental:true",
           "requestContentType": "json"
@@ -939,7 +939,7 @@
             "refID": "8ff837e0-de48-5969-a232-17abde08eeb1"
           },
           "method": "get",
-          "url": "__API_URL__/v2025/workgroups",
+          "url": "__API_URL__/workgroups/v1",
           "urlParams": "limit:250",
           "requestContentType": "json"
         },
@@ -964,7 +964,7 @@
             "refID": "b70d8c8c-56ee-5d2a-8008-1e33b5151308"
           },
           "method": "get",
-          "url": "__API_URL__/v2025/identity-profiles",
+          "url": "__API_URL__/identity-profiles/v1",
           "urlParams": "limit:250",
           "requestContentType": "json"
         },
