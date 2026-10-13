@@ -250,7 +250,7 @@ Some of this design comes from limits we hit on a live tenant:
 | `apply` or `show-config` stops with a config message | It names the key and the allowed values. Fix the config and run it again. |
 | The Launcher isn't in someone's Launchpad | They need the *Launcher Access* profile. Request or grant it, wait about a minute, then refresh. |
 | `HTTP 401 insufficient authorization` when launching | Same as above: the user doesn't hold the launcher's entitlement yet. |
-| The plugin says "To submit, you need '<prefix> Bulk Access Request - Launcher Access'…" | Same: request it in the Request Center (or `--grant`), wait about a minute, and submit again. |
+| The plugin says "To submit, you need '<prefix> Bulk Access Request - Launcher Access'…" | Same: request it in the Request Center (or `--grant`), wait about a minute, and submit again. If they already hold it, the profile's entitlement was changed since (e.g. the Launcher was recreated): SailPoint reports holders correctly again after their next identity refresh. |
 | The plugin's submit says SailPoint refused the request (HTTP 403) | The tenant doesn't let this user request access for others (*Request for others* in Access Request Settings), or their session expired. Allow it, or set `plugin.submit: "launcher"` and run `apply`. |
 | The requester's Request Center doesn't show the item requests | Expected for Launcher requests: the workflow files them as its owner. They're in the owner's My Requests. Requests the plugin files directly are in the requester's own. |
 | Everyone got an item at once, without approval | The item has no approval of its own in SailPoint. The plugin warns about these (`noApproval`); add an approval scheme to the item if it needs one, then run `apply`. |

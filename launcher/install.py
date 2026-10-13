@@ -209,12 +209,13 @@ def main(argv: list[str] | None = None) -> int:
     ent = launcher_entitlement(tenant, launcher["id"])
     ap_body = definitions.launcher_access_profile(cfg, owner_id, ent)
     access = find_access_profile(tenant, ap_body["name"])
-    if access:
-        tenant.call("PATCH", f"{api.ACCESS_PROFILES}/{access['id']}", [
-            {"op": "replace", "path": "/entitlements", "value": ap_body["entitlements"]},
-            {"op": "replace", "path": "/accessRequestConfig", "value": ap_body["accessRequestConfig"]},
-        ], content_type="application/json-patch+json")
-        print(f"Access profile updated: {access['id']}  {ap_body['name']}")
+    changes = definitions.access_profile_changes(access, ap_body) if access else []
+    if access and changes:
+        tenant.call("PATCH", f"{api.ACCESS_PROFILES}/{access['id']}", changes, content_type="application/json-patch+json")
+        print(f"Access profile updated: {access['id']}  {ap_body['name']}  "
+              f"({', '.join(op['path'].lstrip('/') for op in changes)})")
+    elif access:
+        print(f"Access profile unchanged: {access['id']}  {ap_body['name']}")
     else:
         access = tenant.call("POST", api.ACCESS_PROFILES, ap_body)
         print(f"Access profile created: {access['id']}  {ap_body['name']}")

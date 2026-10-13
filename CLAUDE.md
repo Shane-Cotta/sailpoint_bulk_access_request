@@ -133,6 +133,11 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
   opens, so a step must react to `store.step()` (an effect), not `ngOnInit`, to do work when it's shown.
 - **Launchers:**
   - Visible and launchable only for holders of the auto-created `assignedLaunchers` entitlement (on the IdentityNow source). The installer wraps it in a requestable "Launcher Access" profile.
+  - **Replacing an access profile's `/entitlements`** (even with the same list) leaves its holders' requestable-objects
+    `requestStatus` at `AVAILABLE` until their next identity refresh (seen live 2026-10-13: still wrong after 7 minutes;
+    `POST /identities/v1/process` with `X-SailPoint-Experimental: true` fixed it in 30 s). A description-only PATCH
+    doesn't. The plugin's submit check reads that status, so the installer PATCHes only what differs
+    (`definitions.access_profile_changes`).
   - Disabling the workflow disables its Launcher a moment later.
 - **Plugins:** a browser plugin can't hold a workflow's external-trigger secret. Two ways to submit (`plugin.submit`,
   `docs/dev/CONTRACTS.md` §3 and §9); either way only holders of the Launcher Access profile may submit, checked with

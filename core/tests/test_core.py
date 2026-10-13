@@ -75,6 +75,20 @@ def test_inc_validation_uses_the_configured_pattern():
     assert rules.inc_is_valid(custom, "RITM0000001")
 
 
+def test_launcher_access_profile_is_only_patched_where_it_differs():
+    cfg = config.load(EXAMPLE)
+    wanted = definitions.launcher_access_profile(cfg, "o", {"id": "ent-1", "name": "L", "source": {"id": "s"}})
+    installed = {**wanted, "entitlements": [{"id": "ent-1", "type": "ENTITLEMENT"}],
+                 "accessRequestConfig": {**wanted["accessRequestConfig"], "reauthorizationRequired": False}}
+    assert definitions.access_profile_changes(installed, wanted) == []      # nothing to do: no PATCH
+    other = [] if wanted["accessRequestConfig"]["approvalSchemes"] else [{"approverType": "MANAGER", "approverId": None}]
+    old = {**installed, "description": "… with one approver …", "accessRequestConfig": {"approvalSchemes": other}}
+    assert [op["path"] for op in definitions.access_profile_changes(old, wanted)] == ["/description", "/accessRequestConfig"]
+    moved = {**installed, "entitlements": [{"id": "ent-2"}]}
+    assert definitions.access_profile_changes(moved, wanted) == [
+        {"op": "replace", "path": "/entitlements", "value": wanted["entitlements"]}]
+
+
 def test_validate_request_lists_every_problem():
     cfg = config.load(EXAMPLE)
     problems = rules.validate_request(cfg, people=[], items=[], inc="nope", justification="  ")

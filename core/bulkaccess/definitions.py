@@ -583,9 +583,33 @@ def launcher_access_profile(cfg: Config, owner_id: str, entitlement: dict[str, A
     }
 
 
+def access_profile_changes(current: dict[str, Any], wanted: dict[str, Any]) -> list[dict[str, Any]]:
+    """JSON Patch ops that bring an installed Launcher Access profile in line with `wanted`
+    (launcher_access_profile): its description, entitlements and approval setup, and only what differs.
+
+    An unchanged profile gets no PATCH: every update re-indexes it, and until requestable-objects catches up it
+    can report holders as AVAILABLE (seen live), which turns them away from the plugin."""
+    def ids(profile: dict[str, Any]) -> list[str]:
+        return sorted(e.get("id") for e in profile.get("entitlements") or [])
+
+    def approval(profile: dict[str, Any]) -> tuple:
+        cfg = profile.get("accessRequestConfig") or {}
+        return (bool(cfg.get("commentsRequired")), bool(cfg.get("denialCommentsRequired")),
+                [s.get("approverType") for s in cfg.get("approvalSchemes") or []])
+
+    ops = []
+    if (current.get("description") or "") != wanted["description"]:
+        ops.append({"op": "replace", "path": "/description", "value": wanted["description"]})
+    if ids(current) != ids(wanted):
+        ops.append({"op": "replace", "path": "/entitlements", "value": wanted["entitlements"]})
+    if approval(current) != approval(wanted):
+        ops.append({"op": "replace", "path": "/accessRequestConfig", "value": wanted["accessRequestConfig"]})
+    return ops
+
+
 def pretty(obj: Any) -> str:
     return json.dumps(obj, indent=2, sort_keys=False)
 
 
-__all__ = ["bulk_form", "bulk_workflow", "bulk_launcher", "EmailLinks", "launcher_duration_units",
+__all__ = ["access_profile_changes", "bulk_form", "bulk_workflow", "bulk_launcher", "EmailLinks", "launcher_duration_units",
            "launcher_offers_temporary", "launcher_workflow_units", "F_PART_LABEL", "PART_LABEL_REGEX"]
