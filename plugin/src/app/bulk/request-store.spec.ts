@@ -62,7 +62,7 @@ describe('RequestStore', () => {
     await vi.advanceTimersByTimeAsync(1000);
     await done;
     expect(post).toHaveBeenCalledTimes(1);
-    expect(post).toHaveBeenCalledWith('/v2025/workflows/demo-workflow/test', {
+    expect(post).toHaveBeenCalledWith('/workflows/v1/demo-workflow/test', {
       input: {
         people: store.people().map((x) => x.id),
         items: store.items().map((o) => o.value),
@@ -186,11 +186,11 @@ describe('RequestStore', () => {
       const done = store.submit();
       await vi.advanceTimersByTimeAsync(3000);
       await done;
-      expect(post.mock.calls.map((c) => c[0])).toEqual(['/v2025/launchers/demo-launcher/launch']);
-      expect(post).toHaveBeenCalledWith('/v2025/launchers/demo-launcher/launch', {});
+      expect(post.mock.calls.map((c) => c[0])).toEqual(['/launchers/v1/demo-launcher/launch']);
+      expect(post).toHaveBeenCalledWith('/launchers/v1/demo-launcher/launch', {});
       expect(get.mock.calls.filter((c) => String(c[0]).includes('/blocks')).length).toBe(2);   // polled until the FORM block
       expect(patch).toHaveBeenCalledTimes(1);                                                  // ASSIGNED -> COMPLETED at once
-      expect(patch.mock.calls[0][0]).toBe('/v2025/form-instances/f-0');
+      expect(patch.mock.calls[0][0]).toBe('/form-instances/v1/f-0');
       expect((patch.mock.calls[0][1] as Ops).map((o) => [o.op, o.path])).toEqual([['replace', '/formData'], ['replace', '/state']]);
       expect((patch.mock.calls[0][1] as Ops)[1].value).toBe('SUBMITTED');
       expect(formData(patch)).toEqual({
@@ -209,7 +209,7 @@ describe('RequestStore', () => {
       expect(store.submission()).toMatchObject({ state: 'waiting', message: 'Waiting for Aisha Bello to approve or deny.' });
       expect(store.submission()?.parts[0].approvalId).toBeTruthy();
       // Nothing a non-admin can't read: no workflow lookups, executions or test runs.
-      expect(get.mock.calls.some((c) => /workflow-executions|\/v2025\/workflows/.test(String(c[0])))).toBe(false);
+      expect(get.mock.calls.some((c) => /workflow-executions|\/workflows\/v1/.test(String(c[0])))).toBe(false);
     });
 
     it('sends 600 people as 3 Launcher runs with the part label and the duration in the form fields', async () => {

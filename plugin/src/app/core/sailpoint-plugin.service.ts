@@ -142,7 +142,7 @@ export class SailpointPluginService {
    * Authenticated PATCH (the SDK only wraps GET and POST). Same token, base URL and error shape as
    * `get` / `post`: the SDK's token and the tenant's `apiUrl.idn`, one retry with a fresh token on 401,
    * and an `ApiError` (status, body) on failure. Used to submit a Launcher's form
-   * (`PATCH /v2025/form-instances/{id}`, `application/json-patch+json`).
+   * (`PATCH /form-instances/v1/{id}`, `application/json-patch+json`).
    */
   async patch<T>(path: string, data: unknown): Promise<T> {
     const sdk = this.singleton.sdk;

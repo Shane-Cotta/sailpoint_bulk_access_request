@@ -17,6 +17,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from . import api
+
 USER_AGENT = "bulk-access-request/1.0"
 REQUIRED_ENV = ("SAIL_BASE_URL", "SAIL_CLIENT_ID", "SAIL_CLIENT_SECRET")
 
@@ -99,7 +101,7 @@ class Tenant:
 
     def call(self, method: str, path: str, body: Any = None, *,
              content_type: str = "application/json", headers: dict[str, str] | None = None) -> Any:
-        """Call `path` (e.g. "/v2025/workflows") and return parsed JSON (or None)."""
+        """Call `path` (e.g. "/workflows/v1", see api.py) and return parsed JSON (or None)."""
         data = None if body is None else json.dumps(body).encode()
         req = urllib.request.Request(f"{self.base_url}{path}", data=data, method=method, headers={
             "Authorization": f"Bearer {self.token()}",
@@ -130,7 +132,7 @@ class Tenant:
         identity_id = claims.get("identity_id")
         if not identity_id:
             raise TenantError(0, "The PAT has no identity_id claim; use a personal access token, not a client app.")
-        return self.call("GET", f"/v2025/identities/{identity_id}")   # there is no v3 identities API
+        return self.call("GET", f"{api.IDENTITIES}/{identity_id}")
 
 
     def plugin_instance_id(self, alias: str) -> str | None:
@@ -138,7 +140,7 @@ class Tenant:
         Uses the endpoint the SailPoint CLI uses (`/ui-plugins/v1/resolve-alias`, preview: it needs the
         X-SailPoint-Experimental header; 404 when the alias is unknown; verified with the PAT)."""
         try:
-            found = self.call("GET", "/ui-plugins/v1/resolve-alias?alias=" + urllib.parse.quote(alias),
+            found = self.call("GET", f"{api.UI_PLUGINS}/resolve-alias?alias=" + urllib.parse.quote(alias),
                               headers={"X-SailPoint-Experimental": "true"})
         except TenantError:
             return None

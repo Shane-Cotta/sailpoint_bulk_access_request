@@ -176,7 +176,7 @@ export function statusLabel(status: string): { label: string; severity: 'success
   }
 }
 
-/** Access request states (/v3/access-request-status) in plain English. */
+/** Access request states (/access-request-status/v1) in plain English. */
 export function requestStateLabel(state: string): { label: string; severity: 'success' | 'warn' | 'danger' | 'info' | 'secondary' } {
   switch (state) {
     case 'REQUEST_COMPLETED': return { label: 'Done', severity: 'success' };

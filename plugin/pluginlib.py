@@ -19,12 +19,10 @@ PLUGIN_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PLUGIN_DIR.parent / "core"))
 
 from bulkaccess import config as config_mod  # noqa: E402
-from bulkaccess import definitions  # noqa: E402
+from bulkaccess import api, definitions  # noqa: E402
 from bulkaccess.config import Config  # noqa: E402
 from bulkaccess.tenant import Tenant, TenantError, load_env_file  # noqa: E402
 
-WORKFLOWS = "/v2025/workflows"
-LAUNCHERS = "/v2025/launchers"
 RUNTIME_CONFIG = Path("public") / "bulk-access.config.json"
 MANIFEST = Path("sp-ui-plugin.json")
 BUILD_OUT_DIR = "./dist/bulk-access-request-plugin/browser"
@@ -132,12 +130,12 @@ def write_json(path: Path, data: Any) -> None:
 
 # ──────────────────────────────────────────────────────────────── tenant ──
 def find_workflow(tenant: Tenant, name: str) -> dict[str, Any] | None:
-    return next((w for w in tenant.call("GET", f"{WORKFLOWS}?limit=250") or [] if w.get("name") == name), None)
+    return next((w for w in tenant.call("GET", f"{api.WORKFLOWS}?limit=250") or [] if w.get("name") == name), None)
 
 
 def find_launcher(tenant: Tenant, name: str) -> dict[str, Any] | None:
     """The Launcher deployment's Launcher, by name (the same lookup as launcher/install.py)."""
-    res = tenant.call("GET", f"{LAUNCHERS}?limit=100") or {}
+    res = tenant.call("GET", f"{api.LAUNCHERS}?limit=100") or {}
     items = res.get("items") if isinstance(res, dict) else res
     return next((x for x in items or [] if x.get("name") == name), None)
 

@@ -40,7 +40,7 @@ export function describeError(err: unknown, context: ErrorContext = 'read', what
 
 /**
  * Starting a Launcher without its access: 401/403, or (verified live for a user without Launcher access on
- * GET /v2025/launchers) a 500 whose message says "insufficient authorization".
+ * GET /launchers/v1) a 500 whose message says "insufficient authorization".
  */
 export function isLauncherAccessDenied(err: unknown): boolean {
   const e = err as ApiErrorLike;

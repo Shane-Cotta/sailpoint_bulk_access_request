@@ -85,13 +85,13 @@ export interface CatalogOption {
 }
 
 /**
- * Where the catalog comes from (CONTRACTS §8, rules.py): /v3/requestable-objects only lists
+ * Where the catalog comes from (CONTRACTS §8, rules.py): /requestable-objects/v1 only lists
  * access profiles and roles (ENTITLEMENT alone is a 400, next to another type it is silently
- * dropped), so requestable entitlements come from /v2025/entitlements.
+ * dropped), so requestable entitlements come from /entitlements/v1.
  */
 export const REQUESTABLE_OBJECT_TYPES: readonly ItemType[] = ['ACCESS_PROFILE', 'ROLE'];
 
-/** The configured types /v3/requestable-objects can list (empty: don't call it). */
+/** The configured types /requestable-objects/v1 can list (empty: don't call it). */
 export function requestableObjectTypes(cfg: Pick<RuntimeConfig, 'catalogTypes'>): ItemType[] {
   return cfg.catalogTypes.filter((t) => REQUESTABLE_OBJECT_TYPES.includes(t));
 }
@@ -101,7 +101,7 @@ export function filterQuote(value: string): string {
   return `"${value.replace(/["\\]/g, (c) => `\\${c}`)}"`;
 }
 
-/** The /v2025/entitlements filter for the catalog's entitlements (null: not offered). */
+/** The /entitlements/v1 filter for the catalog's entitlements (null: not offered). */
 export function entitlementFilter(cfg: Pick<RuntimeConfig, 'catalogTypes' | 'nameStartsWith'>): string | null {
   if (!cfg.catalogTypes.includes('ENTITLEMENT')) return null;
   return 'requestable eq true' + (cfg.nameStartsWith ? ` and name sw ${filterQuote(cfg.nameStartsWith)}` : '');
@@ -109,7 +109,7 @@ export function entitlementFilter(cfg: Pick<RuntimeConfig, 'catalogTypes' | 'nam
 
 /**
  * Catalog rows -> catalog options, filtered by type and name prefix (rules.catalog_options).
- * Rows from /v2025/entitlements carry no `type`; the caller tags them ENTITLEMENT.
+ * Rows from /entitlements/v1 carry no `type`; the caller tags them ENTITLEMENT.
  */
 export function catalogOptions(
   cfg: Pick<RuntimeConfig, 'catalogTypes' | 'nameStartsWith'>,

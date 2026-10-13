@@ -18,23 +18,23 @@ const ALAN = '0123456789abcdef0123456789abcdef';
 
 describe('BulkApiService', () => {
   it('starts the workflow through the test endpoint with the trigger contract', async () => {
-    const { api, plugin } = setup({ '/v2025/workflows/wf-1/test': { workflowExecutionId: 'exec-1' } });
+    const { api, plugin } = setup({ '/workflows/v1/wf-1/test': { workflowExecutionId: 'exec-1' } });
     const input: BulkInput = {
       people: [ALAN], items: [{ id: 'ap-1', type: 'ACCESS_PROFILE' as const, name: 'ACME Bulk Test Access' }],
       approverId: 'boss', requesterId: 'me', inc: 'INC0012345', justification: 'why',
       part: 1, parts: 1, partLabel: '', removeDuration: '', accessLabel: 'Permanent',
     };
     await expect(api.submit('wf-1', input)).resolves.toBe('exec-1');
-    expect(plugin.post).toHaveBeenCalledWith('/v2025/workflows/wf-1/test', { input });
+    expect(plugin.post).toHaveBeenCalledWith('/workflows/v1/wf-1/test', { input });
   });
 
   it('says so when the workflow does not start', async () => {
-    const { api } = setup({ '/v2025/workflows/': {} });
+    const { api } = setup({ '/workflows/v1/': {} });
     await expect(api.submit('wf-1', {} as never)).rejects.toThrow('did not start');
   });
 
   it('finds the workflow by name unless the config names its ID', async () => {
-    const { api } = setup({ '/v2025/workflows': [{ id: 'other', name: 'Something else' }, { id: 'wf-9', name: DEMO_CONFIG.workflowName }] });
+    const { api } = setup({ '/workflows/v1': [{ id: 'other', name: 'Something else' }, { id: 'wf-9', name: DEMO_CONFIG.workflowName }] });
     await expect(api.workflowId({ ...DEMO_CONFIG, workflowId: null })).resolves.toBe('wf-9');
     await expect(api.workflowId({ ...DEMO_CONFIG, workflowId: 'fixed' })).resolves.toBe('fixed');
     await expect(api.workflowId({ ...DEMO_CONFIG, workflowId: null, workflowName: 'Missing' })).rejects.toThrow('install.py');
@@ -42,14 +42,14 @@ describe('BulkApiService', () => {
 
   it('resolves pasted IDs, usernames and emails, and reports the rest', async () => {
     const { api } = setup({
-      [`/v2025/identities/${ALAN}`]: { id: ALAN, name: 'Alan Bradley', attributes: { displayName: 'Alan Bradley' } },
-      '/v2025/identities?': [{ id: 'id-mei', name: 'mei.lin', alias: 'mei.lin', emailAddress: 'mei.lin@example.edu' }],
-      '/v3/search': [
+      [`/identities/v1/${ALAN}`]: { id: ALAN, name: 'Alan Bradley', attributes: { displayName: 'Alan Bradley' } },
+      '/identities/v1?': [{ id: 'id-mei', name: 'mei.lin', alias: 'mei.lin', emailAddress: 'mei.lin@example.edu' }],
+      '/search/v1': [
         { id: 'id-k1', name: 'andrea.kim', displayName: 'Andrea Kim', email: 'andrea.kim@example.edu' },
         { id: 'id-k2', name: 'akim', displayName: 'Andrea Kim', email: 'ANDREA.KIM@example.edu' },
       ],
       // Identities missing from the search index are found through their accounts.
-      '/v3/accounts': [{ identityId: 'id-andrei', name: 'Andrei Popescu', nativeIdentity: 'usr_example01',
+      '/accounts/v1': [{ identityId: 'id-andrei', name: 'Andrei Popescu', nativeIdentity: 'usr_example01',
         identity: { name: 'Andrei Popescu' }, attributes: { email: 'andrei@example.edu' }, sourceName: 'ACME SaaS' }],
     });
     const result = await api.resolvePeople([ALAN, 'Mei.Lin@example.edu', 'usr_example01', 'andrea.kim@example.edu', 'nobody']);
@@ -60,7 +60,7 @@ describe('BulkApiService', () => {
     expect(result.ambiguous[0].matches.map((m) => m.id).sort()).toEqual(['id-k1', 'id-k2']);
   });
 
-  it('resolves a pasted list of 1,000+ in batches of about 50 per /v2025/identities call, with progress', async () => {
+  it('resolves a pasted list of 1,000+ in batches of about 50 per /identities/v1 call, with progress', async () => {
     const ids = Array.from({ length: 600 }, (_, i) => i.toString(16).padStart(32, '0'));
     const users = Array.from({ length: 500 }, (_, i) => `user${i}@example.edu`);
     const known = (path: string) => {
@@ -68,12 +68,12 @@ describe('BulkApiService', () => {
       return values.filter((v) => v.endsWith('@example.edu') || /^[0-9a-f]{32}$/.test(v))
         .map((v) => (v.includes('@') ? { id: `id-${v}`, alias: v.split('@')[0], emailAddress: v } : { id: v, name: v }));
     };
-    const { api, plugin } = setup({ '/v2025/identities?': known, '/v3/search': [], '/v3/accounts': [] });
+    const { api, plugin } = setup({ '/identities/v1?': known, '/search/v1': [], '/accounts/v1': [] });
     const progress: number[] = [];
     const result = await api.resolvePeople([...ids, ...users, 'nobody'], (done) => progress.push(done));
     expect(result.resolved).toHaveLength(1100);
     expect(result.unresolved).toEqual(['nobody']);
-    const listCalls = plugin.get.mock.calls.map((c) => c[0] as string).filter((u) => u.startsWith('/v2025/identities?'));
+    const listCalls = plugin.get.mock.calls.map((c) => c[0] as string).filter((u) => u.startsWith('/identities/v1?'));
     expect(listCalls).toHaveLength(12 + 10 + 1);           // 600 IDs, 500 words, 1 word: at most 50 per call
     for (const url of listCalls) expect(url.length).toBeLessThan(8000);
     const idCall = decodeURIComponent(listCalls[0]);
@@ -88,16 +88,16 @@ describe('BulkApiService', () => {
     const fresh = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const lonely = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const { api, plugin } = setup({
-      '/v2025/identities?': [],
-      '/v3/accounts': (path: string) => (decodeURIComponent(path).includes('identityId in')
+      '/identities/v1?': [],
+      '/accounts/v1': (path: string) => (decodeURIComponent(path).includes('identityId in')
         ? [{ identityId: fresh, name: 'Yuki Tanaka', identity: { name: 'Yuki Tanaka' }, sourceName: 'ACME SaaS' }] : []),
-      [`/v2025/identities/${lonely}`]: { id: lonely, name: 'lonely', attributes: { displayName: 'Lonely One' } },
-      '/v2025/identities/': () => Promise.reject(Object.assign(new Error('nope'), { status: 404 })),
+      [`/identities/v1/${lonely}`]: { id: lonely, name: 'lonely', attributes: { displayName: 'Lonely One' } },
+      '/identities/v1/': () => Promise.reject(Object.assign(new Error('nope'), { status: 404 })),
     });
     const result = await api.resolvePeople([fresh, lonely]);
     expect(result.resolved.map((p) => [p.id, p.name])).toEqual([[fresh, 'Yuki Tanaka'], [lonely, 'Lonely One']]);
-    const singles = plugin.get.mock.calls.map((c) => c[0] as string).filter((u) => /^\/v2025\/identities\/[0-9a-f]/.test(u));
-    expect(singles).toEqual([`/v2025/identities/${lonely}`]);   // the account found the other one
+    const singles = plugin.get.mock.calls.map((c) => c[0] as string).filter((u) => /^\/identities\/v1\/[0-9a-f]/.test(u));
+    expect(singles).toEqual([`/identities/v1/${lonely}`]);   // the account found the other one
   });
 
   it('cuts batches by count and by filter length, and runs jobs with limited concurrency', async () => {
@@ -135,7 +135,7 @@ describe('BulkApiService', () => {
   it('pages through access requests so a 600-person request fits', async () => {
     const row = (i: number) => ({ id: `r${i}`, name: 'X', type: 'ACCESS_PROFILE', state: 'REQUEST_COMPLETED' });
     const { api, plugin } = setup({
-      '/v3/access-request-status': (path: string) => {
+      '/access-request-status/v1': (path: string) => {
         const offset = Number(new URLSearchParams(path.split('?')[1]).get('offset'));
         return Array.from({ length: Math.max(0, Math.min(250, 600 - offset)) }, (_, i) => row(offset + i));
       },
@@ -146,8 +146,8 @@ describe('BulkApiService', () => {
 
   it('searches identities and accounts, de-duplicated and sorted', async () => {
     const { api, plugin } = setup({
-      '/v3/search': [{ id: 'a', displayName: 'Zed', email: 'z@x' }],
-      '/v3/accounts': [{ identityId: 'a', name: 'Zed' }, { identityId: 'b', name: 'Amy', identity: { name: 'Amy' } }],
+      '/search/v1': [{ id: 'a', displayName: 'Zed', email: 'z@x' }],
+      '/accounts/v1': [{ identityId: 'a', name: 'Zed' }, { identityId: 'b', name: 'Amy', identity: { name: 'Amy' } }],
     });
     expect((await api.searchPeople('am')).map((p) => p.name)).toEqual(['Amy', 'Zed']);
     expect(await api.searchPeople('a')).toEqual([]);                      // too short: no call
@@ -156,29 +156,29 @@ describe('BulkApiService', () => {
 
   it('loads access profiles and roles from requestable-objects and entitlements from the entitlements API', async () => {
     const { api, plugin } = setup({
-      '/v3/requestable-objects': [
+      '/requestable-objects/v1': [
         { id: 'ap', type: 'ACCESS_PROFILE', name: 'ACME Bulk Test Access' },
         { id: 'r', type: 'ROLE', name: 'ACME Role' },
         { id: 'x', type: 'ACCESS_PROFILE', name: 'Other' },
       ],
       // Entitlement rows have no `type` and carry their source.
-      '/v2025/entitlements': [{ id: 'e', name: 'ACME Group', requestable: true, source: { name: 'Active Directory' } }],
-      '/v3/search': [{ id: 'ap', source: { name: 'ACME SaaS' } }],
+      '/entitlements/v1': [{ id: 'e', name: 'ACME Group', requestable: true, source: { name: 'Active Directory' } }],
+      '/search/v1': [{ id: 'ap', source: { name: 'ACME SaaS' } }],
     });
     const options = await api.catalog({ ...DEMO_CONFIG, nameStartsWith: 'ACME' });
     expect(options.map((o) => o.subLabel)).toEqual(['Access profile · ACME SaaS', 'Entitlement · Active Directory', 'Role']);
     expect(options[1].value).toEqual({ id: 'e', type: 'ENTITLEMENT', name: 'ACME Group' });
     const [objects, entitlements] = plugin.get.mock.calls.map((c) => decodeURIComponent(c[0] as string));
-    expect(objects).toContain('/v3/requestable-objects?identity-id=me&types=ACCESS_PROFILE&types=ROLE&');
+    expect(objects).toContain('/requestable-objects/v1?identity-id=me&types=ACCESS_PROFILE&types=ROLE&');
     expect(objects).not.toContain('ENTITLEMENT');
     expect(objects).toContain('name sw "ACME"');
-    expect(entitlements).toContain('/v2025/entitlements?filters=requestable eq true and name sw "ACME"');
+    expect(entitlements).toContain('/entitlements/v1?filters=requestable eq true and name sw "ACME"');
     // Only access profiles need a source lookup (the stub ignores the name filter, so 'x' is asked too).
     expect((plugin.post.mock.calls[0][1] as { query: { query: string } }).query.query).toBe('id:(ap OR x)');
   });
 
   it('skips requestable-objects when only entitlements are offered', async () => {
-    const { api, plugin } = setup({ '/v2025/entitlements': [{ id: 'e', name: 'Group' }] });
+    const { api, plugin } = setup({ '/entitlements/v1': [{ id: 'e', name: 'Group' }] });
     const options = await api.catalog({ ...DEMO_CONFIG, catalogTypes: ['ENTITLEMENT'], nameStartsWith: null });
     expect(options.map((o) => o.value.type)).toEqual(['ENTITLEMENT']);
     expect(plugin.get).toHaveBeenCalledTimes(1);
@@ -186,9 +186,9 @@ describe('BulkApiService', () => {
 
   it('reports which chosen people already hold or have requested an item', async () => {
     const { api } = setup({
-      '/v3/requestable-objects?identity-id=p1': [{ id: 'ap', requestStatus: 'ASSIGNED' }],
-      '/v3/requestable-objects?identity-id=p2': [{ id: 'ap', requestStatus: 'AVAILABLE' }],
-      '/v3/requestable-objects?identity-id=p3': [{ id: 'ap', requestStatus: 'PENDING' }],
+      '/requestable-objects/v1?identity-id=p1': [{ id: 'ap', requestStatus: 'ASSIGNED' }],
+      '/requestable-objects/v1?identity-id=p2': [{ id: 'ap', requestStatus: 'AVAILABLE' }],
+      '/requestable-objects/v1?identity-id=p3': [{ id: 'ap', requestStatus: 'PENDING' }],
     });
     const found = await api.existingAccess(['p1', 'p2', 'p3'], [{ id: 'ap', type: 'ACCESS_PROFILE', name: 'X' }]);
     expect(found).toEqual(expect.arrayContaining([
@@ -200,16 +200,16 @@ describe('BulkApiService', () => {
 
   it('checks entitlements through identity search (held) and access-request-status (pending)', async () => {
     const { api, plugin } = setup({
-      '/v3/search': [
+      '/search/v1': [
         { id: 'p1', access: [{ id: 'ent', type: 'ENTITLEMENT' }, { id: 'other', type: 'ENTITLEMENT' }] },
         { id: 'p2', access: [{ id: 'ap', type: 'ACCESS_PROFILE' }] },
       ],
-      '/v3/access-request-status?requested-for=p1': [{ id: 'ent', type: 'ENTITLEMENT', state: 'EXECUTING', requestType: 'GRANT_ACCESS' }],
-      '/v3/access-request-status?requested-for=p2': [
+      '/access-request-status/v1?requested-for=p1': [{ id: 'ent', type: 'ENTITLEMENT', state: 'EXECUTING', requestType: 'GRANT_ACCESS' }],
+      '/access-request-status/v1?requested-for=p2': [
         { id: 'ent', type: 'ENTITLEMENT', state: 'EXECUTING', requestType: 'GRANT_ACCESS' },
         { id: 'ent2', type: 'ENTITLEMENT', state: 'EXECUTING', requestType: 'GRANT_ACCESS' },   // not chosen
       ],
-      '/v3/access-request-status?requested-for=p3': [{ id: 'ent', type: 'ENTITLEMENT', state: 'EXECUTING', requestType: 'REVOKE_ACCESS' }],
+      '/access-request-status/v1?requested-for=p3': [{ id: 'ent', type: 'ENTITLEMENT', state: 'EXECUTING', requestType: 'REVOKE_ACCESS' }],
     });
     const found = await api.existingAccess(['p1', 'p2', 'p3'], [{ id: 'ent', type: 'ENTITLEMENT', name: 'Group' }]);
     expect(found).toEqual(expect.arrayContaining([
@@ -231,7 +231,7 @@ describe('BulkApiService', () => {
       ({ id, name, alias: name, email, attributes: [{ key: 'department', name: 'Department', value: department }] });
 
     it('searches people through public identities (search and accounts are 403)', async () => {
-      const { api, plugin } = setup({ '/v3/public-identities': [publicRow('id-1', 'Mei.Lin', 'mei@example.edu')] }, false);
+      const { api, plugin } = setup({ '/public-identities/v1': [publicRow('id-1', 'Mei.Lin', 'mei@example.edu')] }, false);
       expect(await api.searchPeople('mei"')).toEqual([{ id: 'id-1', name: 'Mei.Lin', email: 'mei@example.edu', detail: 'Radiology' }]);
       expect(urls(plugin)).toHaveLength(1);
       const params = new URLSearchParams(urls(plugin)[0].split('?')[1]);
@@ -242,7 +242,7 @@ describe('BulkApiService', () => {
 
     it('resolves pasted IDs, usernames and emails through public identities, with no admin-only fallbacks', async () => {
       const { api, plugin } = setup({
-        '/v3/public-identities': (path: string) => {
+        '/public-identities/v1': (path: string) => {
           const f = new URLSearchParams(path.split('?')[1]).get('filters') ?? '';
           return f.startsWith('id in') ? [publicRow(ALAN, 'Alan.Bradley', 'alan@example.edu')]
             : [publicRow('id-mei', 'mei.lin', 'Mei.Lin@example.edu')];
@@ -251,7 +251,7 @@ describe('BulkApiService', () => {
       const result = await api.resolvePeople([ALAN, 'MEI.LIN@example.edu', 'nobody']);
       expect(result.resolved.map((p) => p.id)).toEqual([ALAN, 'id-mei']);
       expect(result.unresolved).toEqual(['nobody']);
-      expect(urls(plugin).every((u) => u.startsWith('/v3/public-identities?'))).toBe(true);
+      expect(urls(plugin).every((u) => u.startsWith('/public-identities/v1?'))).toBe(true);
       const filters = urls(plugin).map((u) => new URLSearchParams(u.split('?')[1]).get('filters'));
       expect(filters).toContain(`id in ("${ALAN}")`);
       expect(filters).toContain('alias eq "MEI.LIN@example.edu" or email eq "MEI.LIN@example.edu" or alias eq "nobody" or email eq "nobody"');
@@ -259,29 +259,29 @@ describe('BulkApiService', () => {
 
     it('asks for the catalog as the signed-in user (403 without identity-id) and skips source names (search)', async () => {
       const { api, plugin } = setup({
-        '/v3/requestable-objects': [{ id: 'ap-1', name: 'ACME Bulk Test Access', type: 'ACCESS_PROFILE' }],
-        '/v2025/entitlements': [],
+        '/requestable-objects/v1': [{ id: 'ap-1', name: 'ACME Bulk Test Access', type: 'ACCESS_PROFILE' }],
+        '/entitlements/v1': [],
       }, false);
       const options = await api.catalog({ ...DEMO_CONFIG, nameStartsWith: null });
       expect(options.map((o) => o.value.id)).toEqual(['ap-1']);
-      expect(urls(plugin)[0]).toMatch(/^\/v3\/requestable-objects\?identity-id=me&types=ACCESS_PROFILE&types=ROLE&/);
-      expect(urls(plugin).some((u) => u.startsWith('/v3/search'))).toBe(false);
+      expect(urls(plugin)[0]).toMatch(/^\/requestable-objects\/v1\?identity-id=me&types=ACCESS_PROFILE&types=ROLE&/);
+      expect(urls(plugin).some((u) => u.startsWith('/search/v1'))).toBe(false);
     });
 
     it('checks access profiles for other people, and leaves entitlements out', async () => {
-      const { api, plugin } = setup({ '/v3/requestable-objects?identity-id=p1': [{ id: 'ap', requestStatus: 'ASSIGNED' }] }, false);
+      const { api, plugin } = setup({ '/requestable-objects/v1?identity-id=p1': [{ id: 'ap', requestStatus: 'ASSIGNED' }] }, false);
       const found = await api.existingAccess(['p1'], [
         { id: 'ap', type: 'ACCESS_PROFILE', name: 'X' }, { id: 'ent', type: 'ENTITLEMENT', name: 'Group' }]);
       expect(found).toEqual([{ personId: 'p1', itemId: 'ap', status: 'ASSIGNED' }]);
       expect(api.entitlementsChecked()).toBe(false);
-      expect(urls(plugin).every((u) => u.startsWith('/v3/requestable-objects?identity-id=p1'))).toBe(true);
+      expect(urls(plugin).every((u) => u.startsWith('/requestable-objects/v1?identity-id=p1'))).toBe(true);
     });
   });
 
   it('asks for the catalog with the signed-in admin\'s identity-id too', async () => {
-    const { api, plugin } = setup({ '/v3/requestable-objects': [], '/v2025/entitlements': [] });
+    const { api, plugin } = setup({ '/requestable-objects/v1': [], '/entitlements/v1': [] });
     await api.catalog({ ...DEMO_CONFIG, nameStartsWith: null });
-    expect(String(plugin.get.mock.calls[0][0])).toContain('/v3/requestable-objects?identity-id=me&');
+    expect(String(plugin.get.mock.calls[0][0])).toContain('/requestable-objects/v1?identity-id=me&');
     expect(api.entitlementsChecked()).toBe(true);
   });
 
@@ -293,9 +293,9 @@ describe('BulkApiService', () => {
 
     it('launches the Launcher with an empty body and returns the interactive process', async () => {
       const answers = [{ interactiveProcessId: '01PROCESS' }, {}];
-      const { api, plugin } = setup({ '/v2025/launchers/ln-1/launch': () => answers.shift() });
+      const { api, plugin } = setup({ '/launchers/v1/ln-1/launch': () => answers.shift() });
       await expect(api.launch('ln-1')).resolves.toBe('01PROCESS');
-      expect(plugin.post).toHaveBeenCalledWith('/v2025/launchers/ln-1/launch', {});
+      expect(plugin.post).toHaveBeenCalledWith('/launchers/v1/ln-1/launch', {});
       await expect(api.launch('ln-1')).rejects.toThrow('did not start');
     });
 
@@ -326,13 +326,13 @@ describe('BulkApiService', () => {
     it('submits the form with one JSON Patch, repeating until it is SUBMITTED, and returns the run behind it', async () => {
       const states = ['IN_PROGRESS', 'SUBMITTED'];
       const { api, plugin } = setup({
-        'PATCH /v2025/form-instances/fi-1': {},
-        '/v2025/form-instances/fi-1': () => ({ state: states.shift(), formErrors: [],
+        'PATCH /form-instances/v1/fi-1': {},
+        '/form-instances/v1/fi-1': () => ({ state: states.shift(), formErrors: [],
           createdBy: { type: 'WORKFLOW_EXECUTION', id: 'run-1' } }),
       });
       await expect(api.submitLauncherForm('fi-1', formData)).resolves.toEqual({ state: 'SUBMITTED', errors: [], executionId: 'run-1' });
       expect(plugin.patch).toHaveBeenCalledTimes(2);
-      expect(plugin.patch).toHaveBeenCalledWith('/v2025/form-instances/fi-1', [
+      expect(plugin.patch).toHaveBeenCalledWith('/form-instances/v1/fi-1', [
         { op: 'replace', path: '/formData', value: formData },
         { op: 'replace', path: '/state', value: 'SUBMITTED' },
       ]);
@@ -340,8 +340,8 @@ describe('BulkApiService', () => {
 
     it("stops at the form's own validation errors and returns them", async () => {
       const { api, plugin } = setup({
-        'PATCH /v2025/form-instances/': {},
-        '/v2025/form-instances/fi-1': { state: 'IN_PROGRESS', createdBy: { type: 'WORKFLOW_EXECUTION', id: 'run-1' },
+        'PATCH /form-instances/v1/': {},
+        '/form-instances/v1/fi-1': { state: 'IN_PROGRESS', createdBy: { type: 'WORKFLOW_EXECUTION', id: 'run-1' },
           formErrors: [{ key: 'inc', messages: [{ text: 'Enter a ServiceNow incident number.' }] }] },
       });
       await expect(api.submitLauncherForm('fi-1', formData)).resolves.toEqual({
@@ -360,7 +360,7 @@ describe('BulkApiService', () => {
     });
 
     it("lists the caller's own approvals with the requesterId query parameter (the filter is empty for non-admins)", async () => {
-      const { api, plugin } = setup({ '/v2025/generic-approvals?': [] });
+      const { api, plugin } = setup({ '/generic-approvals/v1?': [] });
       await api.approvals('me-1');
       const params = new URLSearchParams(String(plugin.get.mock.calls[0][0]).split('?')[1]);
       expect(params.get('requesterId')).toBe('me-1');
@@ -373,14 +373,14 @@ describe('BulkApiService', () => {
     const row = (id: string, name: string, requester: string, created: string) =>
       ({ id, name: [{ value: name }], status: 'PENDING', requester: { identityID: requester }, createdDate: created });
     const { api, plugin } = setup({
-      '/v2025/generic-approvals?': [
+      '/generic-approvals/v1?': [
         row('a1', 'Bulk access INC0000001', 'me', '2026-10-01'),
         row('a2', 'Bulk access INC0000002', 'someone-else', '2026-10-02'),
         row('a3', 'Quarterly review', 'me', '2026-10-03'),
         row('a4', 'Bulk access INC0000004', 'me', '2026-10-04'),
       ],
-      '/v2025/generic-approvals/a1': { approvers: [{ name: 'Aisha Bello' }] },
-      '/v2025/generic-approvals/a4': Promise.reject(new Error('boom')),
+      '/generic-approvals/v1/a1': { approvers: [{ name: 'Aisha Bello' }] },
+      '/generic-approvals/v1/a4': Promise.reject(new Error('boom')),
     });
     const mine = await api.myBulkApprovals('me');
     expect(mine.map((a) => a.id)).toEqual(['a4', 'a1']);                 // newest first, ours only
@@ -401,7 +401,7 @@ describe('BulkApiService', () => {
 
     it('pages through pending approvals up to maxRows, oldest first, and says when it stopped early', async () => {
       const { api, plugin } = quick({
-        '/v2025/generic-approvals?': (path: string) => {
+        '/generic-approvals/v1?': (path: string) => {
           const limit = Number(new URLSearchParams(path.split('?')[1]).get('limit'));
           return Array.from({ length: limit }, (_, i) => ({ id: `a${i}`, status: 'PENDING' }));
         },
@@ -416,7 +416,7 @@ describe('BulkApiService', () => {
     });
 
     it('stops at a short page without calling it truncated', async () => {
-      const { api, plugin } = quick({ '/v2025/generic-approvals?': [{ id: 'a', status: 'PENDING' }] });
+      const { api, plugin } = quick({ '/generic-approvals/v1?': [{ id: 'a', status: 'PENDING' }] });
       expect(await api.pendingAccessApprovals(5000)).toEqual({ approvals: [{ id: 'a', status: 'PENDING' }], truncated: false });
       expect(plugin.get).toHaveBeenCalledTimes(1);
     });
@@ -426,7 +426,7 @@ describe('BulkApiService', () => {
       let running = 0;
       let peak = 0;
       const { api, plugin } = quick({
-        '/v2025/generic-approvals/': async (path: string) => {
+        '/generic-approvals/v1/': async (path: string) => {
           const id = path.split('/')[3];
           const n = (seen.get(id) ?? 0) + 1;
           seen.set(id, n);
@@ -453,20 +453,20 @@ describe('BulkApiService', () => {
       expect((results.get('gone') as { message: string }).message).toContain('assigned to you');
       expect(seen.get('bad')).toBe(1);
       expect(seen.get('flaky')).toBe(3);
-      expect(plugin.post).toHaveBeenCalledWith('/v2025/generic-approvals/a/approve', { comment: 'ok' });
+      expect(plugin.post).toHaveBeenCalledWith('/generic-approvals/v1/a/approve', { comment: 'ok' });
       expect(progress[0]).toBe(0);
       expect(progress.at(-1)).toBe(8);
     });
 
     it('sends no comment field when the comment is empty', async () => {
-      const { api, plugin } = quick({ '/v2025/generic-approvals/': null });
+      const { api, plugin } = quick({ '/generic-approvals/v1/': null });
       await api.decideApprovals('reject', ['x'], '', { concurrency: 1, useBulk: false });
-      expect(plugin.post).toHaveBeenCalledWith('/v2025/generic-approvals/x/reject', {});
+      expect(plugin.post).toHaveBeenCalledWith('/generic-approvals/v1/x/reject', {});
     });
 
     it('uses the bulk endpoint in batches of 50, and falls back to one by one after a 403', async () => {
       const ids = Array.from({ length: 120 }, (_, i) => `id${i}`);
-      const ok = quick({ '/v2025/generic-approvals/bulk-reject': {} });
+      const ok = quick({ '/generic-approvals/v1/bulk-reject': {} });
       const results = await ok.api.decideApprovals('reject', ids, 'no', { concurrency: 4, useBulk: true });
       expect(ok.plugin.post.mock.calls.map((c) => (c[1] as { approvalIds: string[] }).approvalIds.length)).toEqual([50, 50, 20]);
       expect(ok.plugin.post.mock.calls[0][1]).toMatchObject({ comment: 'no' });
@@ -474,8 +474,8 @@ describe('BulkApiService', () => {
 
       TestBed.resetTestingModule();
       const refused = quick({
-        '/v2025/generic-approvals/bulk-': () => Promise.reject(fail(403, 'Forbidden')),
-        '/v2025/generic-approvals/': {},
+        '/generic-approvals/v1/bulk-': () => Promise.reject(fail(403, 'Forbidden')),
+        '/generic-approvals/v1/': {},
       });
       const after = await refused.api.decideApprovals('approve', ids, '', { concurrency: 4, useBulk: true });
       const paths = refused.plugin.post.mock.calls.map((c) => c[0] as string);
@@ -487,7 +487,7 @@ describe('BulkApiService', () => {
     it('re-reads states 50 IDs per call (any assignee)', async () => {
       const ids = Array.from({ length: 120 }, (_, i) => `id${i}`);
       const { api, plugin } = quick({
-        '/v2025/generic-approvals?': (path: string) => [...decodeURIComponent(path).matchAll(/"([^"]+)"/g)]
+        '/generic-approvals/v1?': (path: string) => [...decodeURIComponent(path).matchAll(/"([^"]+)"/g)]
           .map((m) => ({ id: m[1], status: m[1] === 'id7' ? 'APPROVED' : 'PENDING' }))
           .filter((r) => r.id !== 'id9'),
       });

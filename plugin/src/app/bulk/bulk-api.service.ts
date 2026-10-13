@@ -1,3 +1,4 @@
+import { API } from './api-paths';
 import { inject, Injectable } from '@angular/core';
 import { SailpointPluginService } from '@core';
 
@@ -30,7 +31,7 @@ export interface Resolution {
 }
 
 /**
- * What POST /v2025/workflows/{id}/test receives as `input`: the plugin workflow's trigger
+ * What POST /workflows/v1/{id}/test receives as `input`: the plugin workflow's trigger
  * contract (CONTRACTS §3). One run per part; every field is always present.
  */
 export interface BulkInput {
@@ -84,7 +85,7 @@ export interface LauncherBlock {
   data?: Record<string, unknown>;
 }
 
-/** The parts of a /v2025/form-instances/{id} answer the page reads. */
+/** The parts of a /form-instances/v1/{id} answer the page reads. */
 interface FormInstance {
   state?: string;
   formErrors?: { key?: string; messages?: { text?: string }[] }[];
@@ -121,7 +122,7 @@ export function launcherStopMessage(blocks: LauncherBlock[]): string | null {
   return null;
 }
 
-/** The fields of a /v2025/generic-approvals row the page reads. */
+/** The fields of a /generic-approvals/v1 row the page reads. */
 type Who = { name?: string };
 /**
  * The approver the requester chose. While pending that is `assignedTo`. If the task was
@@ -199,7 +200,7 @@ export const DECIDE_BATCH = 50;
 const PAGE = 250;
 const PENDING_FILTER = 'status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"';
 
-/** The fields of a /v3/access-request-status row the page reads. */
+/** The fields of a /access-request-status/v1 row the page reads. */
 export interface AccessRequestStatus {
   id: string;
   name: string;
@@ -234,7 +235,7 @@ const quoted = filterQuote;
 
 /**
  * Batch sizes for resolving a pasted list. Verified with read-only GETs on a demo tenant:
- * /v2025/identities takes `id in (…)` (50 IDs ≈ 2 KB of URL) but only `eq` for alias and
+ * /identities/v1 takes `id in (…)` (50 IDs ≈ 2 KB of URL) but only `eq` for alias and
  * email, so words go as an `alias eq … or email eq …` chain; URLs above ~8 KB get HTTP 414.
  * The list API is search-backed and misses identities not indexed yet, so leftovers are
  * looked up through their accounts, then (IDs only) one by one.
@@ -372,7 +373,7 @@ function personFromAccount(acct: Row): Person | null {
 /** Public-identity fields a type-ahead term is matched against (`sw`, case-insensitive; `name` isn't filterable). */
 const PUBLIC_SEARCH_FIELDS = ['displayName', 'alias', 'email', 'firstname', 'lastname'];
 
-/** A /v3/public-identities row: `attributes` is a list of `{key, name, value}`, and there's no display name. */
+/** A /public-identities/v1 row: `attributes` is a list of `{key, name, value}`, and there's no display name. */
 function personFromPublic(row: Row): Person {
   const attrs = (row['attributes'] as { key?: string; value?: unknown }[] | undefined) ?? [];
   const department = attrs.find((a) => a.key === 'department')?.value;
@@ -425,13 +426,13 @@ export class BulkApiService {
       return rows.map(personFromPublic).sort((a, b) => a.name.localeCompare(b.name));
     }
     const [docs, accounts] = await Promise.allSettled([
-      this.plugin.post<Row[]>(`/v3/search?limit=${limit}`, {
+      this.plugin.post<Row[]>(`${API.search}?limit=${limit}`, {
         indices: ['identities'],
         query: { query: `${escapeQuery(t)}*` },
         queryResultFilter: { includes: ['id', 'name', 'displayName', 'email', 'attributes.department'] },
         sort: ['name'],
       }),
-      this.plugin.get<Row[]>(`/v3/accounts?limit=${limit}&filters=${encodeURIComponent(`name sw ${quoted(t)}`)}`),
+      this.plugin.get<Row[]>(`${API.accounts}?limit=${limit}&filters=${encodeURIComponent(`name sw ${quoted(t)}`)}`),
     ]);
     const byId = new Map<string, Person>();
     for (const doc of docs.status === 'fulfilled' ? docs.value ?? [] : []) byId.set(String(doc['id']), personFromSearch(doc));
@@ -448,12 +449,12 @@ export class BulkApiService {
    * RESOLVE_BATCH per call (so 1,000+ entries take a few dozen calls). A token resolves
    * when exactly one identity matches it; several matches are reported as ambiguous.
    *
-   *  1. IDs: `/v2025/identities?filters=id in (…)`.
-   *  2. Words: `/v2025/identities?filters=alias eq … or email eq …` (case-insensitive).
+   *  1. IDs: `/identities/v1?filters=id in (…)`.
+   *  2. Words: `/identities/v1?filters=alias eq … or email eq …` (case-insensitive).
    *  3. Whatever is still unmatched: identity search (name, email) and accounts
    *     (name, nativeIdentity; identityId for IDs), which also find identities the
    *     identities list hasn't indexed yet.
-   *  4. IDs still unmatched: GET /v2025/identities/{id}, one by one.
+   *  4. IDs still unmatched: GET /identities/v1/{id}, one by one.
    */
   async resolvePeople(tokens: string[], onProgress?: ResolveProgress): Promise<Resolution> {
     const candidates = new Map<string, Map<string, Person>>(); // token(lower) -> identityId -> person
@@ -476,7 +477,7 @@ export class BulkApiService {
     onProgress?.(0, total);
 
     // 1 + 2: the identities list, the bulk of the work (progress counts these tokens). A non-admin may not read
-    // /v2025/identities, search or accounts (403), so they get public identities, which take the same filters
+    // /identities/v1, search or accounts (403), so they get public identities, which take the same filters
     // (`id in`, `alias eq`, `email eq`; verified live) but have no fallbacks for identities they don't list.
     const admin = this.isAdmin();
     const lookup = (filter: string) => (admin
@@ -504,7 +505,7 @@ export class BulkApiService {
     const fallbacks: (() => Promise<void>)[] = [];
     for (const part of chunk(leftWords, RESOLVE_BATCH)) {
       const list = part.map(quoted).join(' OR ');
-      fallbacks.push(() => this.plugin.post<Row[]>('/v3/search?limit=250', {
+      fallbacks.push(() => this.plugin.post<Row[]>(`${API.search}?limit=250`, {
         indices: ['identities'],
         query: { query: `name:(${list}) OR email:(${list})` },
         queryResultFilter: { includes: ['id', 'name', 'displayName', 'email', 'attributes.department'] },
@@ -530,7 +531,7 @@ export class BulkApiService {
     // 4: an ID nobody has an account for yet.
     await pool(open(ids).map((id) => async () => {
       try {
-        const row = await this.plugin.get<Row>(`/v2025/identities/${encodeURIComponent(id)}`);
+        const row = await this.plugin.get<Row>(`${API.identities}/${encodeURIComponent(id)}`);
         if (row?.['id']) add(id.toLowerCase(), personFromIdentity(row));
       } catch {
         /* unknown id: reported as unresolved */
@@ -556,31 +557,31 @@ export class BulkApiService {
     return out;
   }
 
-  /** The signed-in user is ORG_ADMIN: search, accounts and /v2025/identities are open to them (403 for others). */
+  /** The signed-in user is ORG_ADMIN: search, accounts and /identities/v1 are open to them (403 for others). */
   isAdmin(): boolean {
     return this.plugin.user()?.capabilities?.isOrgAdmin ?? false;
   }
 
   /**
-   * One /v3/public-identities call: the identity list any user may read (verified live as a non-admin).
+   * One /public-identities/v1 call: the identity list any user may read (verified live as a non-admin).
    * Filterable: `id` (eq, in), `alias`, `email`, `firstname`, `lastname`, `displayName` (eq, sw; case-insensitive);
    * not `name`. limit ≤ 250, sorters `name`. Empty on failure, like identities().
    */
   private publicIdentities(filter: string, limit = 250, swallow = true): Promise<Row[]> {
     const call = retry(() => this.plugin.get<Row[]>(
-      `/v3/public-identities?limit=${limit}&sorters=name&filters=${encodeURIComponent(filter)}`)).then((rows) => rows ?? []);
+      `${API.publicIdentities}?limit=${limit}&sorters=name&filters=${encodeURIComponent(filter)}`)).then((rows) => rows ?? []);
     return swallow ? call.catch(() => []) : call;
   }
 
-  /** One /v2025/identities list call (empty on failure: the fallbacks still run). */
+  /** One /identities/v1 list call (empty on failure: the fallbacks still run). */
   private identities(filter: string): Promise<Row[]> {
-    return retry(() => this.plugin.get<Row[]>(`/v2025/identities?limit=250&filters=${encodeURIComponent(filter)}`))
+    return retry(() => this.plugin.get<Row[]>(`${API.identities}?limit=250&filters=${encodeURIComponent(filter)}`))
       .then((rows) => rows ?? [])
       .catch(() => []);
   }
 
   private accounts(filter: string): Promise<Row[]> {
-    return retry(() => this.plugin.get<Row[]>(`/v3/accounts?limit=250&filters=${encodeURIComponent(filter)}`))
+    return retry(() => this.plugin.get<Row[]>(`${API.accounts}?limit=250&filters=${encodeURIComponent(filter)}`))
       .then((rows) => rows ?? [])
       .catch(() => []);
   }
@@ -588,8 +589,8 @@ export class BulkApiService {
   // ── Catalog ──────────────────────────────────────────────────────────────
   /**
    * The Request Center catalog (types and name prefix from the config), with each item's source.
-   * Access profiles and roles come from /v3/requestable-objects, requestable entitlements from
-   * /v2025/entitlements (requestable-objects can't list them; CONTRACTS §8).
+   * Access profiles and roles come from /requestable-objects/v1, requestable entitlements from
+   * /entitlements/v1 (requestable-objects can't list them; CONTRACTS §8).
    */
   async catalog(cfg: RuntimeConfig, max = 1000): Promise<CatalogOption[]> {
     const rows: Row[] = [];
@@ -600,11 +601,11 @@ export class BulkApiService {
       // the catalog as the signed-in user sees it.
       const me = this.plugin.user()?.id;
       const who = me ? `identity-id=${encodeURIComponent(me)}&` : '';
-      rows.push(...await this.paged(`/v3/requestable-objects?${who}${types.map((t) => `types=${t}`).join('&')}${filter}`, max));
+      rows.push(...await this.paged(`${API.requestableObjects}?${who}${types.map((t) => `types=${t}`).join('&')}${filter}`, max));
     }
     const entitlements = entitlementFilter(cfg);
     if (entitlements) {
-      const found = await this.paged(`/v2025/entitlements?filters=${encodeURIComponent(entitlements)}&sorters=name`, max);
+      const found = await this.paged(`${API.entitlements}?filters=${encodeURIComponent(entitlements)}&sorters=name`, max);
       rows.push(...found.map((e) => ({ ...e, type: 'ENTITLEMENT' })));
     }
     return catalogOptions(cfg, rows, await this.sources(rows));
@@ -628,7 +629,7 @@ export class BulkApiService {
     const ids = rows.filter((r) => r['type'] === 'ACCESS_PROFILE').map((r) => String(r['id']));
     await Promise.all(chunk(ids, 100).map(async (part) => {
       try {
-        const docs = await this.plugin.post<Row[]>('/v3/search?limit=250', {
+        const docs = await this.plugin.post<Row[]>(`${API.search}?limit=250`, {
           indices: ['accessprofiles', 'entitlements'],
           query: { query: `id:(${part.join(' OR ')})` },
           queryResultFilter: { includes: ['id', 'source.name'] },
@@ -669,7 +670,7 @@ export class BulkApiService {
       // Access profiles and roles: requestable-objects annotates each with the person's status.
       if (objects.length) {
         jobs.push(() => this.plugin.get<Row[]>(
-          `/v3/requestable-objects?identity-id=${encodeURIComponent(id)}&${types}&limit=250&filters=${filter}`,
+          `${API.requestableObjects}?identity-id=${encodeURIComponent(id)}&${types}&limit=250&filters=${filter}`,
         ).then((rows) => {
           for (const r of rows ?? []) {
             const status = r['requestStatus'];
@@ -680,7 +681,7 @@ export class BulkApiService {
       // Entitlements, pending: open requests for this person (the row `id` is the item's ID).
       if (entitlements.size) {
         jobs.push(() => this.plugin.get<Row[]>(
-          `/v3/access-request-status?requested-for=${encodeURIComponent(id)}&request-state=EXECUTING&limit=250`,
+          `${API.accessRequestStatus}?requested-for=${encodeURIComponent(id)}&request-state=EXECUTING&limit=250`,
         ).then((rows) => {
           for (const r of rows ?? []) {
             if (r['type'] === 'ENTITLEMENT' && r['requestType'] !== 'REVOKE_ACCESS' && entitlements.has(String(r['id']))) {
@@ -693,7 +694,7 @@ export class BulkApiService {
     // Entitlements, held: the identities search index lists each person's access.
     if (entitlements.size) {
       for (const part of chunk(personIds, 100)) {
-        jobs.push(() => this.plugin.post<Row[]>('/v3/search?limit=250', {
+        jobs.push(() => this.plugin.post<Row[]>(`${API.search}?limit=250`, {
           indices: ['identities'],
           query: { query: `id:(${part.join(' OR ')})` },
           queryResultFilter: { includes: ['id', 'access.id', 'access.type'] },
@@ -721,7 +722,7 @@ export class BulkApiService {
   // ── Workflow ─────────────────────────────────────────────────────────────
   async workflowId(cfg: RuntimeConfig): Promise<string> {
     if (cfg.workflowId) return cfg.workflowId;
-    const flows = await this.plugin.get<Row[]>('/v2025/workflows?limit=250');
+    const flows = await this.plugin.get<Row[]>(`${API.workflows}?limit=250`);
     const hit = (flows ?? []).find((w) => w['name'] === cfg.workflowName);
     if (!hit) throw new Error(`The workflow "${cfg.workflowName}" is not installed in this tenant. Run plugin/install.py.`);
     return String(hit['id']);
@@ -730,7 +731,7 @@ export class BulkApiService {
   /** Start the plugin workflow through the workflow test endpoint (needs the right to test workflows). */
   async submit(workflowId: string, input: BulkInput): Promise<string> {
     const started = await this.plugin.post<{ workflowExecutionId?: string }>(
-      `/v2025/workflows/${encodeURIComponent(workflowId)}/test`,
+      `${API.workflows}/${encodeURIComponent(workflowId)}/test`,
       { input },
     );
     if (!started?.workflowExecutionId) throw new Error('The workflow did not start (no execution ID returned).');
@@ -738,14 +739,14 @@ export class BulkApiService {
   }
 
   execution(id: string): Promise<Execution> {
-    return this.plugin.get<Execution>(`/v2025/workflow-executions/${encodeURIComponent(id)}`);
+    return this.plugin.get<Execution>(`${API.workflowExecutions}/${encodeURIComponent(id)}`);
   }
 
   // ── Submitting through the Launcher (CONTRACTS §9; every call verified live as a non-admin) ──
   /** Start the Launcher as the signed-in user; returns the interactive process ID. */
   async launch(launcherId: string): Promise<string> {
     const started = await this.plugin.post<{ interactiveProcessId?: string }>(
-      `/v2025/launchers/${encodeURIComponent(launcherId)}/launch`, {});
+      `${API.launchers}/${encodeURIComponent(launcherId)}/launch`, {});
     if (!started?.interactiveProcessId) throw new Error('The Launcher did not start (no interactive process ID returned).');
     return started.interactiveProcessId;
   }
@@ -753,7 +754,7 @@ export class BulkApiService {
   /** The blocks the Launcher's run has shown so far: its form, then any messages. */
   async launcherBlocks(processId: string): Promise<LauncherBlock[]> {
     const res = await this.plugin.get<{ items?: LauncherBlock[] } | LauncherBlock[]>(
-      `/beta/interactive-processes/${encodeURIComponent(processId)}/blocks`);
+      `${API.interactiveProcessesBeta}/${encodeURIComponent(processId)}/blocks`);
     return (Array.isArray(res) ? res : res?.items) ?? [];
   }
 
@@ -785,7 +786,7 @@ export class BulkApiService {
    * form's own validations refuse a value (`formErrors`; the form then stays open).
    */
   async submitLauncherForm(formInstanceId: string, formData: LauncherFormData, attempts = 3): Promise<LauncherFormResult> {
-    const path = `/v2025/form-instances/${encodeURIComponent(formInstanceId)}`;
+    const path = `${API.formInstances}/${encodeURIComponent(formInstanceId)}`;
     let current: FormInstance = {};
     for (let i = 0; i < attempts; i++) {
       await this.plugin.patch(path, [
@@ -813,7 +814,7 @@ export class BulkApiService {
    */
   async approvals(requesterId: string): Promise<GenericApproval[]> {
     return (await this.plugin.get<GenericApproval[]>(
-      `/v2025/generic-approvals?limit=250&sorters=-createdDate&requesterId=${encodeURIComponent(requesterId)}`)) ?? [];
+      `${API.genericApprovals}?limit=250&sorters=-createdDate&requesterId=${encodeURIComponent(requesterId)}`)) ?? [];
   }
 
   /**
@@ -831,7 +832,7 @@ export class BulkApiService {
     const worker = async () => {
       for (let i = next++; i < mine.length; i = next++) {
         try {
-          out[i] = { ...mine[i], ...(await this.plugin.get<GenericApproval>(`/v2025/generic-approvals/${encodeURIComponent(mine[i].id)}`)) };
+          out[i] = { ...mine[i], ...(await this.plugin.get<GenericApproval>(`${API.genericApprovals}/${encodeURIComponent(mine[i].id)}`)) };
         } catch {
           /* keep the list row */
         }
@@ -842,12 +843,12 @@ export class BulkApiService {
   }
 
   approval(id: string): Promise<GenericApproval> {
-    return this.plugin.get<GenericApproval>(`/v2025/generic-approvals/${encodeURIComponent(id)}`);
+    return this.plugin.get<GenericApproval>(`${API.genericApprovals}/${encodeURIComponent(id)}`);
   }
 
   // ── Approvals tab: the caller's own access-request approvals ─────────────
   /**
-   * Keeps every /v2025/generic-approvals call of the Approvals tab (list, decide, confirm) to about
+   * Keeps every /generic-approvals/v1 call of the Approvals tab (list, decide, confirm) to about
    * 8 a second, under SailPoint's 100 requests per 10 s per client and API version.
    */
   readonly approvalsThrottle = new Throttle(125);
@@ -869,7 +870,7 @@ export class BulkApiService {
       const page = (await retry(async () => {
         await this.approvalsThrottle.wait();
         return this.plugin.get<GenericApproval[]>(
-          `/v2025/generic-approvals?mine=true&include-comments=true&limit=${limit}&offset=${offset}`
+          `${API.genericApprovals}?mine=true&include-comments=true&limit=${limit}&offset=${offset}`
           + `&filters=${filters}&sorters=createdDate`,
         );
       })) ?? [];
@@ -885,7 +886,7 @@ export class BulkApiService {
    * accepts unknown IDs), so callers confirm with approvalStatuses() afterwards.
    *  - Bulk path (`opts.useBulk`): bulk-approve / bulk-reject, 50 IDs per call. A 401/403 (a
    *    non-admin gets 403 even for their own approvals) switches the rest to the per-item path.
-   *  - Per-item path: POST /v2025/generic-approvals/{id}/approve|reject (200, with or without a
+   *  - Per-item path: POST /generic-approvals/v1/{id}/approve|reject (200, with or without a
    *    body), `concurrency` at a time, throttled, with 429 and 5xx retried.
    */
   async decideApprovals(action: DecideAction, ids: string[], comment: string,
@@ -917,7 +918,7 @@ export class BulkApiService {
           return;
         }
         try {
-          await send(`/v2025/generic-approvals/bulk-${action}`, { approvalIds: batch, ...body });
+          await send(`${API.genericApprovals}/bulk-${action}`, { approvalIds: batch, ...body });
           batch.forEach((id) => settle(id, { ok: true }));
         } catch (err) {
           const status = statusOf(err);
@@ -935,7 +936,7 @@ export class BulkApiService {
     }
     await pool(perItem.map((id) => async () => {
       try {
-        await send(`/v2025/generic-approvals/${encodeURIComponent(id)}/${action}`, body);
+        await send(`${API.genericApprovals}/${encodeURIComponent(id)}/${action}`, body);
         settle(id, { ok: true });
       } catch (err) {
         settle(id, failure(err));
@@ -955,7 +956,7 @@ export class BulkApiService {
       const filters = encodeURIComponent(`approvalId in (${batch.map(quoted).join(',')})`);
       const rows = await retry(async () => {
         await this.approvalsThrottle.wait();
-        return this.plugin.get<GenericApproval[]>(`/v2025/generic-approvals?limit=${PAGE}&filters=${filters}`);
+        return this.plugin.get<GenericApproval[]>(`${API.genericApprovals}?limit=${PAGE}&filters=${filters}`);
       });
       for (const row of rows ?? []) out.set(row.id, row);
     }), concurrency);
@@ -967,7 +968,7 @@ export class BulkApiService {
     const rows: AccessRequestStatus[] = [];
     for (let offset = 0; offset < max; offset += 250) {
       const page = await this.plugin.get<AccessRequestStatus[]>(
-        `/v3/access-request-status?requested-by=${encodeURIComponent(requesterId)}&limit=250&offset=${offset}&sorters=-created`,
+        `${API.accessRequestStatus}?requested-by=${encodeURIComponent(requesterId)}&limit=250&offset=${offset}&sorters=-created`,
       );
       rows.push(...(page ?? []));
       if (!page || page.length < 250) break;

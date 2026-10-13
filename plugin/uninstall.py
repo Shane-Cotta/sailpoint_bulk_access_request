@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for kind, oid, name in targets:
         if kind == "workflow":
-            tenant.call("DELETE", f"{lib.WORKFLOWS}/{oid}")
+            tenant.call("DELETE", f"{lib.api.WORKFLOWS}/{oid}")
         else:
             lib.sail(cfg, ["ui-plugins", "delete", oid, "--force"], workdir)
         print(f"Deleted {kind} {oid}  {name}")

@@ -114,7 +114,7 @@ def test_catalog_options_carry_full_access_objects_and_respect_filters():
 
 
 def test_entitlements_come_from_the_entitlements_api_not_requestable_objects():
-    # /v3/requestable-objects can't list entitlements (CONTRACTS §8).
+    # /requestable-objects can't list entitlements (CONTRACTS §8).
     assert rules.requestable_object_types(cfg_with(catalog__types=["ENTITLEMENT", "ROLE", "ACCESS_PROFILE"])) == ["ROLE", "ACCESS_PROFILE"]
     assert rules.requestable_object_types(cfg_with(catalog__types=["ENTITLEMENT"])) == []
     assert rules.entitlement_filter(cfg_with(catalog__types=["ACCESS_PROFILE"])) is None
@@ -132,7 +132,7 @@ def test_launcher_catalog_merges_requestable_entitlements():
     class FakeTenant:
         def call(self, method, path, *a, **k):
             calls.append(path)
-            if path.startswith("/v3/requestable-objects"):
+            if path.startswith("/requestable-objects/v1"):
                 return [{"id": "ap", "type": "ACCESS_PROFILE", "name": "ACME AP"}]
             return [{"id": "e1", "name": "ACME Group", "source": {"name": "AD"}, "requestable": True}]
 
@@ -141,11 +141,11 @@ def test_launcher_catalog_merges_requestable_entitlements():
     assert [o["value"] for o in opts] == [{"id": "ap", "type": "ACCESS_PROFILE", "name": "ACME AP"},
                                          {"id": "e1", "type": "ENTITLEMENT", "name": "ACME Group"}]
     assert opts[1]["subLabel"] == "Entitlement · AD"
-    assert calls[0] == "/v3/requestable-objects?types=ACCESS_PROFILE&limit=250&offset=0"
-    assert calls[1].startswith("/v2025/entitlements?filters=requestable%20eq%20true%20and%20name%20sw%20%22ACME%22")
+    assert calls[0] == "/requestable-objects/v1?types=ACCESS_PROFILE&limit=250&offset=0"
+    assert calls[1].startswith("/entitlements/v1?filters=requestable%20eq%20true%20and%20name%20sw%20%22ACME%22")
     calls.clear()
     mod.requestable_objects(FakeTenant(), cfg_with(catalog__types=["ENTITLEMENT"]))
-    assert [c.split("?")[0] for c in calls] == ["/v2025/entitlements"]   # no type-less requestable-objects call
+    assert [c.split("?")[0] for c in calls] == ["/entitlements/v1"]   # no type-less requestable-objects call
 
 
 # ── definitions ───────────────────────────────────────────────────────────────

@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bulkaccess import config as config_mod  # noqa: E402
-from bulkaccess import definitions, rules  # noqa: E402
+from bulkaccess import api, definitions, rules  # noqa: E402
 from bulkaccess.config import DURATION_UNITS  # noqa: E402
 from bulkaccess.tenant import Tenant, TenantError  # noqa: E402
 import install  # noqa: E402  (reuse its find_* helpers)
@@ -136,13 +136,13 @@ def main(argv=None) -> int:
     # 1. Launch
     # 20 s of slack for clock differences between this machine and the tenant.
     launched_at = (datetime.now(timezone.utc) - timedelta(seconds=20)).strftime("%Y-%m-%dT%H:%M:%S")
-    started = t.call("POST", f"/v2025/launchers/{launcher['id']}/launch", {})
+    started = t.call("POST", ff"{api.LAUNCHERS}/{launcher['id']}/launch", {})
     ipid = started.get("interactiveProcessId")
     print(f"1. Launched: interactive process {ipid}")
 
     # 2. Find the form instance assigned to us and submit it
     def instance():
-        res = t.call("GET", "/v2025/form-instances?limit=50") or {}
+        res = t.call("GET", f"{api.FORM_INSTANCES}?limit=50") or {}
         rows = res.get("results") if isinstance(res, dict) else res
         # Only a form created by *this* launch: an older open form (e.g. one a person left
         # half-filled in the Launchpad) must never be picked up and submitted.
@@ -171,11 +171,11 @@ def main(argv=None) -> int:
     # step, so repeat until it is SUBMITTED. The API applies the form's validations: a value
     # they refuse leaves the form IN_PROGRESS with `formErrors` (the workflow never continues).
     for _ in range(3):
-        t.call("PATCH", f"/v2025/form-instances/{inst['id']}", [
+        t.call("PATCH", f"{api.FORM_INSTANCES}/{inst['id']}", [
             {"op": "replace", "path": "/formData", "value": form_data},
             {"op": "replace", "path": "/state", "value": "SUBMITTED"},
         ], content_type="application/json-patch+json")
-        current = t.call("GET", f"/v2025/form-instances/{inst['id']}") or {}
+        current = t.call("GET", f"{api.FORM_INSTANCES}/{inst['id']}") or {}
         if current.get("state") in ("SUBMITTED", "COMPLETED") or current.get("formErrors"):
             break
     stored = current.get("formData") or {}
@@ -184,7 +184,7 @@ def main(argv=None) -> int:
     if current.get("state") not in ("SUBMITTED", "COMPLETED"):   # COMPLETED: the workflow already took it
         errors = {e.get("key"): [m.get("text") for m in e.get("messages") or []] for e in current.get("formErrors") or []}
         if run_id:   # don't leave the run waiting for a form nobody will submit
-            t.call("POST", f"/v2025/workflow-executions/{run_id}/cancel")
+            t.call("POST", f"{api.WORKFLOW_EXECUTIONS}/{run_id}/cancel")
         if a.scenario == "bad-duration" and set(errors) == {definitions.F_DURATION}:
             print(f"2. Form {inst['id']} refused by the form's own validation: {errors}; run {run_id} cancelled")
             print("PASS (stopped by the form, before any workflow step or approval)")
@@ -194,20 +194,20 @@ def main(argv=None) -> int:
     print(f"2. Form {inst['id']} submitted (run {run_id})")
 
     def run_done():
-        run = t.call("GET", f"/v2025/workflow-executions/{run_id}") or {}
+        run = t.call("GET", f"{api.WORKFLOW_EXECUTIONS}/{run_id}") or {}
         return run if run.get("status") in ("Completed", "Failed", "Canceled") else None
 
     if a.scenario in ("self", "approver-in-people", "bad-duration"):
         def ours():
-            return [r for r in t.call("GET", "/v2025/generic-approvals?limit=100") or []
+            return [r for r in t.call("GET", f"{api.GENERIC_APPROVALS}?limit=100") or []
                     if (r.get("name") or [{}])[0].get("value", "").startswith(f"Bulk access {inc}")]
         # Stop waiting as soon as an approval appears: the run would wait for it forever.
         wait(lambda: run_done() or ours(), "the workflow run to stop", timeout=180)
         leaked = [r for r in ours() if r.get("status") == "PENDING"]
         for r in leaked:   # never leave a test approval pending
-            t.call("POST", f"/v2025/generic-approvals/{r['id']}/reject", {"comment": "E2E: should have been stopped; rejected"})
+            t.call("POST", f"{api.GENERIC_APPROVALS}/{r['id']}/reject", {"comment": "E2E: should have been stopped; rejected"})
         run = wait(run_done, "the workflow run to stop", timeout=120)
-        hist = t.call("GET", f"/v2025/workflow-executions/{run['id']}/history") or []
+        hist = t.call("GET", f"{api.WORKFLOW_EXECUTIONS}/{run['id']}/history") or []
         done = [h["attributes"].get("stepName") for h in hist if h.get("type") == "ActivityTaskCompleted"]
         stops = ({"rejectSelfApproval"} if a.scenario == "self"
                  else {"rejectApproverInPeople"} if a.scenario == "approver-in-people"
@@ -227,12 +227,12 @@ def main(argv=None) -> int:
     # 3. The one approval
     name = f"Bulk access {inc}{part}"
     def approval():
-        rows = t.call("GET", "/v2025/generic-approvals?limit=100") or []
+        rows = t.call("GET", f"{api.GENERIC_APPROVALS}?limit=100") or []
         return next((r for r in rows if (r.get("name") or [{}])[0].get("value") == name and r.get("status") == "PENDING"), None)
     appr = wait(approval, f"approval '{name}'")
     assignees = [x.get("identityID") for x in appr.get("assignedTo") or []]
     if a.approver not in assignees:
-        t.call("POST", "/v2025/generic-approvals/bulk-cancel", {"approvalIds": [appr["id"]], "comment": "E2E: wrong assignee, cancelled"})
+        t.call("POST", f"{api.GENERIC_APPROVALS}/bulk-cancel", {"approvalIds": [appr["id"]], "comment": "E2E: wrong assignee, cancelled"})
         raise SystemExit(f"FAIL: approval went to {assignees}, expected {a.approver}; cancelled it.")
     print(f"3. Approval {appr['id']} assigned to the chosen approver ({[x.get('name') for x in appr['assignedTo']]})")
     description = " ".join(d.get("value", "") for d in appr.get("description") or [] if isinstance(d, dict)) \
@@ -243,13 +243,13 @@ def main(argv=None) -> int:
         import os, subprocess
         subprocess.run(a.before_decision, shell=True, check=False, env={**os.environ, "IPID": ipid or "", "INC": inc})
     action = "approve" if a.scenario == "approve" else "reject"
-    t.call("POST", f"/v2025/generic-approvals/{appr['id']}/{action}", {"comment": f"E2E {action} on behalf of the approver"})
+    t.call("POST", f"{api.GENERIC_APPROVALS}/{appr['id']}/{action}", {"comment": f"E2E {action} on behalf of the approver"})
     decided_at = datetime.now(timezone.utc)
     print(f"   {'approved' if action == 'approve' else 'rejected'} on the approver's behalf")
 
     # 4. Outcome
     run = wait(run_done, "the workflow run to finish", timeout=240)
-    hist = t.call("GET", f"/v2025/workflow-executions/{run['id']}/history") or []
+    hist = t.call("GET", f"{api.WORKFLOW_EXECUTIONS}/{run['id']}/history") or []
     done = [h["attributes"].get("stepName") for h in hist if h.get("type") == "ActivityTaskCompleted"]
     print(f"4. Workflow run {run['id']}: {run['status']}; steps completed: {done}")
     ok = run["status"] == "Completed" and label_ok
@@ -263,7 +263,7 @@ def main(argv=None) -> int:
     if cfg.live and a.scenario == "approve":
         for person in people:
             def carrying():   # the status API lags the request by a few seconds
-                rows = t.call("GET", f"/v3/access-request-status?requested-for={person}&limit=20") or []
+                rows = t.call("GET", f"{api.ACCESS_REQUEST_STATUS}?requested-for={person}&limit=20") or []
                 found = [r for r in rows if inc in ((r.get("requesterComment") or {}).get("comment") or "")]
                 return found if len(found) >= len(items) else None
             try:
@@ -293,7 +293,7 @@ def main(argv=None) -> int:
         if cfg.live:
             time.sleep(10)
             for person in people:
-                rows = t.call("GET", f"/v3/access-request-status?requested-for={person}&limit=20") or []
+                rows = t.call("GET", f"{api.ACCESS_REQUEST_STATUS}?requested-for={person}&limit=20") or []
                 found = [r for r in rows if inc in ((r.get("requesterComment") or {}).get("comment") or "")]
                 print(f"   {person}: {len(found)} request(s) carrying {inc} (expected none)")
                 ok &= not found

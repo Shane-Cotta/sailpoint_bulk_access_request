@@ -137,12 +137,12 @@ export class DemoPluginService {
     const params = new URLSearchParams(path.split('?')[1] ?? '');
     // Verified live: identities, accounts and someone else's access requests are refused to non-admins.
     const admin = !!this.user()?.capabilities.isOrgAdmin;
-    if (!admin && (route.startsWith('/v2025/identities') || route === '/v3/accounts')) return Promise.reject(apiError(403, 'Forbidden'));
-    if (!admin && route === '/v3/access-request-status' && params.get('requested-for')
+    if (!admin && (route.startsWith('/identities/v1') || route === '/accounts/v1')) return Promise.reject(apiError(403, 'Forbidden'));
+    if (!admin && route === '/access-request-status/v1' && params.get('requested-for')
         && params.get('requested-for') !== DEMO_ME.id) {
       return Promise.reject(apiError(400, '"request-by/requested-for" must be the current user.'));
     }
-    if (route === '/v3/requestable-objects') {
+    if (route === '/requestable-objects/v1') {
       // Like the real API: access profiles and roles only, never entitlements.
       const types = params.getAll('types');
       const rows = DEMO_CATALOG.filter((c) => c.row['type'] !== 'ENTITLEMENT' && (!types.length || types.includes(String(c.row['type']))));
@@ -155,7 +155,7 @@ export class DemoPluginService {
       return delay(rows.filter((c) => !wanted || wanted.has(String(c.row['id']).toLowerCase()))
         .map((c) => ({ ...c.row, requestStatus: held[String(c.row['id'])] ?? 'AVAILABLE' })) as T, who && wanted ? 400 : 120);
     }
-    if (route === '/v3/public-identities') {
+    if (route === '/public-identities/v1') {
       // Open to every user. `sw` matches the start of a name, username or email (any word); otherwise exact values.
       const values = filterValues(path);
       const prefix = (params.get('filters') ?? '').includes(' sw ');
@@ -167,26 +167,26 @@ export class DemoPluginService {
         .map((d) => ({ id: d.id, name: d.displayName, alias: d.name, email: d.email, status: 'active', identityState: 'ACTIVE',
           attributes: [{ key: 'department', name: 'Department', value: d.attributes.department }] })) as T);
     }
-    if (route === '/v2025/entitlements') {
+    if (route === '/entitlements/v1') {
       // Entitlement rows carry their source and no `type`.
       return delay(DEMO_CATALOG.filter((c) => c.row['type'] === 'ENTITLEMENT')
         .map(({ row: { type: _t, requestStatus: _s, ...row }, source }) => ({ ...row, requestable: true, source: { name: source } })) as T);
     }
-    if (route.startsWith('/v2025/identities/')) {
+    if (route.startsWith('/identities/v1/')) {
       const id = route.split('/').pop();
       const doc = [...DEMO_IDENTITIES, ...DEMO_CROWD].find((d) => d.id === id);
       return doc ? delay({ id: doc.id, name: doc.name, alias: doc.name, emailAddress: doc.email,
         attributes: { displayName: doc.displayName, department: doc.attributes.department } } as T)
         : Promise.reject(Object.assign(new Error('Not found'), { status: 404 }));
     }
-    if (route === '/v2025/identities') {
+    if (route === '/identities/v1') {
       const wanted = new Set(filterValues(path));
       return delay([...DEMO_IDENTITIES, ...DEMO_CROWD]
         .filter((d) => wanted.has(d.id) || wanted.has(d.name.toLowerCase()) || wanted.has(d.email.toLowerCase()))
         .map((d) => ({ id: d.id, name: d.name, alias: d.name, emailAddress: d.email,
           attributes: { displayName: d.displayName, department: d.attributes.department } })) as T);
     }
-    if (route === '/v3/accounts') return delay([] as T);
+    if (route === '/accounts/v1') return delay([] as T);
     const blocks = /^\/beta\/interactive-processes\/([^/]+)\/blocks$/.exec(route);
     if (blocks) {
       // Like the real Launcher: the form shows up a moment after the launch.
@@ -195,7 +195,7 @@ export class DemoPluginService {
       return delay({ items: process.polls++ < 1 ? [] : [{ id: `b-${process.k}`, type: 'FORM', created: new Date().toISOString(),
         config: { formInstanceId: `f-${process.k}` }, data: { title: DEMO_CONFIG.launcherName } }] } as T);
     }
-    if (route.startsWith('/v2025/form-instances/')) {
+    if (route.startsWith('/form-instances/v1/')) {
       const id = decodeURIComponent(route.split('/').pop()!);
       const form = this.forms.get(id);
       if (!form) return Promise.reject(apiError(404, 'Not found'));
@@ -204,9 +204,9 @@ export class DemoPluginService {
       return delay({ id, state: form.state, formData: form.formData ?? null, formErrors: errors,
         createdBy: { type: 'WORKFLOW_EXECUTION', id: demoExecutionId(form.k) } } as T);
     }
-    if (route.startsWith('/v2025/workflow-executions/')) return delay({ id: route.split('/').pop(), status: 'Running' } as T);
+    if (route.startsWith('/workflow-executions/v1/')) return delay({ id: route.split('/').pop(), status: 'Running' } as T);
     const approvals = [...this.submitted, ...DEMO_APPROVALS];
-    if (route === '/v2025/generic-approvals' && params.get('mine') === 'true') {
+    if (route === '/generic-approvals/v1' && params.get('mine') === 'true') {
       // The Approvals tab: the user's pending item approvals, oldest first, a page at a time.
       const offset = Number(params.get('offset') ?? 0);
       const page = this.pending.filter((a) => a.status === 'PENDING')
@@ -214,12 +214,12 @@ export class DemoPluginService {
         .slice(offset, offset + Number(params.get('limit') ?? 250));
       return delay(page.map(DemoPluginService.listRow) as T, 250);
     }
-    if (route === '/v2025/generic-approvals' && (params.get('filters') ?? '').startsWith('approvalId in')) {
+    if (route === '/generic-approvals/v1' && (params.get('filters') ?? '').startsWith('approvalId in')) {
       const wanted = new Set(filterValues(path));
       return delay([...this.pending, ...approvals].filter((a) => wanted.has(a.id)).map(DemoPluginService.listRow) as T);
     }
     // Like the real API, the list leaves out approvers and deciders; the detail call has them.
-    if (route === '/v2025/generic-approvals') {
+    if (route === '/generic-approvals/v1') {
       // Like the real API: the requesterId query parameter must be the caller's own unless they're an admin
       // (verified live: 400), and it narrows the list to that requester.
       const requester = params.get('requesterId');
@@ -229,17 +229,17 @@ export class DemoPluginService {
       return delay(approvals.filter((a) => !requester || a.requester?.identityID === requester)
         .map(({ approvers: _a, approvedBy: _b, rejectedBy: _r, ...row }) => row) as T);
     }
-    if (route.startsWith('/v2025/generic-approvals/')) {
+    if (route.startsWith('/generic-approvals/v1/')) {
       const hit = [...this.pending, ...approvals].find((a) => a.id === route.split('/').pop());
       return hit ? delay(hit as T) : Promise.reject(Object.assign(new Error('Not found'), { status: 404 }));
     }
-    if (route === '/v3/access-request-status' && params.get('requested-for')) {
+    if (route === '/access-request-status/v1' && params.get('requested-for')) {
       // Open entitlement requests of one person (the existing-access check).
       const held = DEMO_HELD[params.get('requested-for')!] ?? {};
       return delay(DEMO_CATALOG.filter((c) => c.row['type'] === 'ENTITLEMENT' && held[String(c.row['id'])] === 'PENDING')
         .map((c) => ({ id: c.row['id'], name: c.row['name'], type: 'ENTITLEMENT', state: 'EXECUTING', requestType: 'GRANT_ACCESS' })) as T, 300);
     }
-    if (route === '/v3/access-request-status') {
+    if (route === '/access-request-status/v1') {
       const offset = Number(params.get('offset') ?? 0);
       return delay(DEMO_REQUESTS.slice(offset, offset + Number(params.get('limit') ?? 250)) as T);
     }
@@ -248,8 +248,8 @@ export class DemoPluginService {
 
   post<T>(path: string, data: unknown): Promise<T> {
     const body = data as Record<string, unknown>;
-    if (path.startsWith('/v3/search') && !this.user()?.capabilities.isOrgAdmin) return Promise.reject(apiError(403, 'Forbidden'));
-    if (path.startsWith('/v3/search')) {
+    if (path.startsWith('/search/v1') && !this.user()?.capabilities.isOrgAdmin) return Promise.reject(apiError(403, 'Forbidden'));
+    if (path.startsWith('/search/v1')) {
       const indices = (body['indices'] as string[]) ?? [];
       const q = String((body['query'] as { query: string }).query);
       if (indices.includes('identities') && q.startsWith('id:(')) {
@@ -270,9 +270,9 @@ export class DemoPluginService {
       }
       return delay(DEMO_CATALOG.filter((c) => c.source).map((c) => ({ id: c.row['id'], source: { name: c.source } })) as T);
     }
-    const single = /^\/v2025\/generic-approvals\/([^/]+)\/(approve|reject)$/.exec(path);
+    const single = /^\/generic-approvals\/v1\/([^/]+)\/(approve|reject)$/.exec(path);
     if (single) return this.decide(decodeURIComponent(single[1]), single[2] as 'approve' | 'reject', body?.['comment'] as string) as Promise<T>;
-    const bulk = /^\/v2025\/generic-approvals\/bulk-(approve|reject)$/.exec(path);
+    const bulk = /^\/generic-approvals\/v1\/bulk-(approve|reject)$/.exec(path);
     if (bulk) {
       // Verified live: 403 for anyone without ORG_ADMIN, even on their own approvals; 202 {} otherwise.
       if (!this.user()?.capabilities.isOrgAdmin) return Promise.reject(apiError(403, 'Forbidden'));
@@ -281,7 +281,7 @@ export class DemoPluginService {
       }
       return delay({} as T, 300);
     }
-    if (/^\/v2025\/launchers\/[^/]+\/launch$/.test(path)) {
+    if (/^\/launchers\/v1\/[^/]+\/launch$/.test(path)) {
       // A user without the Launcher Access profile can't start it.
       if (!this.launcherAccess) return Promise.reject(apiError(403, 'Forbidden'));
       const k = this.runs++;
@@ -290,7 +290,7 @@ export class DemoPluginService {
       this.forms.set(`f-${k}`, { k, state: 'ASSIGNED' });
       return delay({ interactiveProcessId: processId } as T, 400);
     }
-    if (/^\/v2025\/workflows\/[^/]+\/test$/.test(path)) {
+    if (/^\/workflows\/v1\/[^/]+\/test$/.test(path)) {
       const input = body['input'] as { inc: string; approverId: string; partLabel?: string; accessLabel?: string };
       const approver = DEMO_IDENTITIES.find((d) => d.id === input.approverId)?.displayName ?? 'the approver';
       const k = this.runs++;
@@ -300,9 +300,9 @@ export class DemoPluginService {
     return Promise.reject(new Error(`demo: no fixture for POST ${path}`));
   }
 
-  /** PATCH /v2025/form-instances/{id}: the Launcher form, submitted (the INC must pass the form's REGEX). */
+  /** PATCH /form-instances/v1/{id}: the Launcher form, submitted (the INC must pass the form's REGEX). */
   patch<T>(path: string, ops: unknown): Promise<T> {
-    const m = /^\/v2025\/form-instances\/([^/]+)$/.exec(path);
+    const m = /^\/form-instances\/v1\/([^/]+)$/.exec(path);
     const form = m && this.forms.get(decodeURIComponent(m[1]));
     if (!form) return Promise.reject(new Error(`demo: no fixture for PATCH ${path}`));
     for (const op of (ops as { path: string; value: unknown }[]) ?? []) {

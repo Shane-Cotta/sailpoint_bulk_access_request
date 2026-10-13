@@ -346,12 +346,12 @@ const CLOSING_CARD = card(`
       <li>ORG_ADMIN alternative: the workflow test endpoint</li>
       <li>Deployed with the <code>sail</code> CLI</li></ul></div>
     <div class="box"><h2>Unified Approvals API</h2><ul>
-      <li><code>/v2025/generic-approvals</code> (mine, comments)</li>
+      <li><code>/generic-approvals/v1</code> (mine, comments)</li>
       <li>Per-item <code>/{id}/approve</code> · <code>/reject</code> as the approver</li>
       <li>bulk-approve / bulk-reject for admins (≤ 50 IDs)</li></ul></div>
     <div class="box"><h2>Request status</h2><ul>
-      <li><code>/v3/access-request-status</code> for <em>My bulk requests</em></li>
-      <li><code>/v3/requestable-objects</code> + <code>/v2025/entitlements</code> catalog</li></ul></div>
+      <li><code>/access-request-status/v1</code> for <em>My bulk requests</em></li>
+      <li><code>/requestable-objects/v1</code> + <code>/entitlements/v1</code> catalog</li></ul></div>
     <div class="box"><h2>Install</h2><ul>
       <li><code>bulkaccess.py apply</code> from one config file</li>
       <li>New installs start in dry-run mode</li></ul></div>
@@ -474,7 +474,7 @@ const SESSIONS = [
 
     mark('06-my-requests');
     await caption(page, 6, 'My bulk requests: every request by INC, part by part',
-      'Approvals come from /v2025/generic-approvals; filed access requests from /v3/access-request-status.');
+      'Approvals come from /generic-approvals/v1; filed access requests from /access-request-status/v1.');
     await click(page, page.getByRole('button', { name: 'My bulk requests' }), 600);
     await settle(page, 1500);
     await click(page, groupHead(page, 'INC0048391'), 2500);
@@ -515,7 +515,7 @@ const SESSIONS = [
     await pause(page, 3000);
     await click(page, page.getByRole('dialog').getByRole('button', { name: 'Approve 39' }), 300);
     await scrollTop(page);
-    await caption(page, 7, 'One /v2025/generic-approvals/{id}/approve call per item, about 8 a second',
+    await caption(page, 7, 'One /generic-approvals/v1/{id}/approve call per item, about 8 a second',
       'Non-admins can’t use bulk-approve (403), so the page paces single calls, then re-reads each to confirm.');
     await runDone(page, 60000);
     await pause(page, 4500);

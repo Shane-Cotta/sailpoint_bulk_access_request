@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from bulkaccess import api  # noqa: E402
 from bulkaccess import config as config_mod  # noqa: E402
 from bulkaccess.tenant import Tenant, TenantError  # noqa: E402
 import install  # noqa: E402
@@ -33,13 +34,13 @@ def main(argv=None) -> int:
 
     targets = []
     launcher = install.find_launcher(t, cfg.launcher_name)
-    if launcher: targets.append(("Launcher", f"{install.LAUNCHERS}/{launcher['id']}", cfg.launcher_name))
+    if launcher: targets.append(("Launcher", f"{api.LAUNCHERS}/{launcher['id']}", cfg.launcher_name))
     access = install.find_access_profile(t, cfg.launcher_access_profile_name)
-    if access: targets.append(("Access profile", f"{install.ACCESS_PROFILES}/{access['id']}", access["name"]))
+    if access: targets.append(("Access profile", f"{api.ACCESS_PROFILES}/{access['id']}", access["name"]))
     wf = install.find_workflow(t, cfg.launcher_workflow_name)
-    if wf: targets.append(("Workflow", f"{install.WORKFLOWS}/{wf['id']}", cfg.launcher_workflow_name))
+    if wf: targets.append(("Workflow", f"{api.WORKFLOWS}/{wf['id']}", cfg.launcher_workflow_name))
     form = install.find_form(t, cfg.form_name)
-    if form: targets.append(("Form", f"{install.FORMS}/{form['id']}", cfg.form_name))
+    if form: targets.append(("Form", f"{api.FORM_DEFINITIONS}/{form['id']}", cfg.form_name))
 
     for kind, path, name in targets:
         assert name.startswith(cfg.prefix), f"refusing to delete {name!r}: it does not start with {cfg.prefix!r}"

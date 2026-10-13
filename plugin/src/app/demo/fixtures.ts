@@ -46,7 +46,7 @@ const people: [string, string, string][] = [
   ['Andrea Kim', 'andrea.kim2', 'Pharmacy'],
 ];
 
-/** Search documents (POST /v3/search, identities). */
+/** Search documents (POST /search/v1, identities). */
 export const DEMO_IDENTITIES = [
   { id: DEMO_ME.id, name: 'jordan.lee', displayName: DEMO_ME.name, email: DEMO_ME.email, attributes: { department: 'IT Identity Services' } },
   ...people.map(([name, user, dept], i) => ({
@@ -91,7 +91,7 @@ export function demoPerson(displayName: string, nth = 0) {
   return { id: doc.id, name: doc.displayName, email: doc.email, detail: doc.attributes.department };
 }
 
-/** Catalog rows (GET /v3/requestable-objects, or /v2025/entitlements for entitlements), plus each one's source. */
+/** Catalog rows (GET /requestable-objects/v1, or /entitlements/v1 for entitlements), plus each one's source. */
 export const DEMO_CATALOG: { row: Record<string, unknown>; source: string | null }[] = [
   ['ACME Bulk Test Access', 'ACCESS_PROFILE', 'ACME SaaS', 'Read-only group on the ACME SaaS demo source.'],
   ['PACS Radiologist Workstation', 'ACCESS_PROFILE', 'PACS', 'View and report on imaging studies.'],

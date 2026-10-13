@@ -77,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.dry_run:
         if body is not None:
-            print(f"\n== Workflow ({'PUT ' + lib.WORKFLOWS + '/' + existing['id'] if existing else 'POST ' + lib.WORKFLOWS}) ==")
+            print(f"\n== Workflow ({'PUT ' + lib.api.WORKFLOWS + '/' + existing['id'] if existing else 'POST ' + lib.api.WORKFLOWS}) ==")
             print(definitions.pretty(body))
         elif not launcher:
             print(f"note: {lib.launcher_missing(cfg)}")
@@ -98,13 +98,13 @@ def main(argv: list[str] | None = None) -> int:
         wf = None
     elif existing:
         if existing.get("enabled"):
-            tenant.call("PATCH", f"{lib.WORKFLOWS}/{existing['id']}",
+            tenant.call("PATCH", f"{lib.api.WORKFLOWS}/{existing['id']}",
                         [{"op": "replace", "path": "/enabled", "value": False}],
                         content_type="application/json-patch+json")
-        wf = tenant.call("PUT", f"{lib.WORKFLOWS}/{existing['id']}", body)
+        wf = tenant.call("PUT", f"{lib.api.WORKFLOWS}/{existing['id']}", body)
         print(f"Workflow updated: {wf['id']}  {cfg.plugin_workflow_name}  (disabled, mode {cfg.mode})")
     else:
-        wf = tenant.call("POST", lib.WORKFLOWS, body)
+        wf = tenant.call("POST", lib.api.WORKFLOWS, body)
         print(f"Workflow created: {wf['id']}  {cfg.plugin_workflow_name}  (disabled, mode {cfg.mode})")
 
     # 2. Runtime config + manifest, in the project that gets built

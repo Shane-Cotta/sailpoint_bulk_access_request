@@ -45,7 +45,7 @@ class FakeTenant:
         self.calls: list[tuple[str, str, object]] = []
 
     def me(self) -> dict:
-        self.calls.append(("GET", f"/v2025/identities/{ME['id']}", None))
+        self.calls.append(("GET", f"/identities/v1/{ME['id']}", None))
         return ME
 
     def plugin_instance_id(self, alias):
@@ -54,11 +54,11 @@ class FakeTenant:
 
     def call(self, method, path, body=None, **_):
         self.calls.append((method, path, body))
-        if method == "GET" and path.startswith("/v2025/identities/"):
+        if method == "GET" and path.startswith("/identities/v1/"):
             return ME
-        if method == "GET" and path.startswith("/v2025/workflows?"):
+        if method == "GET" and path.startswith("/workflows/v1?"):
             return self.workflows
-        if method == "GET" and path.startswith("/v2025/launchers?"):
+        if method == "GET" and path.startswith("/launchers/v1?"):
             return {"items": self.launchers}
         if method in ("POST", "PUT") and "/workflows" in path:
             return {**body, "id": "wf-new" if method == "POST" else path.rsplit("/", 1)[-1]}
@@ -107,7 +107,7 @@ def test_dry_run_prints_every_body_and_changes_nothing(tenant, capsys, tmp_path)
     assert tenant.writes == []                                   # only GETs
     assert not (tmp_path / "public").exists()                    # no files written
     parts = _sections(out)
-    wf = parts["Workflow (POST /v2025/workflows)"]
+    wf = parts["Workflow (POST /workflows/v1)"]
     assert wf["name"] == "ACME Bulk Access Request (Plugin)"
     assert wf["enabled"] is False and wf["trigger"]["type"] == "EXTERNAL"
     assert wf["owner"] == {"type": "IDENTITY", "id": ME["id"], "name": ME["name"]}
@@ -168,7 +168,7 @@ def test_install_in_launcher_mode_needs_the_launcher(tenant, tmp_path):
 def test_install_creates_then_updates_by_name(tenant, tmp_path, capsys):
     cfg_path = _config(tmp_path, submit="test-endpoint")
     assert install.main(["--config", cfg_path, "--workdir", str(tmp_path)]) == 0
-    assert [(m, p) for m, p, _ in tenant.writes] == [("POST", "/v2025/workflows")]
+    assert [(m, p) for m, p, _ in tenant.writes] == [("POST", "/workflows/v1")]
     written = json.loads((tmp_path / lib.RUNTIME_CONFIG).read_text())
     assert written["workflowId"] == "wf-new"
     assert json.loads((tmp_path / lib.MANIFEST).read_text())["manifest"]["slots"] == [{"slotId": "full-page"}]
@@ -177,7 +177,7 @@ def test_install_creates_then_updates_by_name(tenant, tmp_path, capsys):
     tenant.workflows = [{"id": "wf-1", "name": "ACME Bulk Access Request (Plugin)", "enabled": True}]
     assert install.main(["--config", cfg_path, "--workdir", str(tmp_path)]) == 0
     writes = [(m, p) for m, p, _ in tenant.writes]
-    assert writes == [("PATCH", "/v2025/workflows/wf-1"), ("PUT", "/v2025/workflows/wf-1")]   # disable, then update
+    assert writes == [("PATCH", "/workflows/v1/wf-1"), ("PUT", "/workflows/v1/wf-1")]   # disable, then update
     assert tenant.writes[-1][2]["enabled"] is False
     assert json.loads((tmp_path / lib.RUNTIME_CONFIG).read_text())["workflowId"] == "wf-1"
 
@@ -265,7 +265,7 @@ def test_uninstall_asks_before_deleting(tenant, monkeypatch, capsys):
     assert uninstall.main(["--config", str(EXAMPLE)]) == 1
     assert tenant.writes == []
     assert uninstall.main(["--config", str(EXAMPLE), "--yes"]) == 0
-    assert [(m, p) for m, p, _ in tenant.writes] == [("DELETE", "/v2025/workflows/wf-1")]
+    assert [(m, p) for m, p, _ in tenant.writes] == [("DELETE", "/workflows/v1/wf-1")]
 
 
 def test_deploy_keeps_the_plugin_private_on_every_update(tenant, tmp_path, monkeypatch):
