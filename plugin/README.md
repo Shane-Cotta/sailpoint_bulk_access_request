@@ -101,7 +101,7 @@ lifecycle, with the ISC screens around the plugin, is in [USAGE.md](../USAGE.md)
 
 | | |
 |---|---|
-| ![Approvals tab: one INC waiting](../docs/screenshots/isc-40-plugin-approvals.png) | ![Approvals tab: approved, confirmed](../docs/screenshots/isc-43-plugin-approvals-result.png) |
+| ![Approvals tab: two INCs waiting](../docs/screenshots/isc-40-plugin-approvals.png) | ![Approvals tab: approved, confirmed](../docs/screenshots/isc-43-plugin-approvals-result.png) |
 
 ### With demo data
 The whole page, including large requests and partial results, made with the plugin's demo mode:

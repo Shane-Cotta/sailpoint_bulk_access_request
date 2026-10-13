@@ -1,8 +1,9 @@
 # Using Bulk Access Request
 
-Guides for requesters, approvers and admins, following one bulk request from start to finish. The `isc-*` screenshots
-are real SailPoint screens from a test installation that used the prefix `UCSF` (yours show your own prefix); the
-`plugin-*` ones are the plugin with demo data. They live in [docs/screenshots/](docs/screenshots/). For the same
+Guides for requesters, approvers and admins, following one bulk request from start to finish. The `isc-*` and
+`launcher-*` screenshots are real SailPoint screens from a test installation that used the prefix `UCSF` (yours show your
+own prefix): one bulk request, INC0151100, for four people and two test items, followed from submit to approval. The
+`plugin-*` ones are the plugin with demo data, for what a small test tenant can't show (hundreds of people). They live in [docs/screenshots/](docs/screenshots/). For the same
 lifecycle with the APIs and ISC features behind each step, see
 [docs/sailpoint/END_TO_END_WALKTHROUGH.md](docs/sailpoint/END_TO_END_WALKTHROUGH.md).
 
@@ -45,26 +46,26 @@ Launcher instead; it then fills in and submits the Launcher's form for you.)
 1. **People.** Search, or paste a list of usernames, emails or identity IDs (one per line). There's no upper limit
    unless your admin set one.
 
-   ![Plugin, step 1: people found by search and by a pasted list](docs/screenshots/plugin-1-people.png)
+   ![Plugin, step 1: four people chosen, a search open](docs/screenshots/isc-10-plugin-people.png)
 2. **Access.** Pick one or more items from the Request Center catalog. *Everyone* gets *every* item chosen here.
    Items SailPoint grants without any approval say so: *"No approval: granted right away"*.
 
-   ![Plugin, step 2: two items chosen](docs/screenshots/plugin-2-items.png)
+   ![Plugin, step 2: two items chosen; one is granted without approval](docs/screenshots/isc-11-plugin-access.png)
 3. **INC and details.** The ServiceNow INC number, a justification (up to 1,000 characters), and how long the access
    should last: **Permanent**, **for a duration** (a whole number and hours, days, weeks or months) or **until a date**
    (the end of that day, your local time). Your admin may turn some of these off, or cap how long temporary access can
    last.
 
-   ![Plugin, step 3: INC and justification](docs/screenshots/plugin-3-inc-details.png)
+   ![Plugin, step 3: INC, justification and temporary access for 1 day](docs/screenshots/isc-12-plugin-inc-details.png)
 4. **Review and submit.** The review says how many access requests SailPoint will file and how long the access lasts,
    warns about people who already have an item, and warns about items that have no approval of their own (everyone gets
    those as soon as they're requested). **Request access** (in dry-run mode: **Check it (dry run)**).
 
-   ![Plugin, step 4: review, with the no-approval warning](docs/screenshots/plugin-4-review.png)
+   ![Plugin, step 4: review, with the no-approval and "already requested" warnings](docs/screenshots/isc-13-plugin-review.png)
 5. The page then says how many access requests it filed (and how many SailPoint skipped because the same request was
    already pending). Each one now goes through its item's own approval; follow them on **My bulk requests**.
 
-   ![Plugin: requested](docs/screenshots/plugin-5-submitted.png)
+   ![Plugin: 8 access requests filed](docs/screenshots/isc-14-plugin-requested.png)
 
 **Big lists.** SailPoint takes at most 10 people per access request, so the plugin sends a long list as several requests
 (a few at a time), all with the same INC, items, justification and access. If some can't be sent, the page lists them
@@ -80,7 +81,13 @@ as several Launcher runs instead, shown on the review step; an end date then rea
 time. Either way the remove date is set on every access request, so a slow item approval doesn't move it.
 
 ### From the Launchpad form
-**Launchpad → "<prefix> Bulk Access Request"** → **Launch**. A form opens:
+**Launchpad → "<prefix> Bulk Access Request"** → **Launch**, and **Launch** again to confirm.
+
+![Launch the Launcher](docs/screenshots/launcher-1-launch.png)
+
+A form opens:
+
+![The Launchpad form](docs/screenshots/launcher-2-form.png)
 
 | Field | What to enter |
 |---|---|
@@ -90,6 +97,14 @@ time. Either way the remove date is set on every access request, so a slow item 
 | **Duration** and **unit** | For temporary access: a whole number of 1 or more, and hours, days, weeks or months (your admin may offer fewer units). |
 | **ServiceNow incident (INC) number** | For example `INC0012345`. The form won't submit until the format is right. |
 | **Business justification** | Shown to the item approvers and stored on every request |
+
+The form checks the INC format when you submit:
+
+![The INC is checked on Submit](docs/screenshots/launcher-3-inc-validation.png)
+
+| Filled in, temporary for 1 day | Submitted |
+|---|---|
+| ![Form filled in](docs/screenshots/launcher-4-form-filled.png) | ![Requested](docs/screenshots/launcher-5-requested.png) |
 
 **Submit.** The Launchpad says the access was requested (in dry-run mode: checked), and you get a **Requested** email.
 If the duration isn't valid (not a whole number, or longer than your admin allows), the Launchpad says so and nothing is
@@ -108,7 +123,7 @@ item and only its end date changes. The comment carries the INC, the requester, 
 `INC0055504 | Bulk access request by … | Temporary: 1 day | …`. (Requests filed while bulk requests still had their own
 approver also carry `Approved by …` after the requester; the plugin reads both.)
 
-![ISC Approvals → Access Requests: one card per person](docs/screenshots/isc-30-approvals-item-cards.png)
+![ISC Approvals → Access Requests: one card per person. Requested by bulk.requester.test (the plugin) or hack.day (the workflow owner, for the Launchpad request)](docs/screenshots/isc-30-approvals-item-cards.png)
 
 ### In the plugin: the Approvals tab
 Open the **<prefix> Bulk Access Request** plugin and its **Approvals** tab to decide a whole bulk request at once. Any
@@ -117,7 +132,7 @@ approver can use it, admin or not (your admin must have made the plugin visible 
 1. Each card is one bulk request: the **INC**, how many approvals, people and items, the access (permanent or temporary)
    and who asked for it.
 
-   ![Plugin Approvals tab: one bulk request waiting](docs/screenshots/isc-40-plugin-approvals.png)
+   ![Plugin Approvals tab: two bulk requests waiting](docs/screenshots/isc-40-plugin-approvals.png)
 2. Open a card to check the list. Untick anyone you don't want to decide now; they stay pending. Write one comment
    (needed to deny), then **Approve N** or **Deny N**.
 
@@ -130,7 +145,7 @@ approver can use it, admin or not (your admin must have made the plugin visible 
    **Decided** (some by someone else, such as a colleague in the same approval group), **Partly done** or **Not done**.
    **Retry** sends the failed and still-pending ones again.
 
-   ![Approved: 2 approved by you](docs/screenshots/isc-43-plugin-approvals-result.png)
+   ![Approved: 4 approved by you](docs/screenshots/isc-43-plugin-approvals-result.png)
 
    With many approvals (demo data):
 
@@ -146,12 +161,17 @@ Every decision is recorded as **yours**, exactly as if you had used SailPoint's 
 **Use the plugin's My bulk requests tab.** It lists the access requests you filed from the plugin, grouped by INC
 (filter by INC at the top). Each INC shows how many people and items, how many are waiting, done or not granted, and
 the justification; open it to see every person × item with its status (**Waiting for <approver>**, **Provisioning**,
-**Done**, **Rejected**, …) and, for temporary access, **Temporary until …**. (Demo data.)
+**Done**, **Rejected**, …) and, for temporary access, **Temporary until …**. When SailPoint cancels one, it says why
+(for example *Already has a pending request for this item*).
 
-![My bulk requests](docs/screenshots/plugin-6-my-bulk-requests.png)
+| Waiting for the item's approver | After the approval |
+|---|---|
+| ![My bulk requests: waiting](docs/screenshots/isc-15-plugin-my-bulk-requests-waiting.png) | ![My bulk requests: done](docs/screenshots/isc-50-plugin-my-bulk-requests-approved.png) |
 
 Because the plugin files the requests as you, they're also in your **Request Center → My Requests**, one per person and
 item, with the INC in the comment.
+
+![Request Center, My Requests](docs/screenshots/isc-20-requester-my-requests.png)
 
 **Requests from the Launchpad are different.** The Launcher's workflow files them, so SailPoint lists them under the
 **workflow owner** (the account the tool was installed with), not under you: they're not in your Request Center or in

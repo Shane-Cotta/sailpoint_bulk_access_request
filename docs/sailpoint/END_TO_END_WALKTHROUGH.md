@@ -9,11 +9,12 @@ own are granted right away. The plugin files the access requests itself, as the 
 (`plugin.submit: "direct"`, the default).
 
 About the pictures:
-- The **ISC screens** (`isc-*`) come from the live recording of 2026-10-08 on a test tenant (prefix `UCSF`,
-  `bulk-access-real-e2e.mp4` on the GitHub release `demo-2026-10-09`). That run still had the bulk approver, so only
-  the screens it didn't affect are used here.
-- The **plugin screens** (`plugin-*`) come from the plugin's demo mode (made-up data, prefix `ACME`), regenerated for
-  the current design.
+- The **ISC screens** (`isc-*`, `launcher-*`) are from a live run on 2026-10-13 on a test tenant (prefix `UCSF`):
+  INC0151100, submitted from the plugin by `bulk.requester.test` for four people and two test items (one granted
+  without approval, one approved by its owner `bulk.approver.test`), and INC0152634 from the Launchpad.
+  (`isc-02` is from the first recording, 2026-10-08.)
+- The **plugin screens** (`plugin-*`) come from the plugin's demo mode (made-up data, prefix `ACME`), for what a test
+  tenant can't show (hundreds of people).
 
 Related: [API_INVENTORY.md](API_INVENTORY.md) (every call, with user levels and scopes) ·
 [REQUIREMENTS_CHECKLIST.md](REQUIREMENTS_CHECKLIST.md) (what to check in a tenant first) ·
@@ -77,9 +78,11 @@ there opens the native form (up to 30 people; see 3b). The plugin is the better 
 | INC & details | The INC (checked against the configured pattern), a justification (≤ 1000 characters), and optionally temporary access (*For a duration* or *Until a date*) | — (rules run in the page) |
 | Review | Checks "already has it" for access profiles and roles, and warns about items that will be granted without approval | `GET /requestable-objects/v1?identity-id=<person>&filters=id in (…)` |
 
-| INC & details | Review, with the no-approval warning |
+| People | Access |
 |---|---|
-| ![INC & details](../screenshots/plugin-3-inc-details.png) | ![Review](../screenshots/plugin-4-review.png) |
+| ![People](../screenshots/isc-10-plugin-people.png) | ![Access](../screenshots/isc-11-plugin-access.png) |
+| **INC & details** | **Review: the no-approval and "already requested" warnings** |
+| ![INC & details](../screenshots/isc-12-plugin-inc-details.png) | ![Review](../screenshots/isc-13-plugin-review.png) |
 
 **Request access** then:
 
@@ -90,7 +93,10 @@ there opens the native form (up to 30 people; see 3b). The plugin is the better 
    - for temporary access, a `removeDate` (now + the duration, or the end of the chosen day).
 3. Shows how many requests were filed, and how many SailPoint skipped because the same request was already open.
 
-![Requested](../screenshots/plugin-5-submitted.png)
+![Requested](../screenshots/isc-14-plugin-requested.png)
+
+Elliot.Reid already had a pending request for the no-approval item, so SailPoint listed his request in `newRequests` but
+cancelled it at once (*"Already has a pending request for this item"*); the review step had warned about it.
 
 A failed call is shown per part and can be retried on its own; a 401/403 stops the rest (the tenant may not let this
 user request access for others, or the session expired). In `mode: "dry-run"` nothing is sent.
@@ -116,6 +122,12 @@ own Launcher):
    `"1d"` etc., `""` = permanent), with the same comment as above;
 4. emails the requester *"Requested: bulk access INC…"* (dry run: *"Checked: … (DRY RUN: nothing was requested)"*).
 
+| Launch | The form |
+|---|---|
+| ![Launch](../screenshots/launcher-1-launch.png) | ![The Launchpad form](../screenshots/launcher-2-form.png) |
+| **INC checked on Submit** | **Requested** |
+| ![INC error](../screenshots/launcher-3-inc-validation.png) | ![Requested](../screenshots/launcher-5-requested.png) |
+
 In launcher mode the plugin drives the same Launcher as the signed-in user, once per part of up to 250 people:
 `POST /launchers/v1/{id}/launch` → `GET /beta/interactive-processes/{id}/blocks` until the `FORM` block appears (the
 same **beta** call ISC's Launchpad makes; see the risk in
@@ -138,7 +150,7 @@ straight away and never reach this step.
 **"Modify: <item>"** when the person already had the item and only the end date changes (the drawer then reads
 *Access Date Change*). The comment carries the INC, the requester, the access type and the justification.
 
-![Approvals → Access Requests (from the 2026-10-08 Launcher run: Requested by is the workflow owner)](../screenshots/isc-30-approvals-item-cards.png)
+![Approvals → Access Requests: Requested by bulk.requester.test for the plugin's requests, hack.day (the workflow owner) for the Launchpad one](../screenshots/isc-30-approvals-item-cards.png)
 
 **In the plugin's Approvals tab:** the approver's pending access-request approvals, grouped by the INC in their comment
 (`GET /generic-approvals/v1?mine=true&include-comments=true&filters=status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"`).
@@ -146,11 +158,11 @@ One comment and one confirmation decide the whole INC; each approval is sent as 
 (`POST /generic-approvals/v1/{id}/approve`, about 8 a second) and then re-read to confirm it. Approvals from before
 2026-10-13 (whose comment still has *"Approved by …"*) group the same way.
 
-| Grouped by INC | Opened: every person × item |
+| Grouped by INC | Opened: every person × item, one comment |
 |---|---|
-| ![Approvals tab](../screenshots/plugin-9-approvals-groups.png) | ![One INC opened](../screenshots/plugin-10-approvals-drilldown.png) |
-| **Confirm** | **Result** |
-| ![Confirm dialog](../screenshots/plugin-11-approvals-confirm.png) | ![Result](../screenshots/plugin-12-approvals-progress-result.png) |
+| ![Approvals tab](../screenshots/isc-40-plugin-approvals.png) | ![One INC opened](../screenshots/isc-41-plugin-approvals-open.png) |
+| **Confirm** | **Result: 4 approved by you** |
+| ![Confirm dialog](../screenshots/isc-42-plugin-approvals-confirm.png) | ![Result](../screenshots/isc-43-plugin-approvals-result.png) |
 
 The decisions are recorded exactly as if made in ISC's Approvals page, and appear under **Access Requests → Reviewed**.
 
@@ -163,7 +175,9 @@ The decisions are recorded exactly as if made in ISC's Approvals page, and appea
 | **Item approvers** | Approvals → Access Requests, or the plugin's Approvals tab | Their own approvals, then *Reviewed* |
 | **Workflow owner** (launcher mode) | Request Center *My Requests* | One request per person, with the INC in the comment |
 
-![My bulk requests](../screenshots/plugin-6-my-bulk-requests.png)
+| My bulk requests: waiting for the item's approver | After the approval | Request Center, My Requests |
+|---|---|---|
+| ![Waiting](../screenshots/isc-15-plugin-my-bulk-requests-waiting.png) | ![Approved](../screenshots/isc-50-plugin-my-bulk-requests-approved.png) | ![My Requests](../screenshots/isc-20-requester-my-requests.png) |
 
 **For audit, search the INC:** it's on every access request's comment (and, in launcher mode, in the workflow's
 execution history and its emails).

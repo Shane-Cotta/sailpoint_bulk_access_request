@@ -77,18 +77,18 @@ Before installing in a production tenant, check that the tenant offers everythin
 | [End-to-end walkthrough](docs/sailpoint/END_TO_END_WALKTHROUGH.md) | The full lifecycle on a real tenant, step by step: who acts, where in ISC, what they see, and which API or ISC feature is used; plus what each person's Request Center shows before and after approval |
 
 ## Screenshots
-Real SailPoint screens (`docs/screenshots/isc-*`) from a test installation that used the prefix `UCSF` (yours show your
-own prefix), and plugin screens made with demo data (`plugin-*`). [USAGE.md](USAGE.md) walks through them in order.
+Real SailPoint screens (`docs/screenshots/isc-*`, `launcher-*`) from a test installation that used the prefix `UCSF`
+(yours show your own prefix), and plugin screens made with demo data (`plugin-*`). [USAGE.md](USAGE.md) walks through them in order.
 
 | 1. Get the tool (Request Center) | 2. Submit from the plugin |
 |---|---|
-| ![Request Launcher Access in the Request Center](docs/screenshots/isc-01-request-launcher-access.png) | ![The plugin's review step](docs/screenshots/plugin-4-review.png) |
-| *Requesters ask for "Launcher Access" once; it then shows in the Launchpad too* | *People, access, INC, review: filed as the signed-in user (demo data)* |
+| ![Request Launcher Access in the Request Center](docs/screenshots/isc-01-request-launcher-access.png) | ![The plugin's review step](docs/screenshots/isc-13-plugin-review.png) |
+| *Requesters ask for "Launcher Access" once; it then shows in the Launchpad too* | *People, access, INC, review: filed as the signed-in user* |
 
 | 3. Item approvers (plugin Approvals tab) | 4. Track it (plugin My bulk requests) |
 |---|---|
-| ![The plugin's Approvals tab, one INC opened](docs/screenshots/isc-41-plugin-approvals-open.png) | ![My bulk requests](docs/screenshots/plugin-6-my-bulk-requests.png) |
-| *Item owners decide a whole INC at once (or one card per person in ISC)* | *Your access requests by INC, with who each one waits for (demo data)* |
+| ![The plugin's Approvals tab, one INC opened](docs/screenshots/isc-41-plugin-approvals-open.png) | ![My bulk requests](docs/screenshots/isc-15-plugin-my-bulk-requests-waiting.png) |
+| *Item owners decide a whole INC at once (or one card per person in ISC)* | *Your access requests by INC, with who each one waits for* |
 
 More plugin screens (made with sample data, including large requests sent in parts) are in [plugin/README.md](plugin/README.md).
 The demo videos below were recorded before the bulk approver was removed: they still show its step and approval.
