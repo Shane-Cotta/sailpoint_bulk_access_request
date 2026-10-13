@@ -6,7 +6,7 @@
       "en": "ACME Bulk Access Request"
     },
     "description": {
-      "en": "Request access for several people at once: one approver for the whole request, and a ServiceNow INC number on every item. Submitting needs the 'ACME Bulk Access Request - Launcher Access' access (it uses the 'ACME Bulk Access Request' Launcher as you)."
+      "en": "Request access for several people at once, with a ServiceNow INC number on every request; each item is approved the way it's set up in SailPoint. Submitting needs the 'ACME Bulk Access Request - Launcher Access' access."
     },
     "apiScopes": [
       "sp:scopes:all"

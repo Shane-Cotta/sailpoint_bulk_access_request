@@ -23,10 +23,11 @@ from bulkaccess import config  # noqa: E402
 
 ME = {"id": "me-123", "name": "admin.user"}
 LAUNCHER = {"id": "ln-1", "name": "ACME Bulk Access Request"}
+ACCESS = {"id": "la-1", "name": "ACME Bulk Access Request - Launcher Access"}
 
 
 def _config(tmp_path: Path, **plugin) -> str:
-    """The example config with `plugin` keys overridden (e.g. submit="test-endpoint"), as a file."""
+    """The example config with `plugin` keys overridden (e.g. submit="launcher"), as a file."""
     data = json.loads(EXAMPLE.read_text())
     path = tmp_path / "config.json"
     path.write_text(json.dumps({**data, "plugin": {**data["plugin"], **plugin}}))
@@ -34,35 +35,42 @@ def _config(tmp_path: Path, **plugin) -> str:
 
 
 class FakeTenant:
-    """Records every call; answers the few GETs the scripts make."""
+    """Records every call; answers the GETs the scripts make."""
 
     base_url = "https://acme.api.identitynow.com"
     tenant_name = "acme"
 
-    def __init__(self, workflows: list[dict] | None = None, launchers: list[dict] | None = None):
-        self.workflows = workflows or []
-        self.launchers = [LAUNCHER] if launchers is None else launchers
+    def __init__(self):
+        self.workflows: list[dict] = []
+        self.launchers = [LAUNCHER]
+        self.access_profiles = [ACCESS]
+        self.anyone_by_anyone = True
         self.calls: list[tuple[str, str, object]] = []
-
-    def me(self) -> dict:
-        self.calls.append(("GET", f"/identities/v1/{ME['id']}", None))
-        return ME
-
-    def plugin_instance_id(self, alias):
-        self.calls.append(("GET", f"/ui-plugins/v1/resolve-alias?alias={alias}", None))
-        return None
 
     def call(self, method, path, body=None, **_):
         self.calls.append((method, path, body))
-        if method == "GET" and path.startswith("/identities/v1/"):
-            return ME
-        if method == "GET" and path.startswith("/workflows/v1?"):
+        if method != "GET":
+            return None
+        if path.startswith("/workflows/v1?"):
             return self.workflows
-        if method == "GET" and path.startswith("/launchers/v1?"):
+        if path.startswith("/launchers/v1?"):
             return {"items": self.launchers}
-        if method in ("POST", "PUT") and "/workflows" in path:
-            return {**body, "id": "wf-new" if method == "POST" else path.rsplit("/", 1)[-1]}
-        return None
+        if path == "/access-request-config/v1":
+            return {"requestOnBehalfOfConfig": {"allowRequestOnBehalfOfAnyoneByAnyone": self.anyone_by_anyone},
+                    "entitlementRequestConfig": {"grantRequestApprovalSchemes": "sourceOwner"}}
+        if path.startswith("/requestable-objects/v1?"):
+            return [{"id": "ap-open", "type": "ACCESS_PROFILE", "name": "ACME Open"},
+                    {"id": "ap-owner", "type": "ACCESS_PROFILE", "name": "ACME Owned"}] if "offset=0" in path else []
+        if path.startswith("/entitlements/v1?"):
+            return [{"id": "ent-1", "name": "ACME Group"}] if "offset=0" in path else []
+        if path.startswith("/entitlements/v1/"):
+            return {"accessRequestConfig": {"approvalSchemes": []}}
+        if path.startswith("/access-profiles/v1?filters=id"):
+            return [{"id": "ap-open", "accessRequestConfig": {"approvalSchemes": []}},
+                    {"id": "ap-owner", "accessRequestConfig": {"approvalSchemes": [{"approverType": "OWNER"}]}}]
+        if path.startswith("/access-profiles/v1?filters=name"):
+            return self.access_profiles
+        return []
 
     @property
     def writes(self):
@@ -86,73 +94,43 @@ def _sections(out: str) -> dict[str, dict]:
     return parts
 
 
-def test_dry_run_in_launcher_mode_needs_no_workflow(tenant, capsys, tmp_path):
+def test_dry_run_in_direct_mode_writes_nothing_and_creates_nothing(tenant, capsys, tmp_path):
     assert install.main(["--config", str(EXAMPLE), "--dry-run", "--workdir", str(tmp_path)]) == 0
     out = capsys.readouterr().out
-    assert "Dry run: nothing was changed." in out
-    assert tenant.writes == []
-    parts = _sections(out)
-    assert not [h for h in parts if h.startswith("Workflow")]    # the plugin submits through the Launcher
-    runtime = parts[str(lib.RUNTIME_CONFIG)]
-    assert (runtime["submit"], runtime["launcherId"], runtime["workflowId"]) == ("launcher", "ln-1", None)
-    assert runtime["launcherAccessName"] == "ACME Bulk Access Request - Launcher Access"
-    assert "anyone with 'ACME Bulk Access Request - Launcher Access' can submit" in out
+    assert "Dry run: nothing was changed." in out and "the plugin files the access requests itself" in out
+    assert tenant.writes == [] and not (tmp_path / "public").exists()
+    runtime = _sections(out)[str(lib.RUNTIME_CONFIG)]
+    assert (runtime["submit"], runtime["launcherId"], runtime["launcherAccessId"]) == ("direct", None, "la-1")
+    assert runtime["noApproval"] == ["ap-open"]              # its own schemes are empty; the entitlement has a default
+    assert "only holders of 'ACME Bulk Access Request - Launcher Access' may submit" in out
+    assert not [h for h in _sections(out) if h.startswith("Workflow")]
 
 
-def test_dry_run_prints_every_body_and_changes_nothing(tenant, capsys, tmp_path):
-    cfg_path = _config(tmp_path, submit="test-endpoint")
-    assert install.main(["--config", cfg_path, "--dry-run", "--workdir", str(tmp_path)]) == 0
-    out = capsys.readouterr().out
-    assert "Dry run: nothing was changed." in out
-    assert tenant.writes == []                                   # only GETs
-    assert not (tmp_path / "public").exists()                    # no files written
-    parts = _sections(out)
-    wf = parts["Workflow (POST /workflows/v1)"]
-    assert wf["name"] == "ACME Bulk Access Request (Plugin)"
-    assert wf["enabled"] is False and wf["trigger"]["type"] == "EXTERNAL"
-    assert wf["owner"] == {"type": "IDENTITY", "id": ME["id"], "name": ME["name"]}
-    runtime = parts[str(lib.RUNTIME_CONFIG)]
-    assert runtime["workflowName"] == wf["name"] and runtime["workflowId"] is None
-    assert (runtime["submit"], runtime["launcherId"]) == ("test-endpoint", None)
-    assert parts[str(lib.MANIFEST)]["manifest"]["alias"] == "acme-bulk-access"
-    assert "Requires ORG_ADMIN" not in parts[str(lib.MANIFEST)]["manifest"]["description"]["en"]
-    assert "requires ORG_ADMIN" in parts[str(lib.MANIFEST)]["manifest"]["description"]["en"]
-
-
-def test_plugin_workflow_reads_the_trigger_input_the_page_sends():
-    cfg = config.load(EXAMPLE)
-    steps = lib.plugin_workflow(cfg, "o", None)["definition"]["steps"]
-    assert steps["Get Requester"]["attributes"]["id.$"] == "$.trigger.requesterId"
-    assert steps["Bulk Approval"]["attributes"]["singleApproverIdentityId.$"] == "$.trigger.approverId"
-    assert steps["Bulk Approval"]["attributes"]["name"] == "Bulk access {{$.trigger.inc}}{{$.trigger.partLabel}}"
-    assert "Request Access" not in steps                         # dry-run mode requests nothing
-    for step in steps.values():
-        if step.get("type") == "failure":                        # SailPoint validator needs these (e300)
-            assert step["failureName"] and step["description"]
-
-
-def test_live_mode_requests_per_person_with_the_inc_in_every_comment():
-    cfg = config.from_dict({**json.loads(EXAMPLE.read_text()), "mode": "live"})
-    loop = lib.plugin_workflow(cfg, "o", None)["definition"]["steps"]["Request Access"]["attributes"]
-    assert loop["input.$"] == "$.trigger.people"
-    # Inside a loop only $.loop.* resolves, so the loop carries the whole state as its context.
-    assert loop["context.$"] == "$"
-    manage = loop["steps"]["Manage Access"]["attributes"]
-    assert manage["requestedItems.$"] == "$.loop.context.trigger.items"
-    assert manage["comments"].startswith("{{$.loop.context.trigger.inc}} | Bulk access request by "
-                                         "{{$.loop.context.getRequester.attributes.displayName}}")
-    assert "{{$.trigger" not in manage["comments"]
-
-
-def test_install_in_launcher_mode_looks_the_launcher_up_and_creates_no_workflow(tenant, tmp_path, capsys):
+def test_direct_mode_falls_back_to_the_launcher_when_users_cant_request_for_others(tenant, capsys, tmp_path):
+    tenant.anyone_by_anyone = False
     assert install.main(["--config", str(EXAMPLE), "--workdir", str(tmp_path)]) == 0
+    assert "doesn't let users request access for others" in capsys.readouterr().out
+    written = json.loads((tmp_path / lib.RUNTIME_CONFIG).read_text())
+    assert (written["submit"], written["launcherId"]) == ("launcher", "ln-1")
+    # Without the Launcher there is nothing to fall back on.
+    data = json.loads(EXAMPLE.read_text())
+    plugin_only = tmp_path / "plugin-only.json"
+    plugin_only.write_text(json.dumps({**data, "deployments": {"launcher": False, "plugin": True}}))
+    with pytest.raises(lib.TenantError, match="doesn't let users request access for others"):
+        install.main(["--config", str(plugin_only), "--workdir", str(tmp_path)])
+
+
+def test_install_in_launcher_mode_looks_the_launcher_up(tenant, tmp_path, capsys):
+    cfg_path = _config(tmp_path, submit="launcher")
+    assert install.main(["--config", cfg_path, "--workdir", str(tmp_path)]) == 0
     assert tenant.writes == []                                   # nothing created in the tenant
     written = json.loads((tmp_path / lib.RUNTIME_CONFIG).read_text())
-    assert (written["submit"], written["launcherId"], written["workflowId"]) == ("launcher", "ln-1", None)
+    assert (written["submit"], written["launcherId"], written["launcherAccessId"]) == ("launcher", "ln-1", "la-1")
     assert "Launcher Access" in json.loads((tmp_path / lib.MANIFEST).read_text())["manifest"]["description"]["en"]
-    # An old plugin workflow is left alone (uninstall removes it), with a note.
+
+
+def test_an_old_plugin_workflow_is_left_alone_with_a_note(tenant, tmp_path, capsys):
     tenant.workflows = [{"id": "wf-1", "name": "ACME Bulk Access Request (Plugin)", "enabled": False}]
-    capsys.readouterr()
     assert install.main(["--config", str(EXAMPLE), "--workdir", str(tmp_path)]) == 0
     assert tenant.writes == []
     assert "is no longer used" in capsys.readouterr().out
@@ -161,31 +139,21 @@ def test_install_in_launcher_mode_looks_the_launcher_up_and_creates_no_workflow(
 def test_install_in_launcher_mode_needs_the_launcher(tenant, tmp_path):
     tenant.launchers = []
     with pytest.raises(lib.TenantError, match="Install the Launcher deployment first"):
-        install.main(["--config", str(EXAMPLE), "--workdir", str(tmp_path)])
+        install.main(["--config", _config(tmp_path, submit="launcher"), "--workdir", str(tmp_path)])
     assert not (tmp_path / "public").exists()
 
 
-def test_install_creates_then_updates_by_name(tenant, tmp_path, capsys):
-    cfg_path = _config(tmp_path, submit="test-endpoint")
-    assert install.main(["--config", cfg_path, "--workdir", str(tmp_path)]) == 0
-    assert [(m, p) for m, p, _ in tenant.writes] == [("POST", "/workflows/v1")]
-    written = json.loads((tmp_path / lib.RUNTIME_CONFIG).read_text())
-    assert written["workflowId"] == "wf-new"
-    assert json.loads((tmp_path / lib.MANIFEST).read_text())["manifest"]["slots"] == [{"slotId": "full-page"}]
-
-    tenant.calls.clear()
-    tenant.workflows = [{"id": "wf-1", "name": "ACME Bulk Access Request (Plugin)", "enabled": True}]
-    assert install.main(["--config", cfg_path, "--workdir", str(tmp_path)]) == 0
-    writes = [(m, p) for m, p, _ in tenant.writes]
-    assert writes == [("PATCH", "/workflows/v1/wf-1"), ("PUT", "/workflows/v1/wf-1")]   # disable, then update
-    assert tenant.writes[-1][2]["enabled"] is False
-    assert json.loads((tmp_path / lib.RUNTIME_CONFIG).read_text())["workflowId"] == "wf-1"
+def test_without_the_launcher_access_profile_anyone_who_sees_the_plugin_may_submit(tenant, tmp_path, capsys):
+    tenant.access_profiles = []
+    assert install.main(["--config", str(EXAMPLE), "--workdir", str(tmp_path)]) == 0
+    assert "anyone who can open the plugin may submit" in capsys.readouterr().out
+    assert json.loads((tmp_path / lib.RUNTIME_CONFIG).read_text())["launcherAccessId"] is None
 
 
 def test_committed_runtime_config_is_the_neutral_example():
     committed = json.loads((PLUGIN / lib.RUNTIME_CONFIG).read_text())
     assert committed == lib.runtime_config(config.load(EXAMPLE))   # regenerate it if the example changes
-    assert committed["workflowId"] is None and committed["launcherId"] is None
+    assert committed["launcherId"] is None and committed["launcherAccessId"] is None and committed["noApproval"] == []
 
 
 def test_runtime_config_carries_the_limits_and_temporary_access_settings():
@@ -206,14 +174,13 @@ def test_runtime_config_carries_the_limits_and_temporary_access_settings():
 def test_runtime_config_temporary_access_follows_the_submit_route():
     data = json.loads(EXAMPLE.read_text())
     end_date_only = {"enabled": True, "allow": ["endDate"], "units": ["DAYS"], "maxDays": None}
+    # Direct requests carry an exact removal date: every configured mode works.
+    cfg = config.from_dict({**data, "temporaryAccess": end_date_only})
+    assert lib.runtime_config(cfg)["temporary"] == end_date_only
     # Through the Launcher, temporary access travels in the form's duration fields: with no durations
     # offered there are none, so the plugin offers permanent access only.
-    cfg = config.from_dict({**data, "temporaryAccess": end_date_only})
+    cfg = config.from_dict({**data, "temporaryAccess": end_date_only, "plugin": {**data["plugin"], "submit": "launcher"}})
     assert lib.runtime_config(cfg)["temporary"]["enabled"] is False
-    cfg = config.from_dict({**data, "temporaryAccess": end_date_only, "plugin": {**data["plugin"], "submit": "test-endpoint"}})
-    assert lib.runtime_config(cfg)["temporary"] == {**end_date_only, "allow": ["endDate"]}
-    cfg = config.from_dict({**data, "temporaryAccess": {**end_date_only, "allow": ["duration", "endDate"]}})
-    assert lib.runtime_config(cfg)["temporary"]["allow"] == ["duration", "endDate"]
 
 
 def test_runtime_config_carries_the_approvals_settings():
@@ -237,10 +204,11 @@ def test_committed_manifest_matches_the_example_config():
 
 def test_another_tenant_gets_its_own_names_everywhere():
     cfg = config.from_dict({**json.loads(EXAMPLE.read_text()), "prefix": "ACME",
-                            "plugin": {"alias": "acme-bulk", "displayName": "ACME Bulk Access"}})
-    assert lib.runtime_config(cfg)["workflowName"] == "ACME Bulk Access Request (Plugin)"
-    assert lib.runtime_config(cfg, None, "ln-9")["launcherId"] == "ln-9"
-    assert lib.runtime_config(cfg, "wf-9", "ln-9")["workflowId"] is None     # launcher mode: no workflow
+                            "plugin": {"alias": "acme-bulk", "displayName": "ACME Bulk Access", "submit": "launcher"}})
+    assert lib.runtime_config(cfg, "ln-9")["launcherId"] == "ln-9"
+    assert lib.runtime_config(cfg)["launcherAccessName"] == "ACME Bulk Access Request - Launcher Access"
+    direct = config.from_dict({**json.loads(EXAMPLE.read_text()), "plugin": {"submit": "direct"}})
+    assert lib.runtime_config(direct, "ln-9")["launcherId"] is None          # direct mode: no Launcher needed
     assert lib.manifest(cfg)["manifest"]["alias"] == "acme-bulk"
     assert lib.manifest(cfg)["manifest"]["name"] == {"en": "ACME Bulk Access"}
 
@@ -260,7 +228,7 @@ def test_uninstall_only_touches_our_objects():
 
 
 def test_uninstall_asks_before_deleting(tenant, monkeypatch, capsys):
-    tenant.workflows = [{"id": "wf-1", "name": "ACME Bulk Access Request (Plugin)"}]
+    tenant.workflows = [{"id": "wf-1", "name": "ACME Bulk Access Request (Plugin)"}]   # left by an older version
     monkeypatch.setattr("builtins.input", lambda _: "no")
     assert uninstall.main(["--config", str(EXAMPLE)]) == 1
     assert tenant.writes == []

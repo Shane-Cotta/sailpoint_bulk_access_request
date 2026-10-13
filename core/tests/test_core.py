@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from bulkaccess import config, definitions, rules
+from bulkaccess import catalog, config, definitions, rules
 
 EXAMPLE = Path(__file__).resolve().parents[2] / "config" / "bulk-access.example.json"
 
@@ -29,7 +29,8 @@ def test_example_config_loads_in_dry_run():
     cfg = config.load(EXAMPLE)
     assert cfg.prefix == "ACME" and cfg.mode == "dry-run" and not cfg.live
     assert cfg.form_name == "ACME Bulk Access Request Form"
-    assert cfg.plugin_workflow_name == "ACME Bulk Access Request (Plugin)"
+    assert cfg.old_plugin_workflow_name == "ACME Bulk Access Request (Plugin)"
+    assert cfg.deprecations == ()
 
 
 @pytest.mark.parametrize("key,value,fragment", [
@@ -39,13 +40,24 @@ def test_example_config_loads_in_dry_run():
     ("inc__example", "CHG123", "does not match"),
     ("catalog__types", ["GROUP"], "catalog.types"),
     ("catalog__maxItems", 26, "maxItems"),
-    ("approval__timeoutDays", 0, "timeoutDays"),
     ("notifications__overrideRecipients", ["not-an-email"], "email"),
     ("plugin__alias", "Has Spaces", "alias"),
 ])
 def test_bad_config_is_rejected_with_a_useful_message(key, value, fragment):
     with pytest.raises(config.ConfigError, match=fragment):
         cfg_with(**{key: value})
+
+
+def test_bulk_approval_settings_still_load_but_are_ignored_with_a_note():
+    # Configs written while bulk requests had one approver keep working (and say what to remove).
+    data = json.loads(EXAMPLE.read_text())
+    data["approval"] = {"timeoutDays": 0, "actionAtTimeout": "nonsense", "priority": "HIGH"}
+    data["notifications"].update(ccApprover=True, pendingEmail="yes")
+    cfg = config.from_dict(data)
+    assert [d.split("`")[1] for d in cfg.deprecations] == ["approval", "notifications.ccApprover",
+                                                            "notifications.pendingEmail"]
+    assert all(config.REMOVED_BULK_APPROVAL in d for d in cfg.deprecations)
+    assert cfg == config.load(EXAMPLE)          # nothing about them is kept
 
 
 def test_missing_config_file_explains_what_to_do(tmp_path):
@@ -65,41 +77,38 @@ def test_inc_validation_uses_the_configured_pattern():
 
 def test_validate_request_lists_every_problem():
     cfg = config.load(EXAMPLE)
-    problems = rules.validate_request(cfg, requester_id="me", approver_id="me", people=[], items=[], inc="nope")
-    assert "Choose at least one person." in problems
-    assert "Choose at least one access item." in problems
-    assert "The approver must be someone other than you." in problems
-    assert cfg.inc_message in problems
-    ok = rules.validate_request(cfg, requester_id="me", approver_id="boss", people=["p1"],
-                                items=[{"id": "a", "type": "ACCESS_PROFILE"}], inc="INC0012345")
+    problems = rules.validate_request(cfg, people=[], items=[], inc="nope", justification="  ")
+    assert problems == ["Choose at least one person.", "Choose at least one access item.", cfg.inc_message,
+                        rules.MSG_JUSTIFICATION]
+    ok = rules.validate_request(cfg, people=["p1"], items=[{"id": "a", "type": "ACCESS_PROFILE"}], inc="INC0012345",
+                                justification="Quarter-end audit")
     assert ok == []
+    # There is no approver any more: requesting access for yourself is allowed; SailPoint's own approvals decide.
+    assert rules.validate_request(cfg, people=["me"], items=[{"id": "a", "type": "ROLE"}], inc="INC0012345",
+                                  justification="x") == []
 
 
-def test_the_approver_cannot_be_one_of_the_people():
+def test_justification_is_capped_for_readability():
     cfg = config.load(EXAMPLE)
-    problems = rules.validate_request(cfg, requester_id="me", approver_id="boss", people=["p1", "boss"],
-                                      items=[{"id": "a", "type": "ACCESS_PROFILE"}], inc="INC0012345")
-    assert problems == ["The approver can't be one of the people getting the access."] == [rules.MSG_APPROVER_IN_PEOPLE]
+    item = [{"id": "a", "type": "ROLE"}]
+    assert rules.validate_request(cfg, people=["p"], items=item, inc="INC0012345",
+                                  justification="x" * rules.JUSTIFICATION_MAX) == []
+    assert rules.validate_request(cfg, people=["p"], items=item, inc="INC0012345",
+                                  justification="x" * (rules.JUSTIFICATION_MAX + 1)) == [rules.MSG_JUSTIFICATION_LONG]
+    assert rules.MSG_JUSTIFICATION_LONG == "Keep the justification to 1000 characters or fewer."
 
 
-def test_both_workflows_stop_when_the_approver_is_one_of_the_people():
-    for variant, kw in (("launcher", {"form_id": "f"}), ("plugin", {})):
-        steps = _steps(definitions.bulk_workflow(config.load(EXAMPLE), variant=variant, owner_id="o", **kw))
-        assert steps["Approver Is Requester?"]["defaultStep"] == "Approver In People?"
-        check = steps["Approver In People?"]
-        people = "$.trigger.people" if variant == "plugin" else "$.interactiveForm.formData.people"
-        # A JSONPath filter against the looked-up approver id (StringContains can't search a list;
-        # the Launcher form's one-item approver list never matches inside a filter; verified live).
-        assert [(c["variableA.$"], c["variableB.$"]) for c in check["choiceList"]] == \
-            [(f"{people}[?(@ == $.getApprover.id)]", "$.getApprover.id")]
-        assert all(c["comparator"] == "StringEquals" and c["nextStep"] == "Reject Approver In People"
-                   for c in check["choiceList"])
-        assert check["defaultStep"] == "INC Valid?"
-        # The Launcher shows the problem in the Launchpad, then emails it; the plugin workflow emails it.
-        stop = "Email Reject Approver In People" if variant == "launcher" else "Reject Approver In People"
-        assert steps["Reject Approver In People"]["nextStep"] == ("End Step - Rejected" if stop == "Reject Approver In People"
-                                                                 else stop)
-        assert steps[stop]["actionId"] == "sp:send-email" and steps[stop]["nextStep"] == "End Step - Rejected"
+def test_the_workflow_has_no_approval_of_its_own():
+    # Each item is approved the way SailPoint has it set up; nothing asks one person to approve the whole request.
+    for cfg in (config.load(EXAMPLE), cfg_with(mode="live")):
+        wf = definitions.bulk_workflow(cfg, owner_id="o", form_id="f")
+        text = json.dumps(wf)
+        for gone in ("sp:generic-approval", "getApprover", "approverId", "Approver In People", "Bulk Approval",
+                     "Approvals → Other"):
+            assert gone not in text, gone
+        assert _steps(wf)["Get Requester"]["nextStep"] == "INC Valid?"
+    els = _form_elements(definitions.bulk_form(config.load(EXAMPLE), "o", []))
+    assert "approver" not in els
 
 
 def test_catalog_options_carry_full_access_objects_and_respect_filters():
@@ -113,6 +122,27 @@ def test_catalog_options_carry_full_access_objects_and_respect_filters():
                      "value": {"id": "1", "type": "ACCESS_PROFILE", "name": "ACME Bulk Test Access"}}]
 
 
+def test_catalog_options_say_which_items_are_granted_without_approval():
+    cfg = config.load(EXAMPLE)
+    opts = rules.catalog_options(cfg, [{"id": "1", "type": "ACCESS_PROFILE", "name": "A", "source": {"name": "AD"}},
+                                       {"id": "2", "type": "ROLE", "name": "B"}], no_approval={"2"})
+    assert [o["subLabel"] for o in opts] == ["Access profile · AD", "Role · No approval: granted right away"]
+    assert rules.NO_APPROVAL_LABEL == "No approval: granted right away"
+
+
+def test_no_approval_ids_follow_sailpoints_rules():
+    # Verified live: an access profile or role with no approval scheme is granted at once; an entitlement with none
+    # of its own falls back to the tenant default (entitlementRequestConfig.grantRequestApprovalSchemes).
+    objects = [{"id": "ap", "type": "ACCESS_PROFILE", "approvalSchemes": []},
+               {"id": "ap2", "type": "ACCESS_PROFILE", "approvalSchemes": [{"approverType": "OWNER"}]},
+               {"id": "r", "type": "ROLE", "approvalSchemes": []},
+               {"id": "e", "type": "ENTITLEMENT", "approvalSchemes": []},
+               {"id": "e2", "type": "ENTITLEMENT", "approvalSchemes": [{"approverType": "MANAGER"}]}]
+    assert rules.no_approval_ids(objects, "sourceOwner") == {"ap", "r"}
+    for empty in (None, "", "none", "NONE"):
+        assert rules.no_approval_ids(objects, empty) == {"ap", "r", "e"}
+
+
 def test_entitlements_come_from_the_entitlements_api_not_requestable_objects():
     # /requestable-objects can't list entitlements (CONTRACTS §8).
     assert rules.requestable_object_types(cfg_with(catalog__types=["ENTITLEMENT", "ROLE", "ACCESS_PROFILE"])) == ["ROLE", "ACCESS_PROFILE"]
@@ -123,10 +153,7 @@ def test_entitlements_come_from_the_entitlements_api_not_requestable_objects():
             == 'requestable eq true and name sw "AC\\"ME\\\\"')
 
 
-def test_launcher_catalog_merges_requestable_entitlements():
-    spec = importlib.util.spec_from_file_location("launcher_install_catalog", ROOT / "launcher" / "install.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+def test_catalog_merges_requestable_entitlements():
     calls = []
 
     class FakeTenant:
@@ -137,15 +164,42 @@ def test_launcher_catalog_merges_requestable_entitlements():
             return [{"id": "e1", "name": "ACME Group", "source": {"name": "AD"}, "requestable": True}]
 
     cfg = cfg_with(catalog__types=["ACCESS_PROFILE", "ENTITLEMENT"], catalog__nameStartsWith="ACME")
-    opts = rules.catalog_options(cfg, mod.requestable_objects(FakeTenant(), cfg))
+    opts = rules.catalog_options(cfg, catalog.requestable_objects(FakeTenant(), cfg))
     assert [o["value"] for o in opts] == [{"id": "ap", "type": "ACCESS_PROFILE", "name": "ACME AP"},
                                          {"id": "e1", "type": "ENTITLEMENT", "name": "ACME Group"}]
     assert opts[1]["subLabel"] == "Entitlement · AD"
     assert calls[0] == "/requestable-objects/v1?types=ACCESS_PROFILE&limit=250&offset=0"
     assert calls[1].startswith("/entitlements/v1?filters=requestable%20eq%20true%20and%20name%20sw%20%22ACME%22")
     calls.clear()
-    mod.requestable_objects(FakeTenant(), cfg_with(catalog__types=["ENTITLEMENT"]))
+    catalog.requestable_objects(FakeTenant(), cfg_with(catalog__types=["ENTITLEMENT"]))
     assert [c.split("?")[0] for c in calls] == ["/entitlements/v1"]   # no type-less requestable-objects call
+
+
+def test_catalog_reads_each_items_approval_setup():
+    calls = []
+    schemes = {"ap1": [], "ap2": [{"approverType": "OWNER"}], "r1": []}
+
+    class FakeTenant:
+        def call(self, method, path, *a, **k):
+            calls.append(path)
+            if path.startswith(("/access-profiles/v1?", "/roles/v1?")):
+                ids = re.findall(r"%22(\w+)%22", path)
+                return [{"id": i, "accessRequestConfig": {"approvalSchemes": schemes[i]}} for i in ids]
+            if path.endswith("/entitlement-request-config"):
+                return {"accessRequestConfig": {"approvalSchemes": []}}
+            if path == "/access-request-config/v1":
+                return {"entitlementRequestConfig": {"grantRequestApprovalSchemes": "sourceOwner"}}
+            raise AssertionError(path)
+
+    objects = [{"id": "ap1", "type": "ACCESS_PROFILE"}, {"id": "ap2", "type": "ACCESS_PROFILE"},
+               {"id": "r1", "type": "ROLE"}, {"id": "e1", "type": "ENTITLEMENT"}]
+    assert catalog.no_approval_ids(FakeTenant(), objects) == {"ap1", "r1"}
+    assert [c.split("?")[0] for c in calls] == ["/access-profiles/v1", "/roles/v1",
+                                                "/entitlements/v1/e1/entitlement-request-config",
+                                                "/access-request-config/v1"]
+    calls.clear()
+    assert catalog.no_approval_ids(FakeTenant(), objects[:1]) == {"ap1"}
+    assert "/access-request-config/v1" not in calls        # no entitlements: no need for the tenant default
 
 
 # ── definitions ───────────────────────────────────────────────────────────────
@@ -156,11 +210,11 @@ def _form_elements(form):
 def test_form_enforces_inc_regex_and_required_fields():
     cfg = config.load(EXAMPLE)
     els = _form_elements(definitions.bulk_form(cfg, "owner", []))
-    assert {"people", "items", "approver", "inc", "justification"} <= set(els)
+    assert {"people", "items", "inc", "justification"} <= set(els)
     regex = next(v for v in els["inc"]["validations"] if v["validationType"] == "REGEX")
     assert regex["config"] == {"regex": cfg.inc_pattern, "message": cfg.inc_message}   # shape SailPoint accepts
-    assert els["approver"]["config"]["maximum"] == 1
     assert els["items"]["config"]["dataSource"]["dataSourceType"] == "STATIC"
+    assert "approved the way it's set up in SailPoint" in els["items"]["config"]["helpText"]
 
 
 def test_show_config_recommends_a_service_identity_when_owner_is_null(tmp_path, capsys):
@@ -171,27 +225,20 @@ def test_show_config_recommends_a_service_identity_when_owner_is_null(tmp_path, 
     assert "Owner:       2c9180835d2e5168015d32f890ca1581" in out and config.OWNER_NOTE not in out
 
 
-def test_approved_email_says_item_approvals_still_apply_and_points_to_the_approvals_tab():
-    for variant in ("launcher", "plugin"):
-        _, body = _render_email(cfg_with(mode="live"), "Email Approved", variant, decision="APPROVED")
-        assert "still need it for each person" in body
-        assert f"{UI}/ui/d/approvals/access-request/requested-items" in body
-        assert f'all at once on the Approvals tab of <a href="{UI}/ui/plugin/pid-1"' in body
+def test_requested_email_says_each_item_is_approved_as_set_up_and_points_to_the_approvals_tab():
+    _, body = _render_email(cfg_with(mode="live"), "Email Requested")
+    assert "Each item is now approved the way it's set up in SailPoint" in body
+    assert "items without an approval of their own are granted right away" in body
+    assert f"{UI}/ui/d/approvals/access-request/requested-items" in body
+    assert f'all at once on the Approvals tab of <a href="{UI}/ui/plugin/pid-1"' in body
     # No Approvals tab: the sentence stays, the pointer goes.
     for overrides in ({"approvals__enabled": False}, {"deployments__plugin": False}):
-        _, body = _render_email(cfg_with(mode="live", **overrides), "Email Approved", "launcher", decision="APPROVED")
-        assert "still need it for each person" in body and "Approvals tab" not in body
+        _, body = _render_email(cfg_with(mode="live", **overrides), "Email Requested")
+        assert "Item approvers decide in SailPoint" in body and "Approvals tab" not in body
     # Dry run requests nothing, so there is nothing for item approvers to decide.
-    _, body = _render_email(cfg_with(), "Email Approved", "launcher", decision="APPROVED")
-    assert "still need it" not in body and "Nothing was requested, because this installation is in dry-run mode" in body
-    _, body = _render_email(cfg_with(mode="live"), "Email Denied", "plugin", decision="REJECTED")
-    assert "still need it" not in body
-
-
-def test_bulk_approval_description_stays_short_enough():
-    # The item-approval hint is left out of the description: it must leave room for the templated name and label.
-    desc = _steps(definitions.bulk_workflow(cfg_with(mode="live"), variant="plugin", owner_id="o"))["Bulk Approval"]["attributes"]["description"]
-    assert "Approvals tab" not in desc
+    subject, body = _render_email(cfg_with(), "Email Requested")
+    assert "Item approvers" not in body and "Nothing was requested, because this installation is in dry-run mode" in body
+    assert subject == "Checked: bulk access INC0012345 (DRY RUN: nothing was requested)"
 
 
 def _steps(wf):
@@ -199,11 +246,14 @@ def _steps(wf):
 
 
 def test_dry_run_never_requests_access_and_live_does():
-    dry = definitions.bulk_workflow(config.load(EXAMPLE), variant="launcher", owner_id="o", form_id="f")
+    dry = definitions.bulk_workflow(config.load(EXAMPLE), owner_id="o", form_id="f")
     assert "Request Access" not in _steps(dry)
-    assert "DRY RUN" in json.dumps(_steps(dry)["Email Approved"])
-    live = definitions.bulk_workflow(cfg_with(mode="live"), variant="launcher", owner_id="o", form_id="f")
+    assert _steps(dry)["Notify Requested"]["nextStep"] == "Email Requested"
+    assert "DRY RUN" in json.dumps(_steps(dry)["Email Requested"])
+    live = definitions.bulk_workflow(cfg_with(mode="live"), owner_id="o", form_id="f")
+    assert _steps(live)["Notify Requested"]["nextStep"] == "Request Access"
     loop = _steps(live)["Request Access"]["attributes"]
+    assert _steps(live)["Request Access"]["nextStep"] == "Email Requested"
     assert loop["input.$"] == "$.interactiveForm.formData.people"      # one iteration per person
     assert loop["context.$"] == "$"                                    # steps in a loop only see $.loop.*
     manage = loop["steps"]["Manage Access"]["attributes"]
@@ -212,39 +262,34 @@ def test_dry_run_never_requests_access_and_live_does():
     assert "{{$.loop.context.interactiveForm.formData.inc}}" in manage["comments"]
 
 
-def test_approval_goes_to_the_chosen_approver_and_branches_on_status():
-    for variant, approver_path in (("launcher", "$.interactiveForm.formData.approver"), ("plugin", "$.trigger.approverId")):
-        wf = definitions.bulk_workflow(cfg_with(mode="live"), variant=variant, owner_id="o", form_id="f")
-        approval = _steps(wf)["Bulk Approval"]["attributes"]
-        assert approval["approvalType"] == "SINGLE" and approval["singleApproverCategory"] == "IDENTITY"
-        assert approval["singleApproverIdentityId.$"] == approver_path
-        choice = _steps(wf)["Approved?"]["choiceList"][0]
-        assert choice["variableA.$"] == "$.bulkApproval.status" and choice["nextStep"] == "Request Access"
-        assert _steps(wf)["Approved?"]["defaultStep"] == "Email Denied"
+def test_the_launchpad_says_what_happened():
+    live = _steps(definitions.bulk_workflow(cfg_with(mode="live"), owner_id="o", form_id="f"))["Notify Requested"]
+    assert live["attributes"]["category"] == "INFO"
+    assert live["attributes"]["title"] == "Requested: {{$.interactiveForm.formData.inc}}{{$.defineVariableAccess.partLabel}}"
+    assert "items without an approval of their own are granted right away" in live["attributes"]["message"]
+    dry = _steps(definitions.bulk_workflow(config.load(EXAMPLE), owner_id="o", form_id="f"))["Notify Requested"]
+    assert dry["attributes"]["title"].startswith("Checked: ") and "Nothing was requested (DRY RUN)" in dry["attributes"]["message"]
 
 
 def test_launcher_trigger_is_scoped_to_its_own_workflow():
-    wf = definitions.bulk_workflow(config.load(EXAMPLE), variant="launcher", owner_id="o", form_id="f", workflow_id="w-123")
+    wf = definitions.bulk_workflow(config.load(EXAMPLE), owner_id="o", form_id="f", workflow_id="w-123")
     assert wf["trigger"]["attributes"]["id"] == "idn:interactive-process-launched"
     assert wf["trigger"]["attributes"]["filter.$"] == "$[?(@.workflowId == 'w-123')]"
-
-
-def test_plugin_variant_is_external_and_disabled():
-    wf = definitions.bulk_workflow(config.load(EXAMPLE), variant="plugin", owner_id="o")
-    assert wf["trigger"]["type"] == "EXTERNAL" and wf["enabled"] is False
-    assert "Interactive Form" not in _steps(wf)
+    assert wf["enabled"] is False and wf["definition"]["start"] == "Interactive Form"
+    with pytest.raises(ValueError):
+        definitions.bulk_workflow(config.load(EXAMPLE), owner_id="o", form_id="")
 
 
 def test_demo_tenants_can_redirect_all_email():
     cfg = cfg_with(notifications__overrideRecipients=["demo@example.com"])
-    wf = definitions.bulk_workflow(cfg, variant="launcher", owner_id="o", form_id="f")
-    for name in ("Email Approved", "Email Denied"):
+    wf = definitions.bulk_workflow(cfg, owner_id="o", form_id="f")
+    for name in ("Email Requested", "Email Reject Bad INC"):
         attrs = _steps(wf)[name]["attributes"]
         assert attrs["recipientEmailList"] == ["demo@example.com"] and "carbonCopy.$" not in attrs
 
 
 def test_every_next_step_exists():
-    wf = definitions.bulk_workflow(cfg_with(mode="live"), variant="launcher", owner_id="o", form_id="f")
+    wf = definitions.bulk_workflow(cfg_with(mode="live"), owner_id="o", form_id="f")
     steps = _steps(wf)
     targets = {s.get("nextStep") for s in steps.values()} | {s.get("defaultStep") for s in steps.values()}
     targets |= {c["nextStep"] for s in steps.values() for c in s.get("choiceList", [])}
@@ -255,7 +300,7 @@ def test_every_next_step_exists():
 def test_another_tenant_gets_its_own_names():
     other = cfg_with(prefix="ACME", plugin__alias="acme-bulk")
     assert definitions.bulk_form(other, "o", [])["name"] == "ACME Bulk Access Request Form"
-    assert definitions.bulk_workflow(other, variant="plugin", owner_id="o")["name"] == "ACME Bulk Access Request (Plugin)"
+    assert definitions.bulk_workflow(other, owner_id="o", form_id="f")["name"] == "ACME Bulk Access Request"
     assert definitions.bulk_launcher(other, "w")["name"] == "ACME Bulk Access Request"
 
 
@@ -282,12 +327,15 @@ def test_launcher_access_profile_wraps_the_assigned_launchers_entitlement():
     assert ap["requestable"] is True and ap["entitlements"] == [{"id": "e1", "type": "ENTITLEMENT", "name": "ACME Bulk Access Request"}]
     assert ap["source"]["id"] == "s1"
     assert ap["accessRequestConfig"]["approvalSchemes"] == [{"approverType": "MANAGER"}]
+    assert "and the 'ACME Bulk Access Request' page" in ap["description"]
     no_approval = definitions.launcher_access_profile(cfg_with(access__launcherApproval="NONE"), "o", ent)
     assert no_approval["accessRequestConfig"]["approvalSchemes"] == []
+    launcher_only = definitions.launcher_access_profile(cfg_with(deployments__plugin=False), "o", ent)
+    assert "page" not in launcher_only["description"]
 
 
 def test_failure_end_step_has_the_fields_the_validator_requires():
-    wf = definitions.bulk_workflow(config.load(EXAMPLE), variant="launcher", owner_id="o", form_id="f")
+    wf = definitions.bulk_workflow(config.load(EXAMPLE), owner_id="o", form_id="f")
     end = _steps(wf)["End Step - Rejected"]
     assert end["type"] == "failure" and end["failureName"] and end["description"] and "attributes" not in end
 
@@ -449,15 +497,6 @@ def test_duration_regex_combines_units_and_max_days():
     assert unlimited.match("") and unlimited.match("365d") and not unlimited.match("3h")
 
 
-def test_plugin_regex_allows_hours_for_end_dates_and_empty_for_permanent():
-    cfg = cfg_with(temporaryAccess__units=["DAYS"], temporaryAccess__maxDays=30)
-    pattern = re.compile(definitions.plugin_duration_regex(cfg))
-    assert pattern.match("") and pattern.match("30d") and pattern.match("720h")
-    assert not pattern.match("31d") and not pattern.match("721h") and not pattern.match("abc") and not pattern.match("1w")
-    off = re.compile(definitions.plugin_duration_regex(cfg_with(temporaryAccess__enabled=False)))
-    assert off.match("") and not off.match("1d")
-
-
 # ── definitions: temporary access and parts ───────────────────────────────────
 LIVE = {"mode": "live"}
 
@@ -466,69 +505,33 @@ def _manage(wf):
     return _steps(wf)["Request Access"]["attributes"]["steps"]["Manage Access"]
 
 
-def test_manage_access_is_version_2_with_remove_duration_in_both_variants():
-    cfg = cfg_with(**LIVE)
-    plugin = _manage(definitions.bulk_workflow(cfg, variant="plugin", owner_id="o"))
-    assert plugin["versionNumber"] == 2
-    assert plugin["attributes"]["removeDuration.$"] == "$.loop.context.trigger.removeDuration"
-    launcher = _manage(definitions.bulk_workflow(cfg, variant="launcher", owner_id="o", form_id="f"))
+def test_manage_access_is_version_2_with_remove_duration():
+    launcher = _manage(definitions.bulk_workflow(cfg_with(**LIVE), owner_id="o", form_id="f"))
     assert launcher["versionNumber"] == 2
     assert launcher["attributes"]["removeDuration.$"] == "$.loop.context.defineVariableAccess.removeDuration"
-    # The Launcher still uses it when temporary access is off ("" = permanent, always set).
-    off = _manage(definitions.bulk_workflow(cfg_with(mode="live", temporaryAccess__enabled=False),
-                                            variant="launcher", owner_id="o", form_id="f"))
+    # Still used when temporary access is off ("" = permanent, always set).
+    off = _manage(definitions.bulk_workflow(cfg_with(mode="live", temporaryAccess__enabled=False), owner_id="o", form_id="f"))
     assert off["attributes"]["removeDuration.$"] == "$.loop.context.defineVariableAccess.removeDuration"
 
 
-def test_approval_name_and_description_carry_the_part_and_access_labels():
-    cfg = config.load(EXAMPLE)
-    plugin = _steps(definitions.bulk_workflow(cfg, variant="plugin", owner_id="o"))["Bulk Approval"]["attributes"]
-    assert plugin["name"] == "Bulk access {{$.trigger.inc}}{{$.trigger.partLabel}}"
-    assert plugin["description"] == ("ACME bulk access request {{$.trigger.inc}}{{$.trigger.partLabel}} from "
-                                     "{{$.getRequester.attributes.displayName}} · {{$.trigger.accessLabel}}")
-    launcher = _steps(definitions.bulk_workflow(cfg, variant="launcher", owner_id="o", form_id="f"))["Bulk Approval"]["attributes"]
-    # "" from the Launchpad; " (k/n)" when the plugin submits a part through the Launcher (hidden form field).
-    assert launcher["name"] == "Bulk access {{$.interactiveForm.formData.inc}}{{$.defineVariableAccess.partLabel}}"
-    assert launcher["description"] == ("ACME bulk access request {{$.interactiveForm.formData.inc}}"
-                                       "{{$.defineVariableAccess.partLabel}} from {{$.getRequester.attributes.displayName}}"
-                                       " · {{$.defineVariableAccess.accessLabel}}")
-    # Fixed text stays within SailPoint's 50-character name limit for the default INC format.
-    assert len("Bulk access INC0012345 (10/10)") <= rules.APPROVAL_NAME_MAX
-
-
 def test_item_comment_keeps_the_inc_first_and_adds_the_access_label():
-    comment = _manage(definitions.bulk_workflow(cfg_with(**LIVE), variant="plugin", owner_id="o"))["attributes"]["comments"]
+    comment = _manage(definitions.bulk_workflow(cfg_with(**LIVE), owner_id="o", form_id="f"))["attributes"]["comments"]
     assert comment.split(" | ") == [
-        "{{$.loop.context.trigger.inc}}", "Bulk access request by {{$.loop.context.getRequester.attributes.displayName}}",
-        "Approved by {{$.loop.context.getApprover.attributes.displayName}}", "{{$.loop.context.trigger.accessLabel}}",
-        "{{$.loop.context.trigger.justification}}"]
+        "{{$.loop.context.interactiveForm.formData.inc}}",
+        "Bulk access request by {{$.loop.context.getRequester.attributes.displayName}}",
+        "{{$.loop.context.defineVariableAccess.accessLabel}}", "{{$.loop.context.interactiveForm.formData.justification}}"]
 
 
 def test_emails_say_which_part_and_the_access_label():
-    steps = _steps(definitions.bulk_workflow(config.load(EXAMPLE), variant="plugin", owner_id="o"))
-    for name in definitions.EMAIL_STEPS:
-        attrs = steps[name]["attributes"]
-        assert "{{$.trigger.partLabel}}" in attrs["subject"]
-        assert attrs["context"]["part.$"] == "$.trigger.partLabel" and attrs["context"]["access.$"] == "$.trigger.accessLabel"
-        subject, body = _render_email(config.load(EXAMPLE), name, "plugin", decision="APPROVED" if name != "Email Denied" else "REJECTED",
-                                part=" (2/3)", access="Temporary: until 2026-11-07")
-        assert subject.startswith(("Waiting for approval: bulk access INC0012345 (2/3)", "Approved: bulk access INC0012345 (2/3)",
-                                   "Not approved: bulk access INC0012345 (2/3)"))
-        assert "(2/3): one part of a larger request with the same INC" in body
-        assert "Temporary: until 2026-11-07 (removed automatically when it ends)" in body
-
-
-def test_plugin_trigger_lists_every_input_field():
-    wf = definitions.bulk_workflow(config.load(EXAMPLE), variant="plugin", owner_id="o")
-    description = wf["trigger"]["attributes"]["description"]
-    for field in definitions.PLUGIN_INPUT:
-        assert field in description, field
-    steps = _steps(wf)
-    assert steps["INC Valid?"]["choiceList"][0]["nextStep"] == "Access Valid?"
-    assert steps["Email Pending"]["nextStep"] == "Bulk Approval"
-    check = steps["Access Valid?"]
-    assert check["choiceList"][0]["variableA.$"] == "$.trigger.removeDuration"
-    assert check["choiceList"][0]["nextStep"] == "Email Pending" and check["defaultStep"] == "Reject Bad Duration"
+    steps = _steps(definitions.bulk_workflow(cfg_with(mode="live"), owner_id="o", form_id="f"))
+    attrs = steps["Email Requested"]["attributes"]
+    assert "{{$.defineVariableAccess.partLabel}}" in attrs["subject"]
+    assert attrs["context"]["part.$"] == "$.defineVariableAccess.partLabel"
+    assert attrs["context"]["access.$"] == "$.defineVariableAccess.accessLabel"
+    subject, body = _render_email(cfg_with(mode="live"), "Email Requested", part=" (2/3)", access="Temporary: 720h")
+    assert subject == "Requested: bulk access INC0012345 (2/3)"
+    assert "(2/3): one part of a larger request with the same INC" in body
+    assert "Temporary: 720h (removed automatically when it ends)" in body
 
 
 def test_launcher_form_offers_temporary_access_only_when_configured():
@@ -546,7 +549,7 @@ def test_launcher_form_offers_temporary_access_only_when_configured():
 
     for off in (cfg_with(temporaryAccess__enabled=False), cfg_with(temporaryAccess__allow=["endDate"])):
         form = definitions.bulk_form(off, "o", [])
-        assert set(_form_elements(form)) == {"people", "items", "approver", "inc", "justification", "partLabel"}
+        assert set(_form_elements(form)) == {"people", "items", "inc", "justification", "partLabel"}
         assert form["formConditions"] == []
 
     # A unit that can never fit maxDays isn't offered.
@@ -554,14 +557,13 @@ def test_launcher_form_offers_temporary_access_only_when_configured():
     assert [o["value"] for o in short["durationUnit"]["config"]["dataSource"]["config"]["options"]] == ["h", "d", "w"]
 
 
-def test_launcher_checks_the_duration_before_the_approval():
-    steps = _steps(definitions.bulk_workflow(cfg_with(temporaryAccess__maxDays=7), variant="launcher",
-                                             owner_id="o", form_id="f"))
+def test_launcher_checks_the_duration_before_requesting_anything():
+    steps = _steps(definitions.bulk_workflow(cfg_with(temporaryAccess__maxDays=7, mode="live"), owner_id="o", form_id="f"))
     assert steps["INC Valid?"]["choiceList"][0]["nextStep"] == "Define Variable Access"
     assert steps["Define Variable Access"]["type"] == "Mutation"     # "Define Variable" prefix: Update Variable needs it
     assert steps["Temporary?"]["actionId"] == "sp:compare-boolean"
     assert steps["Temporary?"]["choiceList"][0]["variableA.$"] == "$.interactiveForm.formData.accessType"
-    assert steps["Temporary?"]["defaultStep"] == "Notify Pending"    # permanent goes straight on
+    assert steps["Temporary?"]["defaultStep"] == "Notify Requested"    # permanent goes straight on
     assert steps["Duration Valid?"]["choiceList"][0]["variableB"] == "^[1-9][0-9]*$"
     assert steps["Unit Valid?"]["choiceList"][0]["variableB"] == "^(?:h|d|w)$"
     updated = {v["name"] for v in steps["Set Temporary Access"]["attributes"]["variables"]}
@@ -570,52 +572,45 @@ def test_launcher_checks_the_duration_before_the_approval():
     assert limit["variableA.$"] == "$.defineVariableAccess.removeDuration"
     assert re.match(limit["variableB"], "168h") and not re.match(limit["variableB"], "8d")
     messages = {name: steps[name]["attributes"]["message"] for name in ("Reject Bad Duration", "Reject Bad Unit", "Reject Too Long")}
-    after = "<p>Nothing was sent for approval. Fix it and submit again; you'll also get this by email.</p>"
+    after = "<p>Nothing was requested. Fix it and submit again; you'll also get this by email.</p>"
     assert messages == {"Reject Bad Duration": "<p>Duration: Enter the duration as a whole number of 1 or more.</p>" + after,
                         "Reject Bad Unit": "<p>Unit: Choose a unit for the duration.</p>" + after,
                         "Reject Too Long": "<p>Duration: Temporary access can last at most 7 days.</p>" + after}
-    # Every path to the approval passes the checks: nothing reaches "Bulk Approval" except via Notify Pending
-    # and the pending email.
-    into_approval = [n for n, s in steps.items() if s.get("nextStep") == "Bulk Approval"]
-    assert into_approval == ["Email Pending"] and steps["Notify Pending"]["nextStep"] == "Email Pending"
-    no_pending = _steps(definitions.bulk_workflow(cfg_with(notifications__pendingEmail=False), variant="launcher",
-                                                  owner_id="o", form_id="f"))
-    assert "Email Pending" not in no_pending and no_pending["Notify Pending"]["nextStep"] == "Bulk Approval"
+    # Every path to the requests passes the checks: only Notify Requested leads to them.
+    assert [n for n, s in steps.items() if s.get("nextStep") == "Request Access"] == ["Notify Requested"]
 
 
 def test_launcher_without_max_days_or_temporary_access_has_no_extra_checks():
-    steps = _steps(definitions.bulk_workflow(config.load(EXAMPLE), variant="launcher", owner_id="o", form_id="f"))
-    assert "Within Limit?" not in steps and steps["Set Temporary Access"]["nextStep"] == "Notify Pending"
-    off = _steps(definitions.bulk_workflow(cfg_with(temporaryAccess__enabled=False), variant="launcher", owner_id="o", form_id="f"))
+    steps = _steps(definitions.bulk_workflow(config.load(EXAMPLE), owner_id="o", form_id="f"))
+    assert "Within Limit?" not in steps and steps["Set Temporary Access"]["nextStep"] == "Notify Requested"
+    off = _steps(definitions.bulk_workflow(cfg_with(temporaryAccess__enabled=False), owner_id="o", form_id="f"))
     assert "Temporary?" not in off and off["Define Variable Access"]["nextStep"] == "Part Given?"
-    assert off["Part Given?"]["defaultStep"] == off["Set Part"]["nextStep"] == "Notify Pending"
+    assert off["Part Given?"]["defaultStep"] == off["Set Part"]["nextStep"] == "Notify Requested"
 
 
 @pytest.mark.parametrize("overrides", [
     {}, {"mode": "live"}, {"mode": "live", "temporaryAccess__maxDays": 7}, {"temporaryAccess__enabled": False},
     {"mode": "live", "temporaryAccess__allow": ["endDate"]}, {"mode": "live", "temporaryAccess__units": ["DAYS"]},
 ])
-def test_both_variants_are_complete_graphs(overrides):
-    cfg = cfg_with(**overrides)
-    for variant in definitions.VARIANTS:
-        wf = definitions.bulk_workflow(cfg, variant=variant, owner_id="o", form_id="f", workflow_id="w")
-        steps = _steps(wf)
-        targets = {s.get("nextStep") for s in steps.values()} | {s.get("defaultStep") for s in steps.values()}
-        targets |= {c["nextStep"] for s in steps.values() for c in s.get("choiceList", [])}
-        assert {t for t in targets if t} <= set(steps), (variant, overrides)
-        assert wf["definition"]["start"] in steps
-        reachable, todo = set(), [wf["definition"]["start"]]
-        while todo:
-            name = todo.pop()
-            if name in reachable:
-                continue
-            reachable.add(name)
-            s = steps[name]
-            todo += [t for t in [s.get("nextStep"), s.get("defaultStep"), *[c["nextStep"] for c in s.get("choiceList", [])]] if t]
-        assert reachable == set(steps), (variant, overrides, set(steps) - reachable)
-        for s in steps.values():
-            if s.get("type") == "failure":
-                assert s["failureName"] and s["description"]
+def test_the_workflow_is_a_complete_graph(overrides):
+    wf = definitions.bulk_workflow(cfg_with(**overrides), owner_id="o", form_id="f", workflow_id="w")
+    steps = _steps(wf)
+    targets = {s.get("nextStep") for s in steps.values()} | {s.get("defaultStep") for s in steps.values()}
+    targets |= {c["nextStep"] for s in steps.values() for c in s.get("choiceList", [])}
+    assert {t for t in targets if t} <= set(steps), overrides
+    assert wf["definition"]["start"] in steps
+    reachable, todo = set(), [wf["definition"]["start"]]
+    while todo:
+        name = todo.pop()
+        if name in reachable:
+            continue
+        reachable.add(name)
+        s = steps[name]
+        todo += [t for t in [s.get("nextStep"), s.get("defaultStep"), *[c["nextStep"] for c in s.get("choiceList", [])]] if t]
+    assert reachable == set(steps), (overrides, set(steps) - reachable)
+    for s in steps.values():
+        if s.get("type") == "failure":
+            assert s["failureName"] and s["description"]
 
 
 # ── config compatibility ──────────────────────────────────────────────────────
@@ -662,9 +657,10 @@ def _show(tmp_path, capsys, **overrides):
 
 def test_show_config_for_both_deployments(tmp_path, capsys):
     out = _show(tmp_path, capsys)
-    assert "People:      no limit, sent as approvals of up to 250 (plugin) · up to 30 (Launcher form, SailPoint limit)" in out
+    assert "People:      no limit, 10 people per access request (plugin) · up to 30 (Launcher form, SailPoint limit)" in out
     assert "  launcher:  duration in hours, days, weeks, months (no end date" in out
-    assert "  plugin:    duration in hours, days, weeks, months or end date (sent as hours)" in out
+    assert "  plugin:    duration in hours, days, weeks, months or end date\n" in out
+    assert "Approval:    each item the way it's set up in SailPoint" in out
     assert "Deployments: launcher, plugin\n" in out and "Deprecated" not in out
 
 
@@ -676,12 +672,21 @@ def test_show_config_launcher_only(tmp_path, capsys):
 
 
 def test_show_config_plugin_only(tmp_path, capsys):
-    out = _show(tmp_path, capsys, deployments__launcher=False, people__max=600, people__partSize=200,
-                temporaryAccess__maxDays=14, temporaryAccess__allow=["endDate"])
-    assert "People:      up to 600, sent as approvals of up to 200 (plugin)" in out
+    out = _show(tmp_path, capsys, deployments__launcher=False, people__max=600, temporaryAccess__maxDays=14,
+                temporaryAccess__allow=["endDate"])
+    assert "People:      up to 600, 10 people per access request (plugin)" in out
     assert "Launcher form" not in out and "(launcher off)" in out
     assert "Temporary:   at most 14 days" in out
-    assert "  plugin:    end date (sent as hours)" in out and "  launcher:" not in out
+    assert "  plugin:    end date\n" in out and "  launcher:" not in out
+    assert "anyone who can open the plugin can submit" in out and "Email:" not in out
+
+
+def test_show_config_through_the_launcher_sends_parts(tmp_path, capsys):
+    out = _show(tmp_path, capsys, plugin__submit="launcher", people__max=600, people__partSize=200)
+    assert "People:      up to 600, sent as Launcher runs of up to 200 (plugin)" in out
+    out = _show(tmp_path, capsys, plugin__submit="launcher", people__max=100)
+    assert "People:      up to 100, in one Launcher run (plugin)" in out
+    assert "  plugin:    duration in hours, days, weeks, months or end date (sent as hours)" in out
 
 
 def test_apply_runs_only_enabled_deployments_with_the_right_flags(tmp_path, monkeypatch):
@@ -722,38 +727,33 @@ def test_cli_loads_both_folders_scripts_without_mixing_them_up():
         launcher_install = cli.load_script("launcher", "install")
     with cli._script_dir(ROOT / "plugin"):
         plugin_install = cli.load_script("plugin", "install")
-    assert hasattr(launcher_install, "requestable_objects") and not hasattr(plugin_install, "requestable_objects")
+    assert hasattr(launcher_install, "find_form") and not hasattr(plugin_install, "find_form")
     assert Path(plugin_install.__file__).parent.name == "plugin"
 
 
 def test_export_offline_builds_every_object_with_placeholders(tmp_path):
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("bulkaccess_cli", ROOT / "bulkaccess.py")
-    cli = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(cli)
+    cli = _cli()
     assert cli.main(["export", "--offline", "--config", str(EXAMPLE), "--out", str(tmp_path)]) == 0
     files = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*.json"))
-    # plugin.submit "launcher" (the default with both deployments): the plugin has no workflow of its own.
+    # The plugin has no workflow of its own: it files requests directly, or goes through the Launcher's.
     assert files == ["launcher/access-profile.json", "launcher/form.json", "launcher/launcher.json",
                      "launcher/workflow.json"]
     wf = json.loads((tmp_path / "launcher/workflow.json").read_text())
     assert wf["definition"]["steps"]["Interactive Form"]["attributes"]["formDefinitionId"] == "<FORM_DEFINITION_ID>"
     assert wf["trigger"]["attributes"]["filter.$"] == "$[?(@.workflowId == '<WORKFLOW_ID>')]"
-    data = json.loads(EXAMPLE.read_text())
-    test_endpoint = tmp_path / "te.json"
-    test_endpoint.write_text(json.dumps({**data, "plugin": {**data["plugin"], "submit": "test-endpoint"}}))
-    cli.main(["export", "--offline", "--only", "plugin", "--config", str(test_endpoint), "--out", str(tmp_path / "p")])
-    assert [p.name for p in (tmp_path / "p").rglob("*.json")] == ["workflow.json"]
 
 
 # ── bulk approvals: the item comment read back, and the `approvals` config ────
 BULK = "INC0012345 | Bulk access request by Ada Lovelace | Approved by Grace Hopper | Temporary: 30 days | Quarterly audit"
-PARSED = {"inc": "INC0012345", "requester": "Ada Lovelace", "approver": "Grace Hopper",
+BULK = "INC0012345 | Bulk access request by Ada Lovelace | Temporary: 30 days | Quarterly audit"
+PARSED = {"inc": "INC0012345", "requester": "Ada Lovelace", "approver": None,
           "accessLabel": "Temporary: 30 days", "justification": "Quarterly audit"}
+# Written while bulk requests had one approver: still read, so approvals already pending keep their INC grouping.
+OLD = "INC0012345 | Bulk access request by Ada Lovelace | Approved by Grace Hopper | Temporary: 30 days | Quarterly audit"
 
 
-def _bulk(justification, label="Permanent"):
-    return {"inc": "INC0012345", "requester": "Ada", "approver": "Grace", "accessLabel": label,
+def _bulk(justification, label="Permanent", approver=None):
+    return {"inc": "INC0012345", "requester": "Ada", "approver": approver, "accessLabel": label,
             "justification": justification}
 
 
@@ -763,36 +763,41 @@ def test_comment_separator_is_what_definitions_writes():
 
 @pytest.mark.parametrize("text,expected", [
     (BULK, PARSED),
-    # the justification is everything after the 4th separator, " | " included
+    (OLD, {**PARSED, "approver": "Grace Hopper"}),
+    # the justification is everything after the 3rd separator, " | " included
+    ("INC0012345 | Bulk access request by Ada | Permanent | move | to | finance", _bulk("move | to | finance")),
     ("INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent | move | to | finance",
-     _bulk("move | to | finance")),
+     _bulk("move | to | finance", approver="Grace")),
     # extra whitespace around the separators and inside the labels
-    ("  INC0012345   |  Bulk  access request   by  Ada Lovelace |Approved   by Grace Hopper|  Temporary: 30 days  |"
-     "  Quarterly audit  ", PARSED),
+    ("  INC0012345   |  Bulk  access request   by  Ada Lovelace |  Temporary: 30 days  |  Quarterly audit  ", PARSED),
     # an empty justification (a trailing separator, with or without its space)
-    ("INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent | ", _bulk("")),
-    ("INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent |", _bulk("")),
+    ("INC0012345 | Bulk access request by Ada | Permanent | ", _bulk("")),
+    ("INC0012345 | Bulk access request by Ada | Permanent |", _bulk("")),
     # a multi-line justification is kept as written
-    ("INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent | line one\nline two",
-     _bulk("line one\nline two")),
+    ("INC0012345 | Bulk access request by Ada | Permanent | line one\nline two", _bulk("line one\nline two")),
 ])
 def test_parse_bulk_comment_reads_the_bulk_item_comment(text, expected):
     assert rules.parse_bulk_comment(config.load(EXAMPLE), text) == expected
 
 
+def test_bulk_comment_is_what_parse_bulk_comment_reads():
+    text = rules.bulk_comment(" INC0012345 ", "Ada Lovelace", "Temporary: 30 days", " Quarterly audit ")
+    assert text == BULK
+    assert rules.parse_bulk_comment(config.load(EXAMPLE), text) == PARSED
+
+
 @pytest.mark.parametrize("text", [
     None, "", 42, "INC0012345", "INC0012345: Quarterly audit",          # plain comments, the INC alone
     "Please approve, thanks",
-    "INC0012345 | Bulk access request by Ada | Approved by Grace | Permanent",          # only 4 fields
-    "INC12345 | Bulk access request by Ada | Approved by Grace | Permanent | why",       # INC fails the pattern
-    "CHG0012345 | Bulk access request by Ada | Approved by Grace | Permanent | why",
-    "INC0012345 | Access request by Ada | Approved by Grace | Permanent | why",          # wrong labels
-    "INC0012345 | Bulk access request by Ada | Rejected by Grace | Permanent | why",
-    "INC0012345 | Approved by Grace | Bulk access request by Ada | Permanent | why",     # wrong order
-    "INC0012345 | Bulk access request by | Approved by Grace | Permanent | why",          # empty names or label
-    "INC0012345 | Bulk access request by Ada | Approved by  | Permanent | why",
-    "INC0012345 | Bulk access request by Ada | Approved by Grace |  | why",
-    "INC0012345 | Bulk access request byAda | Approved by Grace | Permanent | why",
+    "INC0012345 | Bulk access request by Ada | Permanent",                              # only 3 fields
+    "INC12345 | Bulk access request by Ada | Permanent | why",                           # INC fails the pattern
+    "CHG0012345 | Bulk access request by Ada | Permanent | why",
+    "INC0012345 | Access request by Ada | Permanent | why",                              # wrong label
+    "INC0012345 | Permanent | Bulk access request by Ada | why",                         # wrong order
+    "INC0012345 | Bulk access request by | Permanent | why",                             # empty name or label
+    "INC0012345 | Bulk access request by Ada |  | why",
+    "INC0012345 | Bulk access request byAda | Permanent | why",
+    "INC0012345 | Bulk access request by Ada | Approved by  | Permanent | why",          # old form, empty approver
 ])
 def test_parse_bulk_comment_ignores_everything_else(text):
     assert rules.parse_bulk_comment(config.load(EXAMPLE), text) is None
@@ -816,16 +821,15 @@ def _render(template, values):
     return re.sub(r"\{\{(\$[^}]*)\}\}", value, template)
 
 
-@pytest.mark.parametrize("variant", ["plugin", "launcher"])
-def test_the_comment_definitions_writes_parses_back_to_its_inputs(variant):
+def test_the_comment_definitions_writes_parses_back_to_its_inputs():
     cfg = cfg_with(**LIVE)
-    template = _manage(definitions.bulk_workflow(cfg, variant=variant, owner_id="o", form_id="f"))["attributes"]["comments"]
-    expected = {"inc": "INC0012345", "requester": "Ada Lovelace", "approver": "Grace Hopper",
-                "accessLabel": "Temporary: until 2026-11-07", "justification": "Audit | see INC0099999: finance | Q4"}
-    rendered = _render(template, {"getRequester": expected["requester"], "getApprover": expected["approver"],
-                                  "accessLabel": expected["accessLabel"], "justification": expected["justification"],
-                                  "inc": expected["inc"]})
-    assert rendered.startswith("INC0012345 | Bulk access request by Ada Lovelace | ")
+    template = _manage(definitions.bulk_workflow(cfg, owner_id="o", form_id="f"))["attributes"]["comments"]
+    expected = {"inc": "INC0012345", "requester": "Ada Lovelace", "approver": None,
+                "accessLabel": "Temporary: 720h", "justification": "Audit | see INC0099999: finance | Q4"}
+    rendered = _render(template, {"getRequester": expected["requester"], "accessLabel": expected["accessLabel"],
+                                  "justification": expected["justification"], "inc": expected["inc"]})
+    assert rendered == rules.bulk_comment(expected["inc"], expected["requester"], expected["accessLabel"],
+                                          expected["justification"])
     assert rules.parse_bulk_comment(cfg, rendered) == expected
 
 
@@ -882,60 +886,66 @@ def test_show_config_describes_approvals_and_warns_about_a_private_plugin(tmp_pa
 
 
 # ── plugin.submit: the plugin submits through the Launcher (CONTRACTS §9) ─────────
-def test_plugin_submit_defaults_to_the_launcher_when_it_is_deployed():
+def test_plugin_submit_defaults_to_direct():
     cfg = config.load(EXAMPLE)
-    assert cfg.plugin_submit == "launcher" and cfg.plugin_submits_via_launcher and not cfg.plugin_needs_workflow
+    assert cfg.plugin_submit == "direct" and cfg.plugin_submits_directly and not cfg.plugin_submits_via_launcher
     assert cfg.launcher_access_profile_name == "ACME Bulk Access Request - Launcher Access"
+    assert cfg_with(plugin__submit=None).plugin_submit == "direct"
     plugin_only = cfg_with(deployments={"launcher": False, "plugin": True})
-    assert plugin_only.plugin_submit == "test-endpoint" and plugin_only.plugin_needs_workflow
-    explicit = cfg_with(plugin__submit="test-endpoint")
-    assert not explicit.plugin_submits_via_launcher and explicit.plugin_needs_workflow
+    assert plugin_only.plugin_submits_directly
+    via = cfg_with(plugin__submit="launcher")
+    assert via.plugin_submits_via_launcher and not via.plugin_submits_directly
     launcher_only = cfg_with(deployments={"launcher": True, "plugin": False})
-    assert not launcher_only.plugin_submits_via_launcher and not launcher_only.plugin_needs_workflow
+    assert not launcher_only.plugin_submits_via_launcher and not launcher_only.plugin_submits_directly
+
+
+def test_the_old_test_endpoint_mode_becomes_direct_with_a_note():
+    cfg = cfg_with(plugin__submit="test-endpoint")
+    assert cfg.plugin_submit == "direct"
+    assert cfg.deprecations == ('`plugin.submit` "test-endpoint" is now "direct": the plugin files the access requests '
+                                "itself, so it no longer needs its own workflow.",)
 
 
 @pytest.mark.parametrize("overrides,message", [
     ({"plugin__submit": "backend"}, config.MSG_PLUGIN_SUBMIT),
-    ({"plugin__submit": None, "deployments": {"launcher": False, "plugin": True}}, None),
     ({"plugin__submit": "launcher", "deployments": {"launcher": False, "plugin": True}}, config.MSG_PLUGIN_SUBMIT_LAUNCHER),
 ])
 def test_plugin_submit_is_validated(overrides, message):
-    if message is None:
-        assert cfg_with(**overrides).plugin_submit == "test-endpoint"
-        return
     with pytest.raises(config.ConfigError) as err:
         cfg_with(**overrides)
     assert str(err.value) == message
 
 
 def test_through_the_launcher_the_plugin_offers_only_what_the_launcher_form_carries():
-    # Durations on the Launcher: the plugin keeps its end date (sent as hours in the same fields).
+    # Direct requests carry an exact removal date: every configured mode works.
     assert cfg_with().plugin_temporary_modes == ("duration", "endDate")
-    # No duration fields on the Launcher form: through it, the plugin can only ask for permanent access.
-    assert cfg_with(temporaryAccess__allow=["endDate"]).plugin_temporary_modes == ()
-    assert cfg_with(temporaryAccess__units=["WEEKS"], temporaryAccess__maxDays=5).plugin_temporary_modes == ()
-    # Through the test endpoint it is unchanged.
-    assert cfg_with(temporaryAccess__allow=["endDate"], plugin__submit="test-endpoint").plugin_temporary_modes == ("endDate",)
+    assert cfg_with(temporaryAccess__allow=["endDate"]).plugin_temporary_modes == ("endDate",)
+    # Through the Launcher: durations keep the end date (sent as hours in the same fields) ...
+    assert cfg_with(plugin__submit="launcher").plugin_temporary_modes == ("duration", "endDate")
+    # ... but without duration fields on the Launcher form, only permanent access.
+    assert cfg_with(plugin__submit="launcher", temporaryAccess__allow=["endDate"]).plugin_temporary_modes == ()
+    assert cfg_with(plugin__submit="launcher", temporaryAccess__units=["WEEKS"],
+                    temporaryAccess__maxDays=5).plugin_temporary_modes == ()
     assert cfg_with(temporaryAccess__enabled=False).launcher_temporary_modes == ()
 
 
 def test_launcher_workflow_takes_hours_from_the_plugin_for_end_dates():
-    cfg = cfg_with(temporaryAccess__units=["DAYS", "WEEKS"])
+    cfg = cfg_with(temporaryAccess__units=["DAYS", "WEEKS"], plugin__submit="launcher")
     assert definitions.launcher_duration_units(cfg) == ("DAYS", "WEEKS")          # what the Launchpad offers
     assert definitions.launcher_workflow_units(cfg) == ("HOURS", "DAYS", "WEEKS")  # what the workflow accepts
-    steps = _steps(definitions.bulk_workflow(cfg, variant="launcher", owner_id="o", form_id="f"))
+    steps = _steps(definitions.bulk_workflow(cfg, owner_id="o", form_id="f"))
     assert steps["Unit Valid?"]["choiceList"][0]["variableB"] == "^(?:h|d|w)$"
     options = _form_elements(definitions.bulk_form(cfg, "o", []))["durationUnit"]["config"]["dataSource"]["config"]["options"]
     assert [o["value"] for o in options] == ["d", "w"]                            # the Launchpad sees no change
-    for same in (cfg_with(temporaryAccess__units=["DAYS"], plugin__submit="test-endpoint"),
-                 cfg_with(temporaryAccess__units=["DAYS"], temporaryAccess__allow=["duration"])):
+    for same in (cfg_with(temporaryAccess__units=["DAYS"]),                         # direct: the plugin doesn't use it
+                 cfg_with(temporaryAccess__units=["DAYS"], temporaryAccess__allow=["duration"], plugin__submit="launcher")):
         assert definitions.launcher_workflow_units(same) == ("DAYS",)
 
 
 def test_launcher_form_has_a_hidden_part_label_the_workflow_checks():
     el = _form_elements(definitions.bulk_form(config.load(EXAMPLE), "o", []))["partLabel"]
     assert el["elementType"] == "HIDDEN" and el["config"]["default"] == "" and el["validations"] == []
-    steps = _steps(definitions.bulk_workflow(config.load(EXAMPLE), variant="launcher", owner_id="o", form_id="f"))
+    steps = _steps(definitions.bulk_workflow(config.load(EXAMPLE), owner_id="o", form_id="f"))
     define = {v["name"]: v for v in steps["Define Variable Access"]["attributes"]["variables"]}
     # Defined as a placeholder emptied by a replace transform (a literal "" can't be defined).
     assert define["partLabel"]["variableA"] == "single"
@@ -951,9 +961,8 @@ def test_launcher_form_has_a_hidden_part_label_the_workflow_checks():
         assert regex.match(label)
     for bad in ("", " (0/3)", "(1/3)", " (1/3) x", " (a/b)", " (1/3)" * 2):
         assert not regex.match(bad)
-    for name in ("Email Approved", "Email Denied"):
-        assert "{{$.defineVariableAccess.partLabel}}" in steps[name]["attributes"]["subject"]
-    assert "{{$.defineVariableAccess.partLabel}}" in steps["Notify Pending"]["attributes"]["message"]
+    assert "{{$.defineVariableAccess.partLabel}}" in steps["Email Requested"]["attributes"]["subject"]
+    assert "{{$.defineVariableAccess.partLabel}}" in steps["Notify Requested"]["attributes"]["message"]
 
 
 @pytest.mark.parametrize("remove_duration,fields", [
@@ -983,20 +992,15 @@ def test_end_date_choice_maps_onto_the_launcher_form():
 
 
 def test_show_config_says_who_can_submit_from_the_plugin(tmp_path, capsys):
-    cli = _cli()
-    assert cli.main(["show-config", "--config", str(EXAMPLE)]) == 0
-    out = capsys.readouterr().out
-    assert "plugin.submit \"launcher\"" in out and "anyone holding 'ACME Bulk Access Request - Launcher Access'" in out
-    path = tmp_path / "te.json"
-    data = json.loads(EXAMPLE.read_text())
-    path.write_text(json.dumps({**data, "plugin": {**data["plugin"], "submit": "test-endpoint"}}))
-    assert cli.main(["show-config", "--config", str(path)]) == 0
-    out = capsys.readouterr().out
-    assert "plugin.submit \"test-endpoint\"" in out and "only ORG_ADMIN users can submit" in out
+    out = _show(tmp_path, capsys)
+    assert 'plugin.submit "direct": the plugin files the access requests itself' in out
+    assert "holders of 'ACME Bulk Access Request - Launcher Access' can submit" in out
+    out = _show(tmp_path, capsys, plugin__submit="launcher")
+    assert 'plugin.submit "launcher": the plugin launches' in out
 
 
 def test_clip_flattens_whitespace_and_cuts_with_an_ellipsis():
-    # Mirrors rules.ts clip (the plugin clips the justification it sends; rules.spec.ts has the same cases).
+    # Mirrors rules.ts clip (rules.spec.ts has the same cases).
     assert rules.clip("  a\n b\t c  ", 10) == "a b c"
     assert rules.clip("abcdefghij", 10) == "abcdefghij"
     assert rules.clip("abcdefghijk", 10) == "abcdefghi…"
@@ -1011,31 +1015,19 @@ LINKS = definitions.EmailLinks(UI, "pid-1")
 HOSTILE = 'Costs $5 #if( ## $foo ${bar} #end\nline 2 "quoted" back\\slash <b>x</b>'
 
 
-def _state(variant, *, decision=None, part="", access="Permanent", people=("p1", "p2", "p3"), inc="INC0012345",
-           justification="Quarter-end audit", comments=("OK for the audit.",), decided_by="Aisha Bello", **form_extra):
+def _state(*, part="", access="Permanent", people=("p1", "p2", "p3"), inc="INC0012345",
+           justification="Quarter-end audit", **form_extra):
     items = [{"id": "a", "type": "ACCESS_PROFILE", "name": "ACME Finance Read"},
              {"id": "e", "type": "ENTITLEMENT", "name": "ACME-AP-Clerk"}]
-    state = {"getRequester": {"attributes": {"displayName": "Rae Quester"}},
-             "getApprover": {"id": "ap", "attributes": {"displayName": "Aisha Bello"}}}
-    if variant == "plugin":
-        state["trigger"] = {"people": list(people), "items": items, "approverId": "ap", "requesterId": "rq", "inc": inc,
-                            "justification": justification, "partLabel": part, "accessLabel": access,
-                            "removeDuration": "" if access == "Permanent" else "30d", **form_extra}
-    else:
-        state["interactiveForm"] = {"formData": {"people": list(people), "items": items, "approver": ["ap"], "inc": inc,
-                                                 "justification": justification, **form_extra}}
-        state["defineVariableAccess"] = {"partLabel": part, "accessLabel": access}
-    if decision:
-        key = "approvedBy" if decision == "APPROVED" else "rejectedBy"
-        state["bulkApproval"] = {"status": decision, "comments": [{"comment": f"{inc}: {justification}"}]
-                                 + [{"comment": c} for c in comments],
-                                 **({key: [{"name": decided_by}]} if decided_by and decision != "EXPIRED" else {})}
-    return state
+    return {"getRequester": {"attributes": {"displayName": "Rae Quester"}},
+            "interactiveForm": {"formData": {"people": list(people), "items": items, "inc": inc,
+                                             "justification": justification, **form_extra}},
+            "defineVariableAccess": {"partLabel": part, "accessLabel": access}}
 
 
-def _render_email(cfg, step, variant, *, links=LINKS, state=None, **kw):
-    wf = definitions.bulk_workflow(cfg, variant=variant, owner_id="o", form_id="f", links=links)
-    return velocity_lite.render_step(_steps(wf)[step], state or _state(variant, **kw))
+def _render_email(cfg, step, *, links=LINKS, state=None, **kw):
+    wf = definitions.bulk_workflow(cfg, owner_id="o", form_id="f", links=links)
+    return velocity_lite.render_step(_steps(wf)[step], state or _state(**kw))
 
 
 def _email_steps(wf):
@@ -1061,7 +1053,6 @@ def test_ui_base_url_comes_from_the_api_host_unless_configured():
     ("notifications__uiBaseUrl", 42, config.MSG_UI_BASE_URL),
     ("notifications__helpContact", "x" * (config.HELP_CONTACT_MAX + 1), config.MSG_HELP_CONTACT),
     ("notifications__helpContact", ["a"], config.MSG_HELP_CONTACT),
-    ("notifications__pendingEmail", "yes", config.MSG_PENDING_EMAIL),
 ])
 def test_notification_settings_are_checked(key, value, message):
     with pytest.raises(config.ConfigError) as err:
@@ -1071,117 +1062,76 @@ def test_notification_settings_are_checked(key, value, message):
 
 def test_notification_defaults():
     cfg = config.load(EXAMPLE)
-    assert cfg.help_contact is None and cfg.ui_base_url_override is None and cfg.pending_email is True
+    assert cfg.help_contact is None and cfg.ui_base_url_override is None
     assert cfg_with(notifications__helpContact="  Service   Desk  ").help_contact == "Service Desk"
 
 
-@pytest.mark.parametrize("variant", definitions.VARIANTS)
 @pytest.mark.parametrize("mode", ["dry-run", "live"])
-def test_every_email_says_what_why_and_where_to_go(variant, mode):
+def test_every_email_says_what_why_and_where_to_go(mode):
     cfg = cfg_with(mode=mode)
-    steps = _email_steps(definitions.bulk_workflow(cfg, variant=variant, owner_id="o", form_id="f", links=LINKS))
-    expected = {"Email Pending", "Email Approved", "Email Denied", "Reject Self Approval", "Reject Approver In People",
-                "Reject Bad INC", "Reject Bad Duration"}
-    if variant == "launcher":
-        expected = {f"Email {n}" if n.startswith("Reject") else n for n in expected} | {"Email Reject Bad Unit"}
-    assert set(steps) == expected
+    steps = _email_steps(definitions.bulk_workflow(cfg, owner_id="o", form_id="f", links=LINKS))
+    assert set(steps) == {"Email Requested", "Email Reject Bad INC", "Email Reject Bad Duration", "Email Reject Bad Unit"}
     for name in steps:
-        decision = {"Email Approved": "APPROVED", "Email Denied": "REJECTED"}.get(name)
-        subject, body = _render_email(cfg, name, variant, decision=decision)
+        subject, body = _render_email(cfg, name)
         headings = ["What", "Why", "Need help?"]
-        headings += ["What to fix"] if "Reject" in name else ["Decision"] if decision else []
-        headings += ["What happens next"] if name in ("Email Pending", "Email Approved") else ["What to do now"]
+        headings += ["What to fix", "What to do now"] if "Reject" in name else ["What happens next"]
         for heading in headings:
             assert f">{heading}</td>" in body, (name, heading)
         for text in ("INC0012345", "ACME Finance Read", "(access profile)", "ACME-AP-Clerk", "(entitlement)", "3 people",
                      "Quarter-end audit", "Rae Quester", "Contact your SailPoint administrator."):
             assert text in body, (name, text)
-        # Nothing unrendered or empty-looking reaches the reader.
-        for leftover in ("None", "$!{", "{{", "null", "undefined", "  ("):
+        # Nothing unrendered or empty-looking reaches the reader, and nothing mentions an approver of the request.
+        for leftover in ("None", "$!{", "{{", "null", "undefined", "  (", "for approval", "Approver"):
             assert leftover not in body and leftover not in subject, (name, leftover)
         assert ("DRY RUN" in body) == (mode == "dry-run")
 
 
-def test_the_pending_email_says_where_the_approver_decides():
-    _, body = _render_email(cfg_with(), "Email Pending", "launcher")
-    assert f'<a href="{UI}/ui/d/approvals/other/requested-items"' in body and "Approvals → Other</a>" in body
-    assert "<b>Grant: Bulk access INC0012345</b>" in body and "Approving there takes effect at once" in body
-    assert "If nobody decides within 7 days, it expires and nothing is requested." in body
-    assert f'<a href="{UI}/ui/plugin/pid-1"' in body and "My bulk requests" in body
-    _, body = _render_email(cfg_with(approval__actionAtTimeout="APPROVED"), "Email Pending", "plugin", part=" (2/3)")
-    assert "it is approved automatically" in body and "<b>Grant: Bulk access INC0012345 (2/3)</b>" in body
-
-
-def test_the_approved_email_says_where_to_track_it():
-    _, body = _render_email(cfg_with(mode="live"), "Email Approved", "launcher", decision="APPROVED", access="Temporary: 30d")
+def test_the_requested_email_says_where_the_requests_are():
+    _, body = _render_email(cfg_with(mode="live"), "Email Requested", access="Temporary: 30d")
+    assert "Access was requested for every person and item on your bulk access request <b>INC0012345</b>." in body
     assert "don't appear in your Request Center → My Requests" in body
-    assert (f'<a href="{UI}/ui/plugin/pid-1" style="color:rgb(21,128,61);font-weight:bold">'
-            "'ACME Bulk Access Request' → My bulk requests</a>") in body
+    assert "An administrator finds them all by searching SailPoint for the INC number." in body
     assert "Temporary access is removed automatically when it ends" in body
-    # The decision's comment is shown, not the request's own first comment.
-    assert "OK for the audit." in body and "INC0012345: Quarter-end audit" not in body
-    # An admin acting for the approver is named as the decider.
-    _, body = _render_email(cfg_with(mode="live"), "Email Approved", "plugin", decision="APPROVED", decided_by="Ada Admin",
-                      comments=())
-    assert "<b>Ada Admin</b> approved" in body and ">No comment</span>" in body
-
-
-def test_the_denied_email_gives_the_reason_and_where_to_resubmit():
-    _, body = _render_email(cfg_with(), "Email Denied", "launcher", decision="REJECTED", comments=("Too broad.", "Use the role."))
-    assert "Bulk access request not approved" in body and "<b>Aisha Bello</b> did not approve" in body
-    assert "Too broad." in body and "Use the role." in body
-    assert f'<a href="{UI}/ui/plugin/pid-1"' in body and "(New request tab)" in body
-    assert f'<a href="{UI}/ui/d/launchpad"' in body and "→ 'ACME Bulk Access Request'" in body
-    _, body = _render_email(cfg_with(), "Email Denied", "launcher", decision="EXPIRED", comments=())
-    assert "Bulk access request expired" in body and "within 7 days, so it expired" in body
-    assert "Nobody (it expired)" in body and "did not approve" not in body
+    _, body = _render_email(cfg_with(mode="live"), "Email Requested")
+    assert "Each person keeps the access until it's removed." in body
 
 
 @pytest.mark.parametrize("step,field,problem,state_kw,shown", [
-    ("Reject Self Approval", "Approver", "You can't approve your own bulk request.", {}, None),
-    ("Reject Approver In People", "Approver", rules.MSG_APPROVER_IN_PEOPLE, {}, None),
     ("Reject Bad INC", "ServiceNow incident (INC) number", "Enter a ServiceNow incident number", {"inc": "INC12"}, "INC12"),
     ("Reject Bad Duration", "Duration", rules.MSG_DURATION_NUMBER, {"duration": "0"}, "0"),
     ("Reject Bad Unit", "Unit", rules.MSG_DURATION_UNIT, {"durationUnit": ["x"]}, "x"),
 ])
 def test_rejection_emails_name_the_field_to_fix(step, field, problem, state_kw, shown):
-    subject, body = _render_email(cfg_with(), f"Email {step}", "launcher", **state_kw)
-    assert subject.startswith("Not sent for approval: ") and "INC0" not in subject
+    subject, body = _render_email(cfg_with(), f"Email {step}", **state_kw)
+    assert subject.startswith("Not requested: ") and "INC0" not in subject
     assert f"Fix your bulk access request: {field}</td>" in body
     assert f"<b>{field}</b>" in body and problem in body
-    assert "Nothing was sent for approval and nothing was requested." in body
+    assert "was stopped before anything was requested" in body and "Nothing was requested." in body
     assert f'<a href="{UI}/ui/d/launchpad"' in body
-    if shown is not None:
-        assert f'>You entered</td><td style="padding:4px 0;vertical-align:top">{shown}</td>' in body
-
-
-def test_plugin_rejections_are_emails_too():
-    _, body = _render_email(cfg_with(), "Reject Bad Duration", "plugin", removeDuration="abc")
-    assert "Temporary access (how long)" in body and ">abc</td>" in body
-    assert f'<a href="{UI}/ui/plugin/pid-1"' in body
+    assert f'<a href="{UI}/ui/plugin/pid-1"' in body and "(New request tab)" in body
+    assert f'>You entered</td><td style="padding:4px 0;vertical-align:top">{shown}</td>' in body
 
 
 def test_emails_without_links_still_name_every_page():
     for links in (definitions.EmailLinks(), definitions.EmailLinks(UI)):
-        _, pending = _render_email(cfg_with(), "Email Pending", "launcher", links=links)
-        _, denied = _render_email(cfg_with(), "Email Denied", "launcher", links=links, decision="REJECTED")
-        assert "Approvals → Other" in pending and "My bulk requests" in pending
-        assert "plugin/" not in pending + denied                            # no plugin ID: no plugin link
-        assert "<b>'ACME Bulk Access Request'</b> (New request tab)" in denied
+        _, requested = _render_email(cfg_with(mode="live"), "Email Requested", links=links)
+        _, rejected = _render_email(cfg_with(), "Email Reject Bad INC", links=links)
+        assert "Approvals → Access Requests" in requested and "'ACME Bulk Access Request'" in requested
+        assert "plugin/" not in requested + rejected                         # no plugin ID: no plugin link
+        assert "<b>'ACME Bulk Access Request'</b> (New request tab)" in rejected
         if not links.ui:
-            assert 'href="http' not in pending + denied
+            assert 'href="http' not in requested + rejected
     # Without the plugin deployment, no plugin pages are mentioned at all.
-    _, body = _render_email(cfg_with(deployments__plugin=False), "Email Pending", "launcher")
-    assert "My bulk requests" not in body and "plugin/" not in body
-    _, body = _render_email(cfg_with(deployments__launcher=False, plugin__submit="test-endpoint"), "Email Denied", "plugin",
-                      decision="REJECTED")
-    assert "Launchpad" not in body and "(New request tab)" in body
+    _, body = _render_email(cfg_with(deployments__plugin=False, mode="live"), "Email Requested")
+    assert "Approvals tab" not in body and "plugin/" not in body
+    _, body = _render_email(cfg_with(deployments__plugin=False), "Email Reject Bad INC")
+    assert "(New request tab)" not in body and "Launchpad" in body
 
 
 def test_email_bodies_are_constant_velocity_and_values_travel_in_the_context():
-    for variant in definitions.VARIANTS:
-        wf = definitions.bulk_workflow(cfg_with(mode="live", temporaryAccess__maxDays=30), variant=variant,
-                                       owner_id="o", form_id="f", links=LINKS)
+    for mode in ("dry-run", "live"):
+        wf = definitions.bulk_workflow(cfg_with(mode=mode, temporaryAccess__maxDays=30), owner_id="o", form_id="f",
+                                       links=LINKS)
         for name, step in _email_steps(wf).items():
             attrs = step["attributes"]
             body = attrs["body"]
@@ -1199,18 +1149,18 @@ def test_email_bodies_are_constant_velocity_and_values_travel_in_the_context():
 
 
 def test_requester_text_is_shown_verbatim_and_never_read_as_a_template():
-    for variant in definitions.VARIANTS:
-        _, body = _render_email(cfg_with(), "Email Pending", variant, justification=HOSTILE)
+    for step in ("Email Requested", "Email Reject Bad INC"):
+        _, body = _render_email(cfg_with(mode="live"), step, justification=HOSTILE)
         assert f'<span style="white-space:pre-wrap">{HOSTILE}</span>' in body
 
 
 def test_one_item_lists_arrive_unwrapped_and_still_render():
-    # The workflow engine unwraps one-item lists: one person, and a decision without a comment.
-    _, body = _render_email(cfg_with(), "Email Denied", "plugin", decision="REJECTED", people=("p1",), comments=())
-    assert "1 person" in body and ">No comment</span>" in body
-    state = _state("launcher")
-    state["interactiveForm"]["formData"]["items"] = state["interactiveForm"]["formData"]["items"][:1]
-    _, body = _render_email(cfg_with(), "Email Pending", "launcher", state=state)
+    # The workflow engine unwraps one-item lists: one person, and one item.
+    _, body = _render_email(cfg_with(), "Email Requested", people=("p1",))
+    assert "1 person" in body
+    state = _state()
+    state["interactiveForm"]["formData"]["items"] = state["interactiveForm"]["formData"]["items"][0]
+    _, body = _render_email(cfg_with(), "Email Requested", state=state)
     assert "ACME Finance Read" in body and "ACME-AP-Clerk" not in body
 
 
@@ -1219,17 +1169,12 @@ def test_help_contact_is_escaped_and_linked():
     assert definitions.help_html(cfg) == ('IAM &lt;desk&gt;: <a href="mailto:iam@acme.com">iam@acme.com</a> or '
                                           '<a href="https://help.acme.com/iam">https://help.acme.com/iam</a>.')
     assert definitions.help_html(config.load(EXAMPLE)) == definitions.DEFAULT_HELP
-    _, body = _render_email(cfg, "Email Pending", "plugin")
+    _, body = _render_email(cfg, "Email Requested")
     assert '<a href="mailto:iam@acme.com">iam@acme.com</a>' in body
 
 
 def test_who_gets_which_email():
-    steps = _email_steps(definitions.bulk_workflow(config.load(EXAMPLE), variant="launcher", owner_id="o", form_id="f"))
-    for name in ("Email Pending", "Email Approved", "Email Denied"):
-        attrs = steps[name]["attributes"]
-        assert attrs["recipientEmailList.$"] == "$.getRequester.attributes.email"
-        assert attrs["carbonCopy.$"] == "$.getApprover.attributes.email"
-    rejected = steps["Email Reject Bad INC"]["attributes"]
-    assert rejected["recipientEmailList.$"] == "$.getRequester.attributes.email" and "carbonCopy.$" not in rejected
-    no_cc = _email_steps(definitions.bulk_workflow(cfg_with(notifications__ccApprover=False), variant="plugin", owner_id="o"))
-    assert all("carbonCopy.$" not in s["attributes"] for s in no_cc.values())
+    steps = _email_steps(definitions.bulk_workflow(config.load(EXAMPLE), owner_id="o", form_id="f"))
+    for attrs in (s["attributes"] for s in steps.values()):
+        assert attrs["recipientEmailList.$"] == "$.getRequester.attributes.email" and "carbonCopy.$" not in attrs
+

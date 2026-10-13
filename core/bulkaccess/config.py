@@ -22,22 +22,23 @@ from typing import Any
 
 MODES = ("dry-run", "live")
 ITEM_TYPES = ("ACCESS_PROFILE", "ROLE", "ENTITLEMENT")
-TIMEOUT_ACTIONS = ("EXPIRED", "APPROVED")
-PRIORITIES = ("LOW", "MEDIUM", "HIGH")
 DEPLOYMENTS = ("launcher", "plugin")
 
 # Printed by show-config and the installers when `owner` is null (a note, not an error: whether the PAT user is a
 # person or a service identity can't be told offline).
-OWNER_NOTE = ("Workflows are owned by the PAT user; requests show that identity as requester, and approvals it would get "
-              "as an item owner/manager are escalated to an admin. Consider a dedicated service identity in `owner`.")
+OWNER_NOTE = ("The Launcher workflow is owned by the PAT user: requests submitted through the Launcher show that identity "
+              "as requester, and item approvals it would get as an owner or manager are escalated to an admin. Consider "
+              "a dedicated service identity in `owner`.")
 
 # A form SELECT accepts at most 30 selections (hard UI limit in SailPoint forms).
 FORM_SELECT_MAX = 30
 # The workflow Loop operator (sp:loop:iterator) rejects inputs over 250 items
 # ("Input has N iterations which exceed 250 iteration limit", verified live), so one
-# workflow run -- one approval -- covers at most 250 people. Bigger lists are split
+# Launcher workflow run covers at most 250 people. Bigger lists are split
 # into parts. (The Serial Loop operator is no use here: it silently stops after 50.)
 LOOP_MAX = 250
+# One access request (POST /access-requests) names at most 10 people; the plugin files direct requests in batches.
+ACCESS_REQUEST_PEOPLE_MAX = 10
 
 TEMPORARY_MODES = ("duration", "endDate")
 # Manage Access (v2) `removeDuration` strings are "<n><suffix>" (verified live:
@@ -61,13 +62,16 @@ MSG_APPROVALS_MAX_ROWS = ("`approvals.maxRows` must be a whole number between "
 
 
 # How the plugin submits a request (`plugin.submit`):
-#  "launcher"      -- it starts the Launcher deployment's Launcher and submits its form as the signed-in user,
-#                     so anyone with the Launcher Access profile can submit (verified live as a non-admin);
-#  "test-endpoint" -- it starts its own disabled workflow through the workflow test endpoint (ORG_ADMIN only).
-PLUGIN_SUBMIT_MODES = ("launcher", "test-endpoint")
-MSG_PLUGIN_SUBMIT = '`plugin.submit` must be "launcher" or "test-endpoint".'
+#  "direct"   -- it files the access requests itself, as the signed-in user (POST /access-requests, 10 people at a
+#                time): the requester is the person who asked, and each item is approved as SailPoint has it set up.
+#                Needs the tenant to let users request access for others (the installer checks).
+#  "launcher" -- it starts the Launcher deployment's Launcher and submits its form as the signed-in user; the Launcher
+#                workflow then files the requests (as the workflow owner).
+# Either way, only holders of the Launcher Access profile may submit (verified live as a non-admin).
+PLUGIN_SUBMIT_MODES = ("direct", "launcher")
+MSG_PLUGIN_SUBMIT = '`plugin.submit` must be "direct" or "launcher".'
 MSG_PLUGIN_SUBMIT_LAUNCHER = ('`plugin.submit` "launcher" needs the Launcher deployment: set `deployments.launcher` '
-                              'to true, or use "test-endpoint".')
+                              'to true, or use "direct".')
 
 
 # Emails (`notifications`): links point at the tenant's UI, derived from the API host of SAIL_BASE_URL
@@ -79,7 +83,10 @@ MSG_UI_BASE_URL = ('`notifications.uiBaseUrl` must be null or an http(s) URL suc
                    '(no query string, "#", "$", quotes or spaces).')
 HELP_CONTACT_MAX = 300
 MSG_HELP_CONTACT = f"`notifications.helpContact` must be null or text of at most {HELP_CONTACT_MAX} characters."
-MSG_PENDING_EMAIL = "`notifications.pendingEmail` must be true or false."
+
+# Settings of the single bulk approval, which no longer exists: still accepted, ignored, and noted (cfg.deprecations).
+REMOVED_BULK_APPROVAL = ("is no longer used: bulk requests have no approval of their own; each item is approved "
+                         "the way SailPoint has it set up. Remove it from the config.")
 
 
 def msg_approvals_flag(key: str) -> str:
@@ -101,11 +108,7 @@ class Config:
     catalog_name_starts_with: str | None
     catalog_max_items: int
     people_max: int | None
-    approval_timeout_days: int
-    approval_action_at_timeout: str
-    approval_priority: str
     override_recipients: tuple[str, ...]
-    cc_approver: bool
     owner_id: str | None
     plugin_alias: str
     plugin_display_name: str
@@ -119,7 +122,7 @@ class Config:
     deploy_launcher: bool = True
     deploy_plugin: bool = True
     plugin_public: bool = False
-    plugin_submit: str = "test-endpoint"
+    plugin_submit: str = "direct"
     approvals_enabled: bool = True
     approvals_concurrency: int = 4
     approvals_use_bulk_endpoint: str = "auto"
@@ -128,9 +131,8 @@ class Config:
     approvals_deny_comment_required: bool = True
     help_contact: str | None = None
     ui_base_url_override: str | None = None
-    pending_email: bool = True
     source_path: str | None = field(default=None, compare=False)
-    # Old key names that were mapped to new ones; shown by `bulkaccess.py show-config`.
+    # Old or removed keys found in the config; shown by `bulkaccess.py show-config` and the installers.
     deprecations: tuple[str, ...] = field(default=(), compare=False)
 
     # Every object we create is named from the prefix, so a tenant can host several
@@ -148,7 +150,8 @@ class Config:
         return self.base_name
 
     @property
-    def plugin_workflow_name(self) -> str:
+    def old_plugin_workflow_name(self) -> str:
+        """The plugin's own workflow from before the "direct" submit mode; uninstall still removes it."""
         return f"{self.base_name} (Plugin)"
 
     @property
@@ -157,8 +160,7 @@ class Config:
 
     @property
     def launcher_access_profile_name(self) -> str:
-        """The requestable access profile that lets its holders use the Launcher (and, in launcher
-        submit mode, submit from the plugin)."""
+        """The requestable access profile that lets its holders use the Launcher and submit from the plugin."""
         return f"{self.base_name} - Launcher Access"
 
     @property
@@ -177,7 +179,7 @@ class Config:
 
     @property
     def plugin_people_max(self) -> int | None:
-        """The plugin's people cap; None means no limit (sent in parts of `part_size`)."""
+        """The plugin's people cap; None means no limit (through the Launcher, sent in parts of `part_size`)."""
         return self.people_max
 
     @property
@@ -194,9 +196,9 @@ class Config:
 
     @property
     def plugin_temporary_modes(self) -> tuple[str, ...]:
-        """What the plugin offers. In launcher submit mode the request travels in the Launcher form,
-        which carries temporary access only in its duration fields (an end date goes as hours), so
-        without those fields the plugin offers permanent access only."""
+        """What the plugin offers. Direct requests carry an exact removal date, so every configured mode works. In
+        launcher submit mode the request travels in the Launcher form, which carries temporary access only in its
+        duration fields (an end date goes as hours), so without those fields the plugin offers permanent access only."""
         modes = self.temporary_allow if self.temporary_enabled else ()
         if self.plugin_submits_via_launcher and not self.launcher_form_has_duration:
             return ()
@@ -208,9 +210,9 @@ class Config:
         return self.deploy_plugin and self.plugin_submit == "launcher"
 
     @property
-    def plugin_needs_workflow(self) -> bool:
-        """The plugin's own (disabled) workflow is only installed for the test-endpoint mode."""
-        return self.deploy_plugin and self.plugin_submit == "test-endpoint"
+    def plugin_submits_directly(self) -> bool:
+        """The plugin files the access requests itself, as the signed-in user."""
+        return self.deploy_plugin and self.plugin_submit == "direct"
 
     @property
     def plugin_approvals_enabled(self) -> bool:
@@ -283,7 +285,6 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
     inc = data.get("inc") or {}
     catalog = data.get("catalog") or {}
     people = data.get("people") or {}
-    approval = data.get("approval") or {}
     notes = data.get("notifications") or {}
     plugin = data.get("plugin") or {}
     temporary = data.get("temporaryAccess") or {}
@@ -331,12 +332,11 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
     _require(all(u in DURATION_UNITS for u in units), f"`temporaryAccess.units` may only contain {tuple(DURATION_UNITS)}.")
     max_days = _optional_int(temporary.get("maxDays"), "temporaryAccess.maxDays", 1)
 
-    timeout = int(approval.get("timeoutDays", 7))
-    _require(1 <= timeout <= 90, "`approval.timeoutDays` must be between 1 and 90.")
-    at_timeout = approval.get("actionAtTimeout", "EXPIRED")
-    _require(at_timeout in TIMEOUT_ACTIONS, f"`approval.actionAtTimeout` must be one of {TIMEOUT_ACTIONS}.")
-    priority = approval.get("priority", "MEDIUM")
-    _require(priority in PRIORITIES, f"`approval.priority` must be one of {PRIORITIES}.")
+    if "approval" in data:
+        deprecations.append(f"`approval` {REMOVED_BULK_APPROVAL}")
+    for key in ("ccApprover", "pendingEmail"):
+        if key in notes:
+            deprecations.append(f"`notifications.{key}` {REMOVED_BULK_APPROVAL}")
 
     recipients = tuple(notes.get("overrideRecipients") or ())
     _require(all("@" in r for r in recipients), "`notifications.overrideRecipients` must be email addresses.")
@@ -350,9 +350,6 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
         help_contact = " ".join(help_contact.split()) or None
     _require(help_contact is None or (isinstance(help_contact, str) and len(help_contact) <= HELP_CONTACT_MAX),
              MSG_HELP_CONTACT)
-    pending_email = notes.get("pendingEmail", True)
-    _require(isinstance(pending_email, bool), MSG_PENDING_EMAIL)
-
     access_approval = access.get("launcherApproval")
     old_launcher = data.get("launcher") or {}
     if "accessApproval" in old_launcher:
@@ -364,9 +361,11 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
 
     approvals = _approvals(data.get("approvals"))
 
-    submit = plugin.get("submit")
-    if submit is None:
-        submit = "launcher" if deploy_launcher else "test-endpoint"
+    submit = plugin.get("submit") or "direct"
+    if submit == "test-endpoint":
+        deprecations.append('`plugin.submit` "test-endpoint" is now "direct": the plugin files the access requests '
+                            "itself, so it no longer needs its own workflow.")
+        submit = "direct"
     _require(submit in PLUGIN_SUBMIT_MODES, MSG_PLUGIN_SUBMIT)
     _require(submit != "launcher" or deploy_launcher, MSG_PLUGIN_SUBMIT_LAUNCHER)
 
@@ -384,11 +383,7 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
         catalog_name_starts_with=catalog.get("nameStartsWith") or None,
         catalog_max_items=max_items,
         people_max=people_max,
-        approval_timeout_days=timeout,
-        approval_action_at_timeout=at_timeout,
-        approval_priority=priority,
         override_recipients=recipients,
-        cc_approver=bool(notes.get("ccApprover", True)),
         owner_id=data.get("owner") or None,
         plugin_alias=alias,
         plugin_display_name=plugin.get("displayName") or f"{prefix} Bulk Access Request",
@@ -411,7 +406,6 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
         approvals_deny_comment_required=approvals["denyCommentRequired"],
         help_contact=help_contact,
         ui_base_url_override=ui_url,
-        pending_email=pending_email,
         source_path=source_path,
         deprecations=tuple(deprecations),
     )

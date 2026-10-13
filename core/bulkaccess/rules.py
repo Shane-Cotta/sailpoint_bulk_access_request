@@ -16,19 +16,25 @@ from .config import DURATION_UNITS, LOOP_MAX, UNIT_MAX_DAYS, Config
 
 TYPE_LABELS = {"ACCESS_PROFILE": "Access profile", "ROLE": "Role", "ENTITLEMENT": "Entitlement"}
 
-# SailPoint limits on a generic approval task's text fields.
-APPROVAL_NAME_MAX = 50
-APPROVAL_DESCRIPTION_MAX = 150
-APPROVAL_COMMENT_MAX = 150
+# The justification travels in every access request's comment. SailPoint accepts long comments (4,000 characters
+# verified live); this keeps them readable for the item approvers.
+JUSTIFICATION_MAX = 1000
+MSG_JUSTIFICATION = "Enter a business justification."
+MSG_JUSTIFICATION_LONG = f"Keep the justification to {JUSTIFICATION_MAX} characters or fewer."
+
+# Shown next to catalog items whose own approval setup has no approver (the installer works it out:
+# no_approval_ids): SailPoint grants them as soon as they're requested.
+NO_APPROVAL_LABEL = "No approval: granted right away"
 
 
 def inc_is_valid(cfg: Config, value: str | None) -> bool:
     return bool(value) and re.search(cfg.inc_pattern, value.strip()) is not None
 
 
-def validate_request(cfg: Config, *, requester_id: str, approver_id: str, people: list[str],
-                     items: list[dict[str, Any]], inc: str) -> list[str]:
-    """Everything wrong with a bulk request, as sentences (empty list = OK)."""
+def validate_request(cfg: Config, *, people: list[str], items: list[dict[str, Any]], inc: str,
+                     justification: str) -> list[str]:
+    """Everything wrong with a bulk request, as sentences (empty list = OK). Each item is then approved the way
+    SailPoint has it set up; there is no approval for the request as a whole."""
     problems = []
     if not people:
         problems.append("Choose at least one person.")
@@ -40,16 +46,13 @@ def validate_request(cfg: Config, *, requester_id: str, approver_id: str, people
         problems.append(f"Choose at most {cfg.catalog_max_items} access items.")
     if any(i.get("type") not in cfg.catalog_types for i in items):
         problems.append("One of the chosen items is not an allowed type.")
-    if not approver_id:
-        problems.append("Choose an approver.")
-    elif approver_id == requester_id:
-        # SailPoint reassigns self-approvals to another admin, so refuse up front.
-        problems.append("The approver must be someone other than you.")
-    elif approver_id in people:
-        # Nobody approves access for themselves, even inside a bulk request.
-        problems.append(MSG_APPROVER_IN_PEOPLE)
     if not inc_is_valid(cfg, inc):
         problems.append(cfg.inc_message)
+    text = (justification or "").strip()
+    if not text:
+        problems.append(MSG_JUSTIFICATION)
+    elif len(text) > JUSTIFICATION_MAX:
+        problems.append(MSG_JUSTIFICATION_LONG)
     return problems
 
 
@@ -59,14 +62,14 @@ def clip(text: str, limit: int) -> str:
 
 
 # ── where the catalog comes from (CONTRACTS §8) ──────────────────────────────
-# /v3/requestable-objects only lists access profiles and roles: ENTITLEMENT is outside its
+# /requestable-objects only lists access profiles and roles: ENTITLEMENT is outside its
 # `types` enum (alone -> 400; repeated next to another type -> silently dropped). Requestable
-# entitlements come from /v2025/entitlements?filters=requestable eq true instead.
+# entitlements come from /entitlements?filters=requestable eq true instead.
 REQUESTABLE_OBJECT_TYPES = ("ACCESS_PROFILE", "ROLE")
 
 
 def requestable_object_types(cfg: Config) -> list[str]:
-    """The configured types that /v3/requestable-objects can list (empty: don't call it)."""
+    """The configured types that /requestable-objects can list (empty: don't call it)."""
     return [t for t in cfg.catalog_types if t in REQUESTABLE_OBJECT_TYPES]
 
 
@@ -76,23 +79,43 @@ def filter_quote(value: str) -> str:
 
 
 def entitlement_filter(cfg: Config) -> str | None:
-    """The /v2025/entitlements filter for the catalog's entitlements (None: not offered)."""
+    """The /entitlements filter for the catalog's entitlements (None: not offered)."""
     if "ENTITLEMENT" not in cfg.catalog_types:
         return None
     prefix = cfg.catalog_name_starts_with
     return "requestable eq true" + (f" and name sw {filter_quote(prefix)}" if prefix else "")
 
 
-def catalog_options(cfg: Config, requestable: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Form SELECT options from /v3/requestable-objects and requestable entitlements, filtered by the config.
+def no_approval_ids(objects: Iterable[dict[str, Any]], entitlement_default: Any) -> set[str]:
+    """The IDs of the items SailPoint grants without any approval (CLAUDE.md: verified live).
 
-    Entitlement rows (from /v2025/entitlements) carry no `type`; the caller tags them "ENTITLEMENT".
+    `objects` carry `type` and their own `approvalSchemes`: an access profile or role with none is granted at once.
+    An entitlement with none falls back to the tenant's `entitlementRequestConfig.grantRequestApprovalSchemes`
+    (`entitlement_default`, e.g. "sourceOwner"), so it only goes without approval when that is empty too.
+    """
+    default_empty = not entitlement_default or str(entitlement_default).strip().lower() in ("none", "null")
+    out = set()
+    for obj in objects:
+        if obj.get("approvalSchemes"):
+            continue
+        if obj.get("type") != "ENTITLEMENT" or default_empty:
+            out.add(obj["id"])
+    return out
+
+
+def catalog_options(cfg: Config, requestable: Iterable[dict[str, Any]],
+                    no_approval: Iterable[str] = ()) -> list[dict[str, Any]]:
+    """Form SELECT options from /requestable-objects and requestable entitlements, filtered by the config.
+
+    Entitlement rows (from /entitlements) carry no `type`; the caller tags them "ENTITLEMENT". Items in
+    `no_approval` (no_approval_ids) say so in their sub-label, so whoever picks them sees they're granted at once.
 
     Each option's value is the complete access object ({id, type, name}), which is
     exactly what the workflow's Manage Access step needs -- so the workflow never has
     to rebuild objects from bare IDs.
     """
     options = []
+    granted_at_once = set(no_approval)
     own = cfg.launcher_access_profile_name   # the profile that grants this tool; never offer it
     for obj in requestable:
         if obj.get("name") == own:
@@ -105,50 +128,69 @@ def catalog_options(cfg: Config, requestable: Iterable[dict[str, Any]]) -> list[
             continue
         source = (obj.get("source") or {}).get("name") if isinstance(obj.get("source"), dict) else None
         sub = TYPE_LABELS.get(kind, kind) + (f" · {source}" if source else "")
+        if obj["id"] in granted_at_once:
+            sub += f" · {NO_APPROVAL_LABEL}"
         options.append({"label": name, "subLabel": sub, "value": {"id": obj["id"], "type": kind, "name": name}})
     return sorted(options, key=lambda o: (o["label"].lower(), o["value"]["type"]))
 
 
 # ── the item comment (CONTRACTS §4) ───────────────────────────────────────────
-# Every access request the workflow submits carries one comment, built by definitions.py:
-#   "<INC> | Bulk access request by <requester> | Approved by <approver> | <access label> | <justification>"
+# Every access request a bulk request files carries one comment (the Launcher workflow builds it in definitions.py,
+# the plugin in rules.ts bulkComment):
+#   "<INC> | Bulk access request by <requester> | <access label> | <justification>"
+# Requests filed before the bulk approver was removed carry one more field, "Approved by <approver>", after the
+# requester; they are still read (approver set), so approvals already pending keep their INC grouping.
 COMMENT_SEPARATOR = " | "
 REQUESTER_LABEL = "Bulk access request by"
-APPROVER_LABEL = "Approved by"
 
-# Four fields without "|", then the justification (everything after the 4th separator, "|" allowed).
-# Written to behave the same in Python and JavaScript (rules.ts uses the same patterns).
-_BULK_COMMENT = re.compile(r"^\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([\s\S]*?)\s*$")
+# Three fields without "|", then the justification (everything after the 3rd separator, "|" allowed); the old form
+# has four. Written to behave the same in Python and JavaScript (rules.ts uses the same patterns).
+_BULK_COMMENT = re.compile(r"^\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([\s\S]*?)\s*$")
+_OLD_BULK_COMMENT = re.compile(r"^\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([\s\S]*?)\s*$")
 _REQUESTER = re.compile(r"^Bulk\s+access\s+request\s+by\s+(\S[\s\S]*)$")
-_APPROVER = re.compile(r"^Approved\s+by\s+(\S[\s\S]*)$")
+_OLD_APPROVER_LABEL = re.compile(r"^Approved\s+by\b")
+_OLD_APPROVER = re.compile(r"^Approved\s+by\s+(\S[\s\S]*)$")
 
 
-def parse_bulk_comment(cfg: Config, text: Any) -> dict[str, str] | None:
+def bulk_comment(inc: str, requester: str, access_label: str, justification: str) -> str:
+    """The comment every access request of a bulk request carries (parse_bulk_comment reads it back)."""
+    return COMMENT_SEPARATOR.join([inc.strip(), f"{REQUESTER_LABEL} {requester}", access_label, justification.strip()])
+
+
+def parse_bulk_comment(cfg: Config, text: Any) -> dict[str, Any] | None:
     """The parts of a bulk request's item comment, or None for any other comment.
 
-    Returns {inc, requester, approver, accessLabel, justification}. The INC must match the
-    configured pattern; requester, approver and access label must not be empty; the
-    justification may be empty and may itself contain " | ". Extra whitespace around the
-    separators and between the label words is tolerated.
+    Returns {inc, requester, approver, accessLabel, justification}; `approver` is None except on comments written
+    while bulk requests had an approver ("… | Approved by <approver> | …"). The INC must match the configured
+    pattern; requester and access label must not be empty; the justification may be empty and may itself contain
+    " | ". Extra whitespace around the separators and between the label words is tolerated.
     """
     if not isinstance(text, str):
         return None
-    m = _BULK_COMMENT.match(text)
-    if not m:
-        return None
-    inc, by, approved, label, justification = m.groups()
+    old = _OLD_BULK_COMMENT.match(text)
+    if old and _OLD_APPROVER_LABEL.match(old.group(3)):    # the old form: its approver must be named
+        inc, by, approved, label, justification = old.groups()
+        named = _OLD_APPROVER.match(approved)
+        if not named:
+            return None
+        approver: str | None = named.group(1)
+    else:
+        m = _BULK_COMMENT.match(text)
+        if not m:
+            return None
+        inc, by, label, justification = m.groups()
+        approver = None
     requester = _REQUESTER.match(by)
-    approver = _APPROVER.match(approved)
-    if not (inc_is_valid(cfg, inc) and requester and approver and label):
+    if not (inc_is_valid(cfg, inc) and requester and label):
         return None
-    return {"inc": inc, "requester": requester.group(1), "approver": approver.group(1),
+    return {"inc": inc, "requester": requester.group(1), "approver": approver,
             "accessLabel": label, "justification": justification}
 
 
 # ── people in parts ───────────────────────────────────────────────────────────
 def split_into_parts(people: Iterable[str], part_size: int = LOOP_MAX) -> list[list[str]]:
-    """The people, deduplicated in order, in chunks of `part_size` (one workflow run and
-    one approval per chunk; SailPoint's loop takes at most 250 items)."""
+    """The people, deduplicated in order, in chunks of `part_size`. Through the Launcher each chunk is one workflow
+    run (SailPoint's loop takes at most 250 items); the plugin files direct requests 10 people at a time."""
     if not isinstance(part_size, int) or isinstance(part_size, bool) or part_size < 1:
         raise ValueError("part_size must be a whole number of at least 1.")
     unique = list(dict.fromkeys(people))
@@ -165,7 +207,6 @@ PERMANENT, DURATION = "permanent", "duration"
 ROUTES = ("launcher", "plugin")
 UNIT_WORDS = {"HOURS": "hour", "DAYS": "day", "WEEKS": "week", "MONTHS": "month"}
 
-MSG_APPROVER_IN_PEOPLE = "The approver can't be one of the people getting the access."
 MSG_TEMPORARY_UNAVAILABLE = "Temporary access isn't available."
 MSG_DURATION_NUMBER = "Enter the duration as a whole number of 1 or more."
 MSG_DURATION_UNIT = "Choose a unit for the duration."

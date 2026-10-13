@@ -3,20 +3,24 @@
 
     python plugin/status.py --config config/<tenant>.json [--plugin]
 
-Prints how the plugin submits (`plugin.submit`): through the Launcher (its ID), or
-through the plugin workflow (ID, enabled flag, mode, trigger);
-then pending "Bulk access …" approvals, and with --plugin the plugin instance
-registered under the configured alias (needs the SailPoint CLI).
+Prints how the plugin submits (`plugin.submit`: directly, or through the Launcher and its ID), who may submit,
+whether an old plugin workflow is still there, the pending item approvals of bulk requests (grouped by INC), and
+with --plugin the plugin instance registered under the configured alias (needs the SailPoint CLI).
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import urllib.parse
+from collections import Counter
 from pathlib import Path
 
 import pluginlib as lib
 from pluginlib import TenantError, config_mod
+from bulkaccess import rules  # noqa: E402  (pluginlib put core on the path)
+
+PENDING = 'status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"'
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,33 +34,36 @@ def main(argv: list[str] | None = None) -> int:
     tenant = lib.Tenant.from_env(cfg.env_file)
     print(f"Tenant {tenant.tenant_name} · prefix {cfg.prefix!r} · config mode {cfg.mode}")
 
-    wf = lib.find_workflow(tenant, cfg.plugin_workflow_name)
     if cfg.plugin_submits_via_launcher:
         launcher = lib.find_launcher(tenant, cfg.launcher_name)
-        print(f"Submit: through the Launcher (plugin.submit \"launcher\"), as the signed-in user; "
-              f"needs '{cfg.launcher_access_profile_name}'")
+        print(f"Submit: through the Launcher (plugin.submit \"launcher\"), as the signed-in user")
         print(f"Launcher: {launcher['id']}  {cfg.launcher_name}  (disabled={launcher.get('disabled')})" if launcher
               else f"Launcher: MISSING ({cfg.launcher_name!r}); the plugin can't submit. Run launcher/install.py, "
                    "then plugin/install.py.")
-        print(f"Workflow: {wf['id']}  {wf['name']}  (not used in launcher mode; uninstall removes it)" if wf
-              else "Workflow: none (not needed in launcher mode)")
-    elif not wf:
-        print(f"Workflow: not installed ({cfg.plugin_workflow_name!r})")
     else:
-        steps = (wf.get("definition") or {}).get("steps") or {}
-        mode = "live" if "Request Access" in steps else "dry-run"
-        print(f"Workflow: {wf['id']}  {wf['name']}")
-        print(f"  enabled={wf.get('enabled')} (must be False)  trigger={wf.get('trigger', {}).get('type')}  "
-              f"installed mode={mode}" + ("" if mode == cfg.mode else f"  <- config says {cfg.mode}; re-run install.py"))
+        allowed = lib.may_request_for_others(tenant)
+        print("Submit: the plugin files the access requests itself (plugin.submit \"direct\"), as the signed-in user"
+              + ("" if allowed else "; but this tenant doesn't let users request for others: re-run plugin/install.py, "
+                                    "which then switches the plugin to the Launcher"))
+    access = lib.find_access_profile(tenant, cfg.launcher_access_profile_name)
+    print(f"Who may submit: holders of '{cfg.launcher_access_profile_name}' ({access['id']})" if access
+          else f"Who may submit: anyone who can open the plugin ('{cfg.launcher_access_profile_name}' isn't installed)")
+    old = lib.find_workflow(tenant, cfg.old_plugin_workflow_name)
+    if old:
+        print(f"Old plugin workflow: {old['id']}  {old['name']}  (no longer used; uninstall removes it)")
 
-    approvals = tenant.call("GET", f"{lib.api.GENERIC_APPROVALS}?limit=250") or []
-    pending = [g for g in approvals if g.get("status") == "PENDING"
-               and any(str(n.get("value", "")).startswith("Bulk access ") for n in g.get("name") or [])]
-    print(f"Pending bulk approvals: {len(pending)}")
-    for g in pending:
-        g = tenant.call("GET", f"{lib.api.GENERIC_APPROVALS}/{g['id']}")   # the list leaves out the approvers
-        approvers = ", ".join(x.get("name", "?") for x in g.get("approvers") or [])
-        print(f"  {g['id']}  {g['name'][0]['value']}  requester={g.get('requester', {}).get('name')}  approver={approvers or '?'}")
+    rows = tenant.call("GET", f"{lib.api.GENERIC_APPROVALS}?include-comments=true&limit=250&filters="
+                              + urllib.parse.quote(PENDING)) or []
+    incs: Counter[str] = Counter()
+    for row in rows:
+        bulk = next((p for c in row.get("comments") or [] if (p := rules.parse_bulk_comment(cfg, c.get("comment")))),
+                    None)
+        if bulk:
+            incs[bulk["inc"]] += 1
+    print(f"Pending item approvals of bulk requests: {sum(incs.values())}"
+          + (" (first 250 pending approvals checked)" if len(rows) == 250 else ""))
+    for inc, n in sorted(incs.items()):
+        print(f"  {inc}: {n}")
 
     if a.plugin:
         plugin = lib.find_plugin(cfg, Path(a.workdir))
