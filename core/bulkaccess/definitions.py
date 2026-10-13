@@ -37,7 +37,6 @@ from .rules import (APPROVAL_DESCRIPTION_MAX, APPROVER_LABEL, COMMENT_SEPARATOR,
 
 VARIANTS = ("launcher", "plugin")
 
-from .config import FORM_SELECT_MAX  # noqa: E402  (re-exported; 30, SailPoint's form SELECT limit)
 
 # Form field keys (also the plugin's trigger input names).
 F_PEOPLE, F_ITEMS, F_APPROVER, F_INC, F_JUSTIFICATION = "people", "items", "approver", "inc", "justification"

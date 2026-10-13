@@ -5,7 +5,6 @@ Run from bulk-access-request/:  python -m pytest plugin/tests -q
 
 from __future__ import annotations
 
-import base64
 import json
 import sys
 from pathlib import Path
@@ -34,11 +33,6 @@ def _config(tmp_path: Path, **plugin) -> str:
     return str(path)
 
 
-def _jwt(claims: dict) -> str:
-    seg = base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
-    return f"x.{seg}.y"
-
-
 class FakeTenant:
     """Records every call; answers the few GETs the scripts make."""
 
@@ -50,8 +44,9 @@ class FakeTenant:
         self.launchers = [LAUNCHER] if launchers is None else launchers
         self.calls: list[tuple[str, str, object]] = []
 
-    def token(self) -> str:
-        return _jwt({"identity_id": ME["id"]})
+    def me(self) -> dict:
+        self.calls.append(("GET", f"/v2025/identities/{ME['id']}", None))
+        return ME
 
     def plugin_instance_id(self, alias):
         self.calls.append(("GET", f"/ui-plugins/v1/resolve-alias?alias={alias}", None))

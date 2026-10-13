@@ -131,15 +131,6 @@ def write_json(path: Path, data: Any) -> None:
 
 
 # ──────────────────────────────────────────────────────────────── tenant ──
-def whoami(tenant: Tenant) -> dict[str, Any]:
-    """The PAT's identity. Calls /v2025/identities directly (older core used a v3 path that 404s)."""
-    claims = json.loads(_b64url(tenant.token().split(".")[1]))
-    identity_id = claims.get("identity_id")
-    if not identity_id:
-        raise TenantError(0, "The PAT has no identity_id claim; use a personal access token, not a client app.")
-    return tenant.call("GET", f"/v2025/identities/{identity_id}")
-
-
 def find_workflow(tenant: Tenant, name: str) -> dict[str, Any] | None:
     return next((w for w in tenant.call("GET", f"{WORKFLOWS}?limit=250") or [] if w.get("name") == name), None)
 
@@ -157,10 +148,6 @@ def launcher_missing(cfg: Config) -> str:
             "(`bulkaccess.py apply` installs it before the plugin), or set plugin.submit to \"test-endpoint\".")
 
 
-def _b64url(segment: str) -> str:
-    import base64
-    return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)).decode()
-
 
 # ─────────────────────────────────────────────────────────── SailPoint CLI ──
 def sail_env(cfg: Config) -> dict[str, str]:
@@ -173,12 +160,12 @@ def sail_env(cfg: Config) -> dict[str, str]:
     return env
 
 
-def sail(cfg: Config, args: list[str], workdir: Path, *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def sail(cfg: Config, args: list[str], workdir: Path) -> subprocess.CompletedProcess[str]:
     """Run `sail <args>` in `workdir`. stdin is /dev/null: some commands prompt and would hang."""
     exe = os.environ.get("SAIL") or shutil.which("sail") or str(Path.home() / ".local/bin/sail")
     proc = subprocess.run([exe, *args], cwd=workdir, env=sail_env(cfg), stdin=subprocess.DEVNULL,
                           capture_output=True, text=True)
-    if check and proc.returncode != 0:
+    if proc.returncode != 0:
         raise TenantError(proc.returncode, f"sail {' '.join(args)} failed:\n{proc.stdout}{proc.stderr}")
     return proc
 

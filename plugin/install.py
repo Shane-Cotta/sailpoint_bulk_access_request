@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config_mod.load(a.config)
     public = cfg.plugin_public if a.public is None else a.public
     tenant = lib.Tenant.from_env(cfg.env_file)
-    me = lib.whoami(tenant)
+    me = tenant.me()
     owner_id = cfg.owner_id or me["id"]
     owner_name = me.get("name") if owner_id == me["id"] else None
     print(f"Tenant {tenant.tenant_name} · prefix {cfg.prefix!r} · mode {cfg.mode} · owner {owner_name or owner_id}")

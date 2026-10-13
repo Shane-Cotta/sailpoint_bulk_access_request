@@ -304,6 +304,8 @@ cd plugin
 npx ng test --watch=false        # unit tests (vitest): rules port, API calls, grouping, submission flow
 npm start                        # https://localhost:4200, for `sail ui-plugins link` development inside ISC
 npm run start:demo               # then open http://localhost:4300/?demo=review  (no tenant needed)
+npm run start:sandbox            # like npm start, but on 0.0.0.0 (reachable from another machine or a container)
+npm run watch                    # development build that rebuilds on every change
 cd .. && python -m pytest plugin/tests -q    # installer tests (dry-run payloads, idempotency, safe uninstall)
 ```
 

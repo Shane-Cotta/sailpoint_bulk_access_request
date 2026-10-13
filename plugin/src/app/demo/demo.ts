@@ -325,9 +325,6 @@ export class DemoPluginService {
     return delay({} as T);
   }
 
-  setRoute(): Promise<void> {
-    return Promise.resolve();
-  }
 }
 
 /** Fixed demo config instead of public/bulk-access.config.json. */

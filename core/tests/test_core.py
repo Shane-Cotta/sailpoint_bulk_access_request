@@ -263,7 +263,7 @@ def test_another_tenant_gets_its_own_names():
 def test_form_people_picker_is_capped_at_sailpoints_30_selection_limit():
     cfg = cfg_with(people__max=100)
     els = _form_elements(definitions.bulk_form(cfg, "o", []))
-    assert els["people"]["config"]["maximum"] == definitions.FORM_SELECT_MAX == 30
+    assert els["people"]["config"]["maximum"] == config.FORM_SELECT_MAX == 30
 
 
 def test_catalog_never_offers_the_profile_that_grants_the_tool_itself():
