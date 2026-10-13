@@ -269,7 +269,7 @@ def cmd_uninstall(cfg: Config, a: argparse.Namespace) -> int:
 
 # ────────────────────────────────────────────────────────────────── export ──
 # Fields SailPoint fills in itself. They're dropped so exports diff cleanly between runs and
-# can be imported elsewhere (Admin > Workflows > Import, or POST /v2025/workflows).
+# can be imported elsewhere (Admin > Workflows > Import, or POST /workflows/v1).
 _SERVER_FIELDS = ("id", "created", "modified", "creator", "modifiedBy", "executionCount", "failureCount",
                   "dailyExecutionCount", "usedBy", "tenantId")
 _PLACEHOLDER = {"owner": "<OWNER_IDENTITY_ID>", "form": "<FORM_DEFINITION_ID>", "workflow": "<WORKFLOW_ID>",

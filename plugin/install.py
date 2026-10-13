@@ -79,7 +79,9 @@ def main(argv: list[str] | None = None) -> int:
               "`bulkaccess.py uninstall --only plugin` removes it.")
 
     objects = lib.catalog.requestable_objects(tenant, cfg)
-    no_approval = lib.catalog.no_approval_ids(tenant, objects)
+    # Only the items the page offers (catalog_options drops the tool's own profile and filtered-out items).
+    offered = {o["value"]["id"] for o in lib.rules.catalog_options(cfg, objects)}
+    no_approval = lib.catalog.no_approval_ids(tenant, objects) & offered
     print(f"Catalog: {len(no_approval)} item(s) have no approval of their own; the page labels them "
           "\"No approval: granted right away\".")
     runtime = lib.runtime_config(cfg, (launcher or {}).get("id"), (access or {}).get("id"), no_approval)

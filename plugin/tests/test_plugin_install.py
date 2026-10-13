@@ -60,13 +60,16 @@ class FakeTenant:
                     "entitlementRequestConfig": {"grantRequestApprovalSchemes": "sourceOwner"}}
         if path.startswith("/requestable-objects/v1?"):
             return [{"id": "ap-open", "type": "ACCESS_PROFILE", "name": "ACME Open"},
-                    {"id": "ap-owner", "type": "ACCESS_PROFILE", "name": "ACME Owned"}] if "offset=0" in path else []
+                    {"id": "ap-owner", "type": "ACCESS_PROFILE", "name": "ACME Owned"},
+                    {"id": "la-1", "type": "ACCESS_PROFILE",
+                     "name": "ACME Bulk Access Request - Launcher Access"}] if "offset=0" in path else []
         if path.startswith("/entitlements/v1?"):
             return [{"id": "ent-1", "name": "ACME Group"}] if "offset=0" in path else []
         if path.startswith("/entitlements/v1/"):
             return {"accessRequestConfig": {"approvalSchemes": []}}
         if path.startswith("/access-profiles/v1?filters=id"):
             return [{"id": "ap-open", "accessRequestConfig": {"approvalSchemes": []}},
+                    {"id": "la-1", "accessRequestConfig": {"approvalSchemes": []}},
                     {"id": "ap-owner", "accessRequestConfig": {"approvalSchemes": [{"approverType": "OWNER"}]}}]
         if path.startswith("/access-profiles/v1?filters=name"):
             return self.access_profiles
@@ -101,7 +104,8 @@ def test_dry_run_in_direct_mode_writes_nothing_and_creates_nothing(tenant, capsy
     assert tenant.writes == [] and not (tmp_path / "public").exists()
     runtime = _sections(out)[str(lib.RUNTIME_CONFIG)]
     assert (runtime["submit"], runtime["launcherId"], runtime["launcherAccessId"]) == ("direct", None, "la-1")
-    assert runtime["noApproval"] == ["ap-open"]              # its own schemes are empty; the entitlement has a default
+    # ap-open's own schemes are empty; the entitlement has a default; the tool's own profile is never offered
+    assert runtime["noApproval"] == ["ap-open"]
     assert "only holders of 'ACME Bulk Access Request - Launcher Access' may submit" in out
     assert not [h for h in _sections(out) if h.startswith("Workflow")]
 

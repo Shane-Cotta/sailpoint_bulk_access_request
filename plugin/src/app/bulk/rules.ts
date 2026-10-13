@@ -105,12 +105,13 @@ export function entitlementFilter(cfg: Pick<RuntimeConfig, 'catalogTypes' | 'nam
 }
 
 /**
- * Catalog rows -> catalog options, filtered by type and name prefix (rules.catalog_options).
- * Rows from /entitlements/v1 carry no `type`; the caller tags them ENTITLEMENT. Items in `noApproval` say so in
- * their sub-label, so whoever picks them sees they're granted at once.
+ * Catalog rows -> catalog options, filtered by type and name prefix (rules.catalog_options). The profile that
+ * grants this tool (the Launcher Access profile) is never offered. Rows from /entitlements/v1 carry no `type`; the
+ * caller tags them ENTITLEMENT. Items in `noApproval` say so in their sub-label, so whoever picks them sees they're
+ * granted at once.
  */
 export function catalogOptions(
-  cfg: Pick<RuntimeConfig, 'catalogTypes' | 'nameStartsWith' | 'noApproval'>,
+  cfg: Pick<RuntimeConfig, 'catalogTypes' | 'nameStartsWith' | 'noApproval' | 'launcherAccessName'>,
   requestable: Iterable<Record<string, unknown>>,
   sources: Record<string, string> = {},
 ): CatalogOption[] {
@@ -120,6 +121,7 @@ export function catalogOptions(
     const kind = obj['type'] as ItemType;
     const id = String(obj['id']);
     const name = String(obj['name'] || id);
+    if (name === cfg.launcherAccessName) continue;
     if (!cfg.catalogTypes.includes(kind)) continue;
     if (cfg.nameStartsWith && !name.startsWith(cfg.nameStartsWith)) continue;
     const embedded = obj['source'] as { name?: string } | undefined;

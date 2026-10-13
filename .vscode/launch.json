@@ -5,8 +5,7 @@
   "version": "0.2.0",
   "inputs": [
     { "id": "config", "type": "promptString", "description": "Tenant config file", "default": "config/my-tenant.json" },
-    { "id": "people", "type": "promptString", "description": "TEST identity IDs (comma-separated)" },
-    { "id": "approver", "type": "promptString", "description": "TEST approver identity ID (not you)" }
+    { "id": "people", "type": "promptString", "description": "TEST identity IDs (comma-separated)" }
   ],
   "configurations": [
     { "name": "Tests: core + plugin installer (pytest)", "type": "debugpy", "request": "launch", "module": "pytest",
@@ -43,9 +42,9 @@
     { "name": "Launcher: status", "type": "debugpy", "request": "launch",
       "program": "${workspaceFolder}/launcher/status.py", "args": ["--config", "${input:config}"],
       "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "3 launcher", "order": 3 } },
-    { "name": "Launcher: end-to-end test (approve)", "type": "debugpy", "request": "launch",
+    { "name": "Launcher: end-to-end test (request)", "type": "debugpy", "request": "launch",
       "program": "${workspaceFolder}/launcher/e2e.py",
-      "args": ["--config", "${input:config}", "--people", "${input:people}", "--approver", "${input:approver}", "--scenario", "approve"],
+      "args": ["--config", "${input:config}", "--people", "${input:people}", "--scenario", "request"],
       "cwd": "${workspaceFolder}", "console": "integratedTerminal", "presentation": { "group": "3 launcher", "order": 4 } },
     { "name": "Launcher: uninstall (preview)", "type": "debugpy", "request": "launch",
       "program": "${workspaceFolder}/launcher/uninstall.py", "args": ["--config", "${input:config}"],

@@ -193,6 +193,14 @@ describe('rules (core/bulkaccess/rules.py)', () => {
       .toBe('requestable eq true and name sw "AC\\"ME\\\\"');
   });
 
+  it('never offers the profile that grants the tool itself (like rules.py)', () => {
+    const opts = catalogOptions(EXAMPLE, [
+      { id: '1', type: 'ACCESS_PROFILE', name: 'ACME Bulk Access Request - Launcher Access' },
+      { id: '2', type: 'ACCESS_PROFILE', name: 'ACME Bulk Test Access' },
+    ]);
+    expect(opts.map((o) => o.value.id)).toEqual(['2']);
+  });
+
   it('says which items are granted without approval', () => {
     const opts = catalogOptions(cfgWith({ noApproval: ['2'] }), [
       { id: '1', type: 'ACCESS_PROFILE', name: 'A', source: { name: 'AD' } },
