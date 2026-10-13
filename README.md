@@ -1,36 +1,33 @@
 # Bulk Access Request for SailPoint Identity Security Cloud
 
-Request access for **many people at once**, approved by **one person you choose**, and tracked by a
-**ServiceNow INC number**.
+Request access for **many people at once**, tracked by a **ServiceNow INC number**. Each item is approved the way
+SailPoint already has it set up (its owner, the person's manager, …); there is no extra approval for the bulk request.
 
-> *"These 12 new contractors all need the same three access profiles for INC0012345, for 30 days. Have Dana approve it once."*
+> *"These 12 new contractors all need the same three access profiles for INC0012345, for 30 days."*
 
 1. **Pick the people:** search for them, or paste a list (the plugin accepts pasted usernames or emails).
 2. **Pick the access:** one or more items from the Request Center catalog.
 3. **Choose how long:** permanent, or temporary access that SailPoint removes automatically.
-4. **Pick one approver** for the whole request. It can't be you, or one of the people getting the access.
-5. **Enter the INC number** (checked for the right format) and a justification.
-6. **Submit.** The approver gets **one** approval task (one per 250 people in the plugin), in SailPoint's own
-   **Approvals → Other**. If they approve, everyone is
-   requested every item as a normal SailPoint access request, and each request's comment reads
-   `INC… | Bulk access request by … | Approved by … | <Permanent or Temporary: …> | <justification>`.
-   If they deny, nothing is requested. Either way, the requester gets an email.
+4. **Enter the INC number** (checked for the right format) and a justification.
+5. **Submit.** Everyone is requested every item as normal SailPoint access requests, and each request's comment reads
+   `INC… | Bulk access request by … | <Permanent or Temporary: …> | <justification>`.
 
-**Item approvals still apply.** Items with their own approval scheme (owner, manager, …) then need one approval per
-person. The UI plugin's **Approvals** tab lets those approvers, admin or not, see their pending approvals grouped by INC
-and approve or deny a whole bulk request at once, each recorded as their own decision (see [plugin/README.md](plugin/README.md)
-and the [Approvals screenshots](#screenshots)).
+**Each item's own approval applies.** An item with an approval scheme (owner, manager, …) needs one approval per person.
+The UI plugin's **Approvals** tab lets those approvers, admin or not, see their pending approvals grouped by INC and
+approve or deny a whole bulk request at once, each recorded as their own decision (see [plugin/README.md](plugin/README.md)
+and the [Approvals screenshots](#screenshots)). An item with **no** approval of its own is granted right away; the
+installer finds those items and the plugin warns about them before you submit.
 
 ## Two ways to deploy it (one config, one command)
 
 | | **A. Launcher** (native) | **B. UI plugin** |
 |---|---|---|
 | Where users find it | **Launchpad**, as a native SailPoint form | A page inside ISC, reachable from a nav-bar link |
-| Who can use it | **Any user** you give the *Launcher Access* profile to (they can request it in the Request Center) | **The same users**: with A installed (the default, `plugin.submit: "launcher"`), the plugin submits through the Launcher as the signed-in user. Without A, ORG_ADMIN only (see the plugin README) |
-| People | Form picker, **up to 30** (SailPoint's form limit) | Search or paste a list, **no limit**. Above 250 people, the request is sent as several approvals with the same INC (SailPoint's workflow loop limit). Warns about access people already have. |
+| Who can use it | **Any user** you give the *Launcher Access* profile to (they can request it in the Request Center) | **The same users**. By default (`plugin.submit: "direct"`) the plugin files the access requests **as the signed-in user**; if the tenant doesn't let users request for others, it submits through the Launcher instead (`"launcher"`) |
+| People | Form picker, **up to 30** (SailPoint's form limit) | Search or paste a list, **no limit**: sent 10 people per access request (SailPoint's limit), or 250 per Launcher run. Warns about access people already have. |
 | Temporary access | By **duration**: hours, days, weeks or months | By **duration** or **end date** |
-| Bulk approver | ISC **Approvals → Other** ("Grant: Bulk access INC…"), plus an email | The same |
-| Status tracking | Approval email. The item requests are filed by the workflow, so they're in the *workflow owner's* Request Center, not the requester's | **My bulk requests** tab, grouped by INC (for everyone; listing the item requests needs admin rights) |
+| Requester of the item requests | The workflow owner (the admin account the tool was installed with) | **You**, so they're in your Request Center (through the Launcher: the workflow owner) |
+| Status tracking | A "Requested" email | **My bulk requests** tab: your access requests grouped by INC, with who each one waits for |
 | Item approvers | ISC **Approvals → Access Requests**, one card per person | The same, or the **Approvals** tab: a whole INC at once, for any approver who can see the plugin |
 | Docs | [INSTALL.md](INSTALL.md), [USAGE.md](USAGE.md) | [plugin/README.md](plugin/README.md) |
 
@@ -44,29 +41,29 @@ python bulkaccess.py status --config config/<tenant>.json             # check
 ```
 
 **Not sure which?** Start with **A**: it works for everyone and needs nothing but this folder. Add **B** if your
-requesters want the richer screen or bigger lists. Both run side by side in one tenant, and by default B uses A: the plugin
-fills in and submits the Launcher's form for the signed-in user, so whoever may use the Launcher may submit from the plugin.
+requesters want the richer screen or bigger lists. Both run side by side in one tenant, and the plugin uses A's
+*Launcher Access* profile to decide who may submit, so whoever may use the Launcher may submit from the plugin.
 
 ## What gets created in the tenant
 Everything is named with your **prefix** (for example `ACME`), so it is easy to find and to remove:
 
 - **A:** *"ACME Bulk Access Request Form"*, the *"ACME Bulk Access Request"* workflow and Launcher, and the
   *"ACME Bulk Access Request - Launcher Access"* access profile.
-- **B:** the *ACME Bulk Access Request* UI plugin. Only when it submits through the workflow test endpoint
-  (`plugin.submit: "test-endpoint"`, the default without A) also the *"ACME Bulk Access Request (Plugin)"* workflow (kept disabled, by design).
+- **B:** the *ACME Bulk Access Request* UI plugin, nothing else. (An older install's disabled
+  *"ACME Bulk Access Request (Plugin)"* workflow is no longer used; `uninstall` removes it.)
 
 Temporary access and large requests need nothing extra: SailPoint removes temporary access on its own, and a large
-plugin request is simply several approvals.
+plugin request is simply several access requests (or Launcher runs) with the same INC.
 
 ## Safe by default
 - **Preview first.** `python bulkaccess.py apply --dry-run` prints everything it would send and changes nothing.
-- **New installs start in `dry-run` mode.** The whole flow runs (form, approval, emails), but nothing is requested
+- **New installs start in `dry-run` mode.** The whole flow runs (form, checks, emails), but nothing is requested
   until you switch `"mode": "live"`.
 - **The catalog can be limited** to item names starting with a given text (`catalog.nameStartsWith`).
 - **Temporary access can be capped** (`temporaryAccess.maxDays`), limited to some units, or turned off.
 - **All email can be redirected** to a test inbox (`notifications.overrideRecipients`).
-- **The approver is never the requester:** SailPoint would quietly reassign that approval to another admin, so it's blocked up front.
-- **Nobody approves their own access:** a request whose approver is also on the people list is stopped before any approval exists.
+- **Items without an approval are flagged:** the installer lists every catalog item SailPoint would grant without
+  approval, and the plugin labels them *"No approval: granted right away"* and warns on the review step.
 - **The plugin is uploaded private** (visible only to you) unless you set `plugin.public`.
 
 ## For SailPoint and platform teams
@@ -75,30 +72,26 @@ Before installing in a production tenant, check that the tenant offers everythin
 | Document | What's in it |
 |---|---|
 | [API inventory](docs/sailpoint/API_INVENTORY.md) | Every API call (method, path, version, caller, user level, scopes), workflow step, form feature and `sail` command |
-| [API contract alignment](docs/sailpoint/API_CONTRACT_ALIGNMENT.md) | How each call maps to v3, the dated versions, experimental APIs and the new `/<service>/v1` paths; known deviations from the spec; migration plan and risks |
+| [API contract alignment](docs/sailpoint/API_CONTRACT_ALIGNMENT.md) | How each call maps to SailPoint's GA `/<service>/v1` paths (what the tool uses), the older versions and the experimental APIs; known deviations from the spec |
 | [Requirements checklist](docs/sailpoint/REQUIREMENTS_CHECKLIST.md) | A tick-box list of features, user levels, scopes, settings, limits and tooling, each with a one-line check |
 | [End-to-end walkthrough](docs/sailpoint/END_TO_END_WALKTHROUGH.md) | The full lifecycle on a real tenant, step by step: who acts, where in ISC, what they see, and which API or ISC feature is used; plus what each person's Request Center shows before and after approval |
 
 ## Screenshots
-Real SailPoint screens (`docs/screenshots/`) from a test installation that used the prefix `UCSF`; yours show your own
-prefix. [USAGE.md](USAGE.md) walks through all of them in order.
+Real SailPoint screens (`docs/screenshots/isc-*`) from a test installation that used the prefix `UCSF` (yours show your
+own prefix), and plugin screens made with demo data (`plugin-*`). [USAGE.md](USAGE.md) walks through them in order.
 
 | 1. Get the tool (Request Center) | 2. Submit from the plugin |
 |---|---|
-| ![Request Launcher Access in the Request Center](docs/screenshots/isc-01-request-launcher-access.png) | ![The plugin's review step](docs/screenshots/isc-13-plugin-review.png) |
-| *Requesters ask for "Launcher Access" once; it then shows in the Launchpad too* | *People, access, one approver and INC, review: submitted as the signed-in user* |
+| ![Request Launcher Access in the Request Center](docs/screenshots/isc-01-request-launcher-access.png) | ![The plugin's review step](docs/screenshots/plugin-4-review.png) |
+| *Requesters ask for "Launcher Access" once; it then shows in the Launchpad too* | *People, access, INC, review: filed as the signed-in user (demo data)* |
 
-| 3. The bulk approver (Approvals → Other) | 4. Item approvers (plugin Approvals tab) |
+| 3. Item approvers (plugin Approvals tab) | 4. Track it (plugin My bulk requests) |
 |---|---|
-| ![The bulk approval in ISC Approvals, Other](docs/screenshots/isc-21-approvals-other-bulk.png) | ![The plugin's Approvals tab, one INC opened](docs/screenshots/isc-41-plugin-approvals-open.png) |
-| *One approval, "Grant: Bulk access INC…", decided in SailPoint's own Approvals* | *Item owners decide a whole INC at once (or one card per person in ISC)* |
-
-| 5. Track it (plugin My bulk requests) | The Launchpad form |
-|---|---|
-| ![My bulk requests: approved](docs/screenshots/isc-50-plugin-my-bulk-requests-approved.png) | ![The Launcher form](docs/screenshots/launcher-4-form-filled.png) |
-| *Everything you've submitted, by INC* | *The same request as a native form, up to 30 people* |
+| ![The plugin's Approvals tab, one INC opened](docs/screenshots/isc-41-plugin-approvals-open.png) | ![My bulk requests](docs/screenshots/plugin-6-my-bulk-requests.png) |
+| *Item owners decide a whole INC at once (or one card per person in ISC)* | *Your access requests by INC, with who each one waits for (demo data)* |
 
 More plugin screens (made with sample data, including large requests sent in parts) are in [plugin/README.md](plugin/README.md).
+The demo videos below were recorded before the bulk approver was removed: they still show its step and approval.
 
 **Demo videos.** Attached to GitHub releases:
 - [**demo-2026-10-09**](https://github.com/Shane-Cotta/sailpoint_bulk_access_request/releases/tag/demo-2026-10-09):
@@ -124,20 +117,16 @@ bulk-access-request/
 
 ## Tested
 Both deployments were installed in a live Identity Security Cloud tenant and verified end to end with test identities and a
-test access profile:
-- **Launcher:**
-  - Dry-run approve and deny.
-  - Live approve: one real request per person, carrying the INC, requester and approver in its comment.
-  - Live deny.
-  - Self-approval stopped before any approval exists.
-  - Temporary access: live, 1 day, with `removeDate` set to +1 day on every request. Permanent: no `removeDate`.
-  - An invalid duration, or one over `maxDays`, is stopped before the approval.
-- **UI plugin:**
-  - Dry-run approve, live approve, live deny, invalid INC.
-  - 250 people in one approval (the per-approval maximum).
-  - 5 people sent in parts of 2: three approvals `(1/3)`–`(3/3)` with one INC. The denied part requested nothing.
-  - Temporary by end date and by duration, with `removeDate` on every request. An invalid duration is stopped before the approval.
-  - 15 people in one live run.
-  - Submitted through the Launcher by a **non-admin** requester who got *Launcher Access* from the Request Center;
-    bulk approval in ISC Approvals, item approvals in ISC and in the Approvals tab (recorded: see *Demo videos*).
-- **Unit tests:** core 263, plugin installer 13, plugin UI 163 (`pytest`, `ng test`), none of them needing a tenant.
+test access profile. Before the bulk approver was removed:
+- **Launcher:** dry-run and live runs, one real request per person carrying the INC in its comment; temporary access
+  (live, 1 day, `removeDate` +1 day on every request; permanent: none); an invalid duration, or one over `maxDays`,
+  stopped before anything is requested.
+- **UI plugin:** live runs up to 250 people per run, parts with one INC, temporary access by end date and by duration,
+  invalid INC, and a submit through the Launcher by a **non-admin** requester who got *Launcher Access* from the Request
+  Center (recorded: see *Demo videos*).
+
+For the design without it, verified live as a non-admin: `POST /access-requests/v1` for others (up to 10 people, all three
+item types, per-item comment and `removeDate`), reading those requests back with `/access-request-status/v1?requested-by=`,
+items without an approval scheme granted at once, and the *Launcher Access* check through `/requestable-objects/v1`.
+
+**Unit tests:** core and plugin installer 320 (`pytest`), plugin UI 203 (`ng test`), none of them needing a tenant.

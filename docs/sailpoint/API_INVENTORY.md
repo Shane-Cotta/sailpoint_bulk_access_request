@@ -4,9 +4,15 @@
 command the solution depends on. Use it to check that a customer's production tenant offers all of them.
 It was compiled on 2026-10-08 by searching the code (`core/bulkaccess/*.py`, `launcher/*.py`, `plugin/*.py`,
 `bulkaccess.py` and `plugin/src/app/**/*.ts`, leaving out specs and demo code). It was then checked against the
-`sailpoint-oss/api-specs` OpenAPI files, developer.sailpoint.com, and a live test tenant (read-only GETs only).
+`sailpoint-oss/api-specs` OpenAPI files, developer.sailpoint.com, and a live test tenant.
 
-Updated on 2026-10-09 after a recorded end-to-end run on a live tenant with a non-admin requester and approver.
+Updated on 2026-10-13:
+- **Every call moved to SailPoint's GA per-service paths** (`/<service>/v1`). Each path is defined once, in
+  `core/bulkaccess/api.py` (Python) and `plugin/src/app/bulk/api-paths.ts` (plugin).
+- **The bulk approver was removed.** Nothing asks one person to approve a bulk request any more; each item is approved
+  the way SailPoint has it set up (owner, manager, …), and items with no approval of their own are granted right away.
+- **The plugin files the access requests itself** (`plugin.submit: "direct"`, the default), as the signed-in user.
+  The workflow test endpoint (`"test-endpoint"`) is gone.
 
 Related: [API_CONTRACT_ALIGNMENT.md](API_CONTRACT_ALIGNMENT.md) (versions, deprecations, how to migrate) ·
 [REQUIREMENTS_CHECKLIST.md](REQUIREMENTS_CHECKLIST.md) (a checklist to run against a tenant) ·
@@ -16,26 +22,31 @@ Related: [API_CONTRACT_ALIGNMENT.md](API_CONTRACT_ALIGNMENT.md) (versions, depre
 
 | Tag | Meaning |
 |---|---|
-| **[L]** | Verified live against a test tenant, by these GETs or by the project's earlier end-to-end runs ([CLAUDE.md](../../CLAUDE.md), [CONTRACTS.md](../dev/CONTRACTS.md)). |
+| **[L]** | Verified live on the `/v1` path against a test tenant ([CLAUDE.md](../../CLAUDE.md), [CONTRACTS.md](../dev/CONTRACTS.md)). |
+| **[L\*]** | Verified live on the earlier dated path (`/v3` or `/v2025`); the `/v1` path has the same contract [D] and answered GETs [L], but this write or user-session call hasn't been re-run on `/v1` yet. |
 | **[S]** | From the OpenAPI spec in `sailpoint-oss/api-specs` (`x-sailpoint-userLevels`, `security`, `deprecated`). |
 | **[D]** | From developer.sailpoint.com. |
 
-"UL" means user levels and "scopes" means OAuth scopes, both exactly as the spec states them. "—" means the spec
-doesn't say.
+"UL" means user levels and "scopes" means OAuth scopes, as the spec states them for the same operation (the `/v1`
+paths carry the operations of the dated versions they replace). "—" means the spec doesn't say; "not checked" means
+the spec wasn't consulted for that call (added on 2026-10-13).
 
 ## 0. At a glance
 | Component | Credentials | Who | API calls (distinct) |
 |---|---|---|---|
-| **Installer CLI** (`bulkaccess.py`, `launcher/*.py`, `plugin/*.py`) | Personal access token (PAT), `client_credentials`, scope `sp:scopes:all` | An ORG_ADMIN (or the `owner` service identity) | 27 |
-| **E2E test** (`launcher/e2e.py`, optional) | The same PAT | ORG_ADMIN | 12 |
-| **UI plugin** (Angular page inside ISC) | The signed-in user's ISC session, through `@sailpoint/ui-plugin-sdk` (manifest `apiScopes: ["sp:scopes:all"]`) | *New request*: any holder of the *Launcher Access* profile with `plugin.submit: "launcher"` (default), ORG_ADMIN with `"test-endpoint"`. *My bulk requests*: the user's own. *Approvals* tab: any approver | 19 |
+| **Installer CLI** (`bulkaccess.py`, `launcher/*.py`, `plugin/*.py`, `core/bulkaccess/catalog.py`) | Personal access token (PAT), `client_credentials`, scope `sp:scopes:all` | An ORG_ADMIN (or the `owner` service identity) | 31 |
+| **E2E test** (`launcher/e2e.py`, optional) | The same PAT | ORG_ADMIN who also holds Launcher access | 8 (plus the installer's lookups) |
+| **UI plugin** (Angular page inside ISC) | The signed-in user's ISC session, through `@sailpoint/ui-plugin-sdk` (manifest `apiScopes: ["sp:scopes:all"]`) | *New request*: any holder of the *Launcher Access* profile. *My bulk requests*: the user's own. *Approvals* tab: any item approver | 19 |
 | **`sail` CLI** (`plugin/install.py --deploy`, `plugin/uninstall.py --plugin`) | The same PAT, passed through environment variables | ORG_ADMIN with UI-plugin rights | 7 (all `/ui-plugins/v1`, experimental) |
-| **Workflow engine** (the two generated workflows) | Runs as the workflow owner | — | 7 actions, 6 operators, 2 triggers, 2 transforms |
+| **Workflow engine** (the Launcher's workflow) | Runs as the workflow owner | — | 6 actions, 3 operators, 1 trigger, 2 transforms |
 
-**API versions in use:** `/v2025/*` (most of it), `/v3/*` (access profiles, catalog, access requests, search,
-accounts), **`/beta/interactive-processes/{id}/blocks`** (only the plugin, in launcher submit mode: it has no v1 or dated
-equivalent yet; ISC's own Launchpad uses the same `/beta` path), `/ui-plugins/v1` (only through `sail`), `/oauth/token`.
-**Not used:** `/v2024`, `/v2026`, `/latest`, or `X-SailPoint-Experimental` in the solution's own code.
+**API versions in use:** `/<service>/v1` everywhere, plus two exceptions:
+- **`/beta/interactive-processes/{id}/blocks`**: only the plugin, only in `plugin.submit: "launcher"`. There's no GA
+  path for it; ISC's own Launchpad uses the same `/beta` path.
+- **`/ui-plugins/v1`**: experimental (`X-SailPoint-Experimental: true`), through `sail`, and the installer's one
+  `resolve-alias` lookup. There's no other API for UI plugins.
+
+And `POST /oauth/token` (not versioned). **Not used:** `/v3`, `/v2024`, `/v2025`, `/v2026`, `/latest`.
 
 ## 1. Installer CLI (PAT of an ORG_ADMIN)
 `core/bulkaccess/tenant.py` sends every call with `Authorization: Bearer`, a custom `User-Agent`, JSON, and
@@ -44,107 +55,120 @@ equivalent yet; ISC's own Launchpad uses the same `/beta` path), `/ui-plugins/v1
 | # | Method and path | Used for | Called from | UL [S] | Scopes [S] | Status |
 |---|---|---|---|---|---|---|
 | 1 | `POST /oauth/token` (`grant_type=client_credentials`) | Exchanges the PAT for a JWT | `tenant.py` | — | — | GA, not versioned [L] |
-| 2 | `GET /v2025/identities/{id}` | The PAT's identity (`identity_id` claim), which owns everything created | `tenant.me()`, `pluginlib.me()` | — | `idn:identity:read` | GA [L] |
-| 3 | `GET /v2025/form-definitions?filters=name eq …` | Find the Launcher form by name | `launcher/install.py`, `bulkaccess.py export` | ORG_ADMIN | `sp:forms:read` | GA [L] |
-| 4 | `POST /v2025/form-definitions` | Create the intake form | `launcher/install.py` | ORG_ADMIN | `sp:forms:manage` | GA [L] |
-| 5 | `PATCH /v2025/form-definitions/{id}` | Replace `formElements`, `formConditions`, `description` (catalog sync) | `launcher/install.py` | — | `sp:forms:manage` | GA [L] |
-| 6 | `DELETE /v2025/form-definitions/{id}` | Uninstall | `launcher/uninstall.py` | — | `sp:forms:manage` | GA [S] |
-| 7 | `GET /v2025/workflows?limit=250` | Find workflows by name | `launcher/install.py`, `pluginlib.py`, `export` | — | `sp:workflow:read` | GA [L] |
-| 8 | `POST /v2025/workflows` | Create the Launcher workflow (then update it with its own ID) and the plugin workflow | both installers | — | `sp:workflow:manage` | GA [L] |
-| 9 | `GET /v2025/workflows/{id}` | Read back, check `enabled`, trigger filter, Manage Access version | `launcher/install.py`, `launcher/status.py` | — | `sp:workflow:read` | GA [L] |
-| 10 | `PUT /v2025/workflows/{id}` | Update the definition (always sent disabled) | both installers | — | `sp:workflow:manage` | GA [L] |
-| 11 | `PATCH /v2025/workflows/{id}` (`/enabled`) | Disable before PUT or DELETE; re-enable the Launcher workflow | installers, `launcher/uninstall.py` | — | `sp:workflow:manage` | GA [L] |
-| 12 | `DELETE /v2025/workflows/{id}` | Uninstall | both uninstallers | — | `sp:workflow:manage` | GA [S] |
-| 13 | `GET /v2025/workflows/{id}/executions?limit=N` | Recent runs, in `status` | `launcher/status.py`, `plugin/status.py` | ORG_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN | `sp:workflow-execution:read` | **Deprecated in the spec: "will be removed in July 2028"** [S]; still 200, with no deprecation header [L] |
-| 14 | `GET /v2025/launchers?limit=100` | Find the Launcher by name (`{items:[…]}`) | `launcher/install.py`, `export` | ORG_ADMIN | `sp:launcher-admin:read` | GA [L] |
-| 15 | `POST /v2025/launchers` | Create the Launcher (`type: INTERACTIVE_PROCESS`, `reference: WORKFLOW`) | `launcher/install.py` | ORG_ADMIN | `sp:launcher-admin:write` | GA [L] |
-| 16 | `GET /v2025/launchers/{id}` | Poll `disabled` after a workflow update | `launcher/install.py` | ORG_ADMIN | `sp:launcher-admin:read` | GA [L] |
-| 17 | `PUT /v2025/launchers/{id}` | Update the Launcher, and re-enable it (it switches itself off when its workflow is disabled) | `launcher/install.py` | ORG_ADMIN | `sp:launcher-admin:write` | GA [L] |
-| 18 | `DELETE /v2025/launchers/{id}` | Uninstall | `launcher/uninstall.py` | ORG_ADMIN | `sp:launcher-admin:delete` | GA [S] |
-| 19 | `GET /v2025/entitlements?filters=value eq "<launcherId>"` | Find the auto-created `assignedLaunchers` entitlement (polled, because it appears asynchronously) | `launcher/install.py` | Any | `idn:entitlement:read` | GA [L] |
-| 20 | `GET /v3/access-profiles?filters=name eq …` | Find the *Launcher Access* profile | `launcher/install.py`, `uninstall`, `export` | ORG_ADMIN, ROLE_ADMIN, ROLE_SUBADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN | `idn:access-profile:read` | GA (legacy v3) [L] |
-| 21 | `POST /v3/access-profiles` | Create it (requestable, MANAGER approval or none) | `launcher/install.py` | same as 20 | `idn:access-profile:manage`, `idn:entitlement:read`, `idn:identity:read`, `idn:sources:read` | GA (legacy v3) [L] |
-| 22 | `PATCH /v3/access-profiles/{id}` | Update its entitlement and `accessRequestConfig` | `launcher/install.py` | ORG_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN | `idn:access-profile:manage` | GA (legacy v3) [L] |
-| 23 | `DELETE /v3/access-profiles/{id}` | Uninstall | `launcher/uninstall.py` | same as 22 | `idn:access-profile:manage` | GA (legacy v3) [S] |
-| 24 | `GET /v3/requestable-objects?types=…&types=…&limit=250&offset=N` | The Request Center catalog's access profiles and roles (only the configured ones among `ACCESS_PROFILE`, `ROLE`), used for the form's item choices | `launcher/install.py` | ORG_ADMIN (no `identity-id` means admin only) | `idn:requestable-objects:read` | GA (legacy v3) [L]. See the `ENTITLEMENT` note in §6 |
-| 24a | `GET /v2025/entitlements?filters=requestable eq true[ and name sw "…"]&sorters=name&limit=250&offset=N` | Requestable entitlements for the form's item choices (when `catalog.types` has `ENTITLEMENT`) | `launcher/install.py` | Any | `idn:entitlement:read` | GA [L] (filter, paging and sorting verified) |
-| 25 | `POST /v3/access-requests` | `--grant`: request the *Launcher Access* profile for given identities (`GRANT_ACCESS`) | `launcher/install.py` | ORG_ADMIN, USER | `idn:access-request:manage` | GA (legacy v3) [L] |
-| 26 | `GET /v2025/generic-approvals?limit=250` | Pending `Bulk access …` approvals, in `status` | `plugin/status.py` | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] |
-| 27 | `GET /v2025/generic-approvals/{id}` | Approvers of one approval (the list leaves them out) | `plugin/status.py` | APPROVAL_OWNER | same | GA [L] |
+| 2 | `GET /identities/v1/{id}` | The PAT's identity (`identity_id` claim), which owns everything created | `tenant.me()` | — | `idn:identity:read` | GA [L] |
+| 3 | `GET /form-definitions/v1?filters=name eq …` | Find the Launcher form by name | `launcher/install.py`, `e2e.py`, `bulkaccess.py export` | ORG_ADMIN | `sp:forms:read` | GA [L] |
+| 4 | `POST /form-definitions/v1` | Create the intake form | `launcher/install.py` | ORG_ADMIN | `sp:forms:manage` | GA [L] |
+| 5 | `PATCH /form-definitions/v1/{id}` | Replace `formElements`, `formConditions`, `description` (catalog sync) | `launcher/install.py` | — | `sp:forms:manage` | GA [L] |
+| 6 | `DELETE /form-definitions/v1/{id}` | Uninstall | `launcher/uninstall.py` | — | `sp:forms:manage` | GA [S] |
+| 7 | `GET /workflows/v1?limit=250` | Find workflows by name (the Launcher's; and the old plugin workflow, which uninstall removes) | `launcher/install.py`, `pluginlib.py`, `e2e.py`, `export` | — | `sp:workflow:read` | GA [L] |
+| 8 | `POST /workflows/v1` | Create the Launcher workflow (then update it with its own ID) | `launcher/install.py` | — | `sp:workflow:manage` | GA [L] |
+| 9 | `GET /workflows/v1/{id}` | Read back; `status` checks `enabled`, the trigger filter and the Manage Access version | `launcher/install.py`, `launcher/status.py` | — | `sp:workflow:read` | GA [L] |
+| 10 | `PUT /workflows/v1/{id}` | Update the definition (always sent disabled) | `launcher/install.py` | — | `sp:workflow:manage` | GA [L] |
+| 11 | `PATCH /workflows/v1/{id}` (`/enabled`) | Disable before PUT or DELETE; re-enable afterwards | `launcher/install.py`, `launcher/uninstall.py` | — | `sp:workflow:manage` | GA [L] |
+| 12 | `DELETE /workflows/v1/{id}` | Uninstall (the Launcher workflow; the plugin's old "(Plugin)" workflow if it's still there) | `launcher/uninstall.py`, `plugin/uninstall.py` | — | `sp:workflow:manage` | GA [S] |
+| 13 | `GET /launchers/v1?limit=100` | Find the Launcher by name (`{items:[…]}`) | `launcher/install.py`, `pluginlib.py`, `e2e.py`, `export` | ORG_ADMIN | `sp:launcher-admin:read` | GA [L] |
+| 14 | `POST /launchers/v1` | Create the Launcher (`type: INTERACTIVE_PROCESS`, `reference: WORKFLOW`) | `launcher/install.py` | ORG_ADMIN | `sp:launcher-admin:write` | GA [L] |
+| 15 | `GET /launchers/v1/{id}` | Poll `disabled` after a workflow update | `launcher/install.py` | ORG_ADMIN | `sp:launcher-admin:read` | GA [L] |
+| 16 | `PUT /launchers/v1/{id}` | Update the Launcher, and re-enable it (it switches itself off when its workflow is disabled) | `launcher/install.py` | ORG_ADMIN | `sp:launcher-admin:write` | GA [L] |
+| 17 | `DELETE /launchers/v1/{id}` | Uninstall | `launcher/uninstall.py` | ORG_ADMIN | `sp:launcher-admin:delete` | GA [S] |
+| 18 | `GET /entitlements/v1?filters=value eq "<launcherId>"` | Find the auto-created `assignedLaunchers` entitlement (polled: it appears asynchronously) | `launcher/install.py` | Any | `idn:entitlement:read` | GA [L] |
+| 19 | `GET /access-profiles/v1?filters=name eq …` | Find the *Launcher Access* profile (the plugin's submit gate reads its ID) | `launcher/install.py`, `launcher/uninstall.py`, `pluginlib.py`, `export` | ORG_ADMIN, ROLE_ADMIN, ROLE_SUBADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN | `idn:access-profile:read` | GA [L] |
+| 20 | `POST /access-profiles/v1` | Create it (requestable, MANAGER approval or none) | `launcher/install.py` | same as 19 | `idn:access-profile:manage`, `idn:entitlement:read`, `idn:identity:read`, `idn:sources:read` | GA [L] |
+| 21 | `PATCH /access-profiles/v1/{id}` | Update its entitlement and `accessRequestConfig` | `launcher/install.py` | ORG_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN | `idn:access-profile:manage` | GA [L] |
+| 22 | `DELETE /access-profiles/v1/{id}` | Uninstall | `launcher/uninstall.py` | same as 21 | `idn:access-profile:manage` | GA [S] |
+| 23 | `GET /requestable-objects/v1?types=…&types=…&limit=250&offset=N` | The Request Center catalog's access profiles and roles (only the configured ones among `ACCESS_PROFILE`, `ROLE`) | `catalog.requestable_objects` (both installers) | ORG_ADMIN (no `identity-id` means admin only) | `idn:requestable-objects:read` | GA [L]. See the `ENTITLEMENT` note in §6 |
+| 24 | `GET /entitlements/v1?filters=requestable eq true[ and name sw "…"]&sorters=name&limit=250&offset=N` | Requestable entitlements (when `catalog.types` has `ENTITLEMENT`) | `catalog.requestable_objects` | Any | `idn:entitlement:read` | GA [L] |
+| 25 | `GET /access-profiles/v1?filters=id in (…)` (50 IDs per call) | Each catalog access profile's `accessRequestConfig.approvalSchemes` | `catalog.no_approval_ids` (both installers) | same as 19 | `idn:access-profile:read` | GA [L] |
+| 26 | `GET /roles/v1?filters=id in (…)` (50 IDs per call) | Each catalog role's `accessRequestConfig.approvalSchemes` | `catalog.no_approval_ids` | not checked | not checked | GA [L] |
+| 27 | `GET /entitlements/v1/{id}/entitlement-request-config` | Each catalog entitlement's own approval schemes (one call per entitlement, at install time only) | `catalog.no_approval_ids` | not checked | not checked | GA [L] |
+| 28 | `GET /access-request-config/v1` | (a) `entitlementRequestConfig.grantRequestApprovalSchemes`: the default for entitlements with no schemes of their own. (b) `requestOnBehalfOfConfig.allowRequestOnBehalfOfAnyoneByAnyone`: whether `plugin.submit: "direct"` can work (otherwise the installer falls back to `"launcher"`) | `catalog.no_approval_ids`, `pluginlib.may_request_for_others` | not checked | not checked | GA [L] |
+| 29 | `POST /access-requests/v1` | `--grant`: request the *Launcher Access* profile for given identities (`GRANT_ACCESS`) | `launcher/install.py` | ORG_ADMIN, USER | `idn:access-request:manage` | GA [L] |
+| 30 | `GET /generic-approvals/v1?include-comments=true&limit=250&filters=status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"` | `status`: pending item approvals whose comment is a bulk comment, counted per INC | `plugin/status.py` | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] |
+| 31 | `GET /ui-plugins/v1/resolve-alias?alias=…` (with `X-SailPoint-Experimental: true`) | The plugin's ID, so the Launcher's emails can link to the plugin page | `tenant.plugin_instance_id` (`launcher/install.py`) | — | — | **Experimental** [L] |
+
+Dropped since 2026-10-09: `GET /workflows/{id}/executions` (deprecated, removal July 2028; `status` no longer lists
+runs), the plugin workflow's `POST`/`PUT` (there's no plugin workflow), and the bulk approvals listed in `status`.
 
 ## 2. E2E test (`launcher/e2e.py`, PAT of an ORG_ADMIN who also holds Launcher access)
+It finds the form, workflow and Launcher with the installer's lookups (§1 #3, #7, #13), then:
+
 | Method and path | Used for | UL [S] | Scopes [S] | Status |
 |---|---|---|---|---|
-| `POST /v2025/launchers/{id}/launch` | Start the Launcher as the PAT user | ORG_ADMIN | `sp:launcher-user:launch` | GA [L]. Live, any holder of `assignedLaunchers` can launch from the Launchpad |
-| `GET /v2025/form-instances?limit=50` | Find the form instance the launch created | ORG_ADMIN | `sp:forms:read` | GA [L] |
-| `GET /v2025/form-instances/{id}`, `PATCH /v2025/form-instances/{id}` | Fill in and submit the form (it may take two PATCHes, ASSIGNED → IN_PROGRESS → SUBMITTED) | USER | `[]` | GA [L] |
-| `GET /v2025/workflow-executions/{id}` | Run status | ORG_ADMIN | `sp:workflow-execution:read` | GA [L] |
-| `GET /v2025/workflow-executions/{id}/history` | Which steps ran | ORG_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN | `sp:workflow-execution:read` | GA [L]. `history-v2` also exists [S] |
-| `POST /v2025/workflow-executions/{id}/cancel` | Cancel a run stuck on a form that failed validation | — | `sp:workflow-execute:external` | GA [S] |
-| `GET /v2025/generic-approvals?limit=100` | Find the `Bulk access <INC>` approval | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] |
-| `POST /v2025/generic-approvals/{id}/approve` and `…/reject` | Decide on the approver's behalf (recorded as a manual reassignment) | APPROVAL_OWNER | `idn:access-request-approvals:manage` | GA [L] |
-| `POST /v2025/generic-approvals/bulk-cancel` | Cancel an approval sent to the wrong person | ORG_ADMIN | `sp:approvals:write` | GA [S] |
-| `GET /v3/access-request-status?requested-for=<id>&limit=20` | Check each person's request carries the INC and `removeDate` | ORG_ADMIN (others) | `idn:access-request-status:read` | GA (legacy v3) [L] |
+| `POST /launchers/v1/{id}/launch` | Start the Launcher as the PAT user | ORG_ADMIN | `sp:launcher-user:launch` | GA [L\*]. Live, any holder of `assignedLaunchers` can launch |
+| `GET /form-instances/v1?limit=50` | Find the form instance the launch created | ORG_ADMIN | `sp:forms:read` | GA [L] |
+| `GET /form-instances/v1/{id}`, `PATCH /form-instances/v1/{id}` | Fill in and submit the form (it may take two PATCHes, ASSIGNED → IN_PROGRESS → SUBMITTED) | USER | `[]` | GA [L\*] |
+| `GET /workflow-executions/v1/{id}` | Run status | ORG_ADMIN | `sp:workflow-execution:read` | GA [L] |
+| `GET /workflow-executions/v1/{id}/history-v2` | Which steps ran (`{history:[…]}`) | ORG_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN | `sp:workflow-execution:read` | GA [L] (the migration maps history to `history-v2`) |
+| `POST /workflow-executions/v1/{id}/cancel` | Cancel a run stuck on a form that failed validation | — | `sp:workflow-execute:external` | GA [S] |
+| `GET /access-request-status/v1?requested-for=<id>&limit=20` | Live mode: each person got one request per item, with the bulk comment (no "Approved by") and, for temporary access, a `removeDate` | ORG_ADMIN (others) | `idn:access-request-status:read` | GA [L] |
+
+The e2e test no longer approves anything: there's no bulk approval. Each request goes on to its item's own approval.
 
 ## 3. UI plugin (the signed-in user's session)
 All calls go through `SailpointPluginService.get/post` → `@sailpoint/ui-plugin-sdk` `api.get/post` (SDK `^0.0.3`,
-`@sailpoint/angular-sdk ^0.0.2`). The page calls no other host: the manifest's `contentSecurityPolicies` is empty.
+`@sailpoint/angular-sdk ^0.0.2`); the one PATCH goes through `fetch` with the SDK's token. The page calls no other
+host: the manifest's `contentSecurityPolicies` is empty.
 
 | Tab or feature | Method and path | Used for | UL [S] | Scopes [S] | Status |
 |---|---|---|---|---|---|
-| People search (ORG_ADMIN only; 403/400 for others ✔) | `POST /v3/search` (`indices: ["identities"]`) | Type-ahead, and fallback resolution of pasted names and emails | ORG_ADMIN, CERT_ADMIN, REPORT_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN, ROLE_ADMIN, ROLE_SUBADMIN | `sp:search:read` | GA (legacy v3) [L] |
-| People search (ORG_ADMIN only; 403/400 for others ✔) | `GET /v3/accounts?filters=name sw … \| name in … \| nativeIdentity in … \| identityId in …` | Find identities not indexed yet | ORG_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN, HELPDESK | `idn:accounts:read` | GA (legacy v3) [L] |
-| Paste a list (ORG_ADMIN only; 403/400 for others ✔) | `GET /v2025/identities?filters=id in (…)` and `alias eq … or email eq …` (50 per call) | Resolve pasted IDs, usernames and emails | — | `idn:identity:read` | GA [L] |
-| Paste a list (ORG_ADMIN only; 403/400 for others ✔) | `GET /v2025/identities/{id}` | Last-resort lookup of a single ID | — | `idn:identity:read` | GA [L] |
-| People search, paste a list (non-admins) | `GET /v3/public-identities?limit=…&sorters=name&filters=…` (`displayName`/`alias`/`email`/`firstname`/`lastname` `sw` for type-ahead; `id in (…)`, `alias eq … or email eq …` for pasted lists) | Find people without admin rights | **Any user** ✔ | — | GA (legacy v3) [L, non-admin]. Same as `/v2025/public-identities`. Department only in `attributes[]`; no fallbacks for identities it doesn't list |
-| Access step | `GET /v3/requestable-objects?identity-id=<me>&types=…&limit=250&offset=N[&filters=name sw …]` | The catalog's access profiles and roles | ORG_ADMIN; **any user with their own `identity-id`** ✔ (403 without it) | `idn:requestable-objects:read` | GA (legacy v3) [L] |
-| Access step | `GET /v2025/entitlements?filters=requestable eq true[ and name sw …]&sorters=name&limit=250&offset=N` | The catalog's requestable entitlements (rows carry `source.name`, no `type`) | Any | `idn:entitlement:read` | GA [L] |
-| Access step (ORG_ADMIN only; 403/400 for others ✔) | `POST /v3/search` (`indices: ["accessprofiles","entitlements"]`) | Source names to show next to access profiles | see above | `sp:search:read` | GA (legacy v3) [L] |
-| Review step | `GET /v3/requestable-objects?identity-id=<id>&types=…&filters=id in (…)` | "Already has it" warning for access profiles and roles (up to 100 people) | ORG_ADMIN; ✔ a non-admin may pass another person's ID | `idn:requestable-objects:read` | GA (legacy v3) [L] |
-| Review step (ORG_ADMIN only; 403/400 for others ✔) | `POST /v3/search` (`indices: ["identities"]`, `id:(…)`, includes `access.id`, `access.type`) | "Already has it" for entitlements (held), 100 people per call | see People search | `sp:search:read` | GA (legacy v3) [L]. Identities missing from the index get no warning |
-| Review step (ORG_ADMIN only; 403/400 for others ✔) | `GET /v3/access-request-status?requested-for=<id>&request-state=EXECUTING&limit=250` | "Already requested" for entitlements (the row `id` is the item's ID) | ORG_ADMIN; any user for their own [D] | `idn:access-request-status:read` | GA (legacy v3) [L] |
-| Submit (launcher mode, default) | `POST /v2025/launchers/{id}/launch` `{}` | **Start the Launcher once per part, as the signed-in user** → `{interactiveProcessId}` | ORG_ADMIN [S]; live: **any holder of the Launcher's `assignedLaunchers` entitlement** | `sp:launcher-user:launch` | GA [L] (as a non-admin; the Launchpad itself calls `/beta/launchers/{id}/launch`). Without access: 401/403, or 500 "insufficient authorization" |
-| Submit (launcher mode) | `GET /beta/interactive-processes/{ipid}/blocks` | Poll (1 s, up to 30 s) until the `FORM` block names the form instance; later, look for an `ERROR` message (the workflow stopped) | the process owner [L] | — | **Beta** [L] (as a non-admin; the admin PAT gets 401: needs a user session). No v1 or dated version yet |
-| Submit (launcher mode) | `PATCH /v2025/form-instances/{id}` (`application/json-patch+json`: `/formData`, `/state` `SUBMITTED`), `GET /v2025/form-instances/{id}` | Fill in and submit the Launcher form; repeat up to 3 times until SUBMITTED/COMPLETED or `formErrors`; `createdBy` is the run | USER | `[]` | GA [L] (as a non-admin, who can't *list* form instances: 403). PATCH goes through `fetch` with the SDK's token (the SDK has no PATCH) |
-| Submit (test-endpoint mode) | `GET /v2025/workflows?limit=250` | Find the workflow by name (only when the runtime config has no ID) | ORG_ADMIN | `sp:workflow:read` | GA [L]; no deprecation header (v3 sent `Deprecation: 31 Mar 2027`) |
-| Submit (test-endpoint mode) | `POST /v2025/workflows/{id}/test` `{input}` | **Start one run per part** (the workflow must be disabled) | ORG_ADMIN | `sp:workflow-execute:external` | GA [S] (same contract as v3; not called live, it starts a run) |
-| Submit (test-endpoint mode) | `GET /v2025/workflow-executions/{id}` | Follow each run (not used in launcher mode) | ORG_ADMIN | `sp:workflow-execution:read` | GA [L]; same keys as v3, no deprecation header |
-| Submit, My bulk requests | `GET /v2025/generic-approvals?limit=250&sorters=-createdDate&requesterId=<me>` (query parameter; the `filters=` form is empty for non-admins), `GET /v2025/generic-approvals/{id}` | Find the part's approval (by `workflowExecutionId`, or by name), approver and decider | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] (filter and sort verified with the admin PAT) |
-| My bulk requests | `GET /v3/access-request-status?requested-by=<me>&limit=250&offset=N&sorters=-created` | Requests carrying an INC | ORG_ADMIN; any user for their own [D] | `idn:access-request-status:read` | GA (legacy v3) [L] |
-| **Approvals** | `GET /v2025/generic-approvals?mine=true&include-comments=true&limit=250&offset=N&sorters=createdDate&filters=status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"` | The caller's pending access-request approvals, with the item comment holding the INC | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] (as a non-admin) |
-| **Approvals** | `POST /v2025/generic-approvals/{id}/approve` and `…/reject` `{comment}` | Decide as the caller (default path, ≤ 8 per second) | APPROVAL_OWNER | `idn:access-request-approvals:manage` | GA [L] (as a non-admin) |
-| **Approvals** | `POST /v2025/generic-approvals/bulk-approve` and `…/bulk-reject` `{approvalIds ≤ 50, comment}` | Fast path, ORG_ADMIN only | ORG_ADMIN | `sp:approvals:write` | GA [L]. A non-admin gets 403 |
-| **Approvals** | `GET /v2025/generic-approvals?limit=250&filters=approvalId in (…)` | Confirm every decision (50 IDs per call) | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] |
-| **Approvals** | `GET /v2025/generic-approvals/{id}` | Who decided, only for IDs whose status changed although our call failed | APPROVAL_OWNER | same | GA [L] |
+| People search (ORG_ADMIN only; 403/400 for others) | `POST /search/v1` (`indices: ["identities"]`) | Type-ahead, and fallback resolution of pasted names and emails | ORG_ADMIN, CERT_ADMIN, REPORT_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN, ROLE_ADMIN, ROLE_SUBADMIN | `sp:search:read` | GA [L] (same rows as v3) |
+| People search (ORG_ADMIN only) | `GET /accounts/v1?filters=name sw … \| name in … \| nativeIdentity in … \| identityId in …` | Find identities not indexed yet | ORG_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN, HELPDESK | `idn:accounts:read` | GA [L] (all four filters re-tested on v1) |
+| Paste a list (ORG_ADMIN only) | `GET /identities/v1?filters=id in (…)` and `alias eq … or email eq …` (50 per call) | Resolve pasted IDs, usernames and emails | — | `idn:identity:read` | GA [L] |
+| Paste a list (ORG_ADMIN only) | `GET /identities/v1/{id}` | Last-resort lookup of a single ID | — | `idn:identity:read` | GA [L] |
+| People search, paste a list (non-admins) | `GET /public-identities/v1?limit=…&sorters=name&filters=…` (`displayName`/`alias`/`email`/`firstname`/`lastname` `sw` for type-ahead; `id in (…)`, `alias eq … or email eq …` for pasted lists) | Find people without admin rights | **Any user** | — | GA [L]. Department only in `attributes[]`; no fallbacks for identities it doesn't list |
+| Access step | `GET /requestable-objects/v1?identity-id=<me>&types=…&limit=250&offset=N[&filters=name sw …]` | The catalog's access profiles and roles | ORG_ADMIN; **any user with their own `identity-id`** (403 without it) | `idn:requestable-objects:read` | GA [L] |
+| Access step | `GET /entitlements/v1?filters=requestable eq true[ and name sw …]&sorters=name&limit=250&offset=N` | The catalog's requestable entitlements (rows carry `source.name`, no `type`) | Any | `idn:entitlement:read` | GA [L] |
+| Access step (ORG_ADMIN only) | `POST /search/v1` (`indices: ["accessprofiles","entitlements"]`) | Source names to show next to access profiles | see above | `sp:search:read` | GA [L] |
+| Access step, review step | *(no call)* | "No approval: granted right away" next to items with no approval of their own: the list (`noApproval`) is written into the runtime config by the installer (§1 #25–28) | — | — | — |
+| Review step | `GET /requestable-objects/v1?identity-id=<id>&types=…&filters=id in (…)` | "Already has it" for access profiles and roles (up to 100 people) | ORG_ADMIN; a non-admin may pass another person's ID | `idn:requestable-objects:read` | GA [L] |
+| Review step (ORG_ADMIN only) | `POST /search/v1` (`indices: ["identities"]`, `id:(…)`, includes `access.id`, `access.type`) | "Already has it" for entitlements (held), 100 people per call | see People search | `sp:search:read` | GA [L]. Identities missing from the index get no warning |
+| Review step (ORG_ADMIN only) | `GET /access-request-status/v1?requested-for=<id>&request-state=EXECUTING&limit=250` | "Already requested" for entitlements (the row `id` is the item's ID) | ORG_ADMIN; any user for their own [D] | `idn:access-request-status:read` | GA [L] |
+| **Submit gate** (both modes) | `GET /requestable-objects/v1?identity-id=<me>&types=ACCESS_PROFILE&limit=1&filters=id eq "<launcherAccessId>"` | Does the user hold the *Launcher Access* profile (`requestStatus: ASSIGNED`)? If not, nothing is sent and the page says which profile to request. Skipped when no profile is installed | any user, for their own `identity-id` | `idn:requestable-objects:read` | GA [L, non-admin] |
+| **Submit** (`"direct"`, the default) | `POST /access-requests/v1` `{requestedFor: [≤ 10 IDs], requestType: GRANT_ACCESS, requestedItems: [{type, id, comment, removeDate?}]}` | File every chosen item for up to 10 people **as the signed-in user**, 3 calls at a time; the response's `newRequests[]` and `existingRequests[]` are counted | ORG_ADMIN, USER | `idn:access-request:manage` | GA [L, non-admin]. Needs the tenant's "request for others" setting (§1 #28). Each request then goes through its item's own approval |
+| Submit (`"launcher"`) | `POST /launchers/v1/{id}/launch` `{}` | Start the Launcher once per part (≤ 250 people), as the signed-in user → `{interactiveProcessId}` | ORG_ADMIN [S]; live: **any holder of the Launcher's `assignedLaunchers` entitlement** | `sp:launcher-user:launch` | GA [L\*] (verified as a non-admin on v2025). Without access: 401/403, or 500 "insufficient authorization" |
+| Submit (`"launcher"`) | `GET /beta/interactive-processes/{ipid}/blocks` | Poll (1 s, up to 30 s) until the `FORM` block names the form instance; then (every 2–5 s, up to 2 min) look for the workflow's `INFO` message ("Requested: …") or `ERROR` message (stopped) | the process owner [L] | — | **Beta** [L] (as a non-admin; the admin PAT gets 401: needs a user session). No GA path |
+| Submit (`"launcher"`) | `PATCH /form-instances/v1/{id}` (`application/json-patch+json`: `/formData`, `/state` `SUBMITTED`), `GET /form-instances/v1/{id}` | Fill in and submit the Launcher form; repeat up to 3 times until SUBMITTED/COMPLETED or `formErrors` | USER | `[]` | GA [L\*] (as a non-admin, who can't *list* form instances: 403) |
+| My bulk requests | `GET /access-request-status/v1?requested-by=<me>&limit=250&offset=N&sorters=-created` | The user's own access requests, grouped by the INC in their comment; per request: state, `approvalDetails[].currentOwner` (who it waits for), `removeDate` | ORG_ADMIN; any user for their own [D] | `idn:access-request-status:read` | GA [L, non-admin]. Requests filed through the Launcher belong to the workflow owner, so they don't show here |
+| **Approvals** | `GET /generic-approvals/v1?mine=true&include-comments=true&limit=250&offset=N&sorters=createdDate&filters=status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"` | The caller's pending item approvals, with the item comment holding the INC | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] |
+| **Approvals** | `POST /generic-approvals/v1/{id}/approve` and `…/reject` `{comment}` | Decide as the caller (default path, ≤ 8 per second) | APPROVAL_OWNER | `idn:access-request-approvals:manage` | GA [L\*] (as a non-admin on v2025) |
+| **Approvals** | `POST /generic-approvals/v1/bulk-approve` and `…/bulk-reject` `{approvalIds ≤ 50, comment}` | Fast path, ORG_ADMIN only | ORG_ADMIN | `sp:approvals:write` | GA [L\*]. A non-admin gets 403 |
+| **Approvals** | `GET /generic-approvals/v1?limit=250&filters=approvalId in (…)` | Confirm every decision (50 IDs per call) | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] |
+| **Approvals** | `GET /generic-approvals/v1/{id}` | Who decided, only for IDs whose status changed although our call failed | APPROVAL_OWNER | same | GA [L] |
 
-**What a non-admin can do in the plugin** (verified 2026-10-08 with two `sp:user` sessions; the page branches on
-`context.user.capabilities.isOrgAdmin`):
+**What a non-admin can do in the plugin** (verified 2026-10-08 with two `sp:user` sessions, and the submit, gate and
+My bulk requests calls again on `/v1` on 2026-10-13; the page branches on `context.user.capabilities.isOrgAdmin`):
 
 | Feature | Non-admin | How |
 |---|---|---|
-| Submit | ✔ with the *Launcher Access* profile (`plugin.submit: "launcher"`) | launch, interactive-process blocks, own form instance |
-| People search, pasted lists | ✔ | `/v3/public-identities` (identities, search and accounts are 403) |
-| Catalog | ✔ | `requestable-objects?identity-id=<me>` (403 without it), `/v2025/entitlements` |
+| Submit | ✔ with the *Launcher Access* profile | Gate: `requestable-objects?identity-id=<me>` (ASSIGNED). Then `"direct"`: `POST /access-requests/v1`; or `"launcher"`: launch, interactive-process blocks, own form instance |
+| People search, pasted lists | ✔ | `/public-identities/v1` (identities, search and accounts are 403) |
+| Catalog | ✔ | `requestable-objects?identity-id=<me>` (403 without it), `/entitlements/v1` |
 | "Already has it" | access profiles and roles ✔; entitlements skipped (said on the review step) | `requestable-objects?identity-id=<person>`; search is 403 and another person's `access-request-status` is 400 |
-| My bulk requests | ✔ | `generic-approvals?requesterId=<me>` (query parameter); `access-request-status?requested-by=<me>` is empty for bulk requests (filed by the workflow owner) |
+| My bulk requests | ✔ for requests filed directly | `access-request-status?requested-by=<me>` |
 | Approvals tab | ✔ | `generic-approvals` (APPROVAL_OWNER) |
 
-With `plugin.submit: "test-endpoint"`, submitting needs ORG_ADMIN and the *New request* tab says so.
-
-**Launcher submit, call by call** (`plugin.submit: "launcher"`; once per part, all as the signed-in user's session):
+**Direct submit, call by call** (`plugin.submit: "direct"`; all as the signed-in user's session):
 
 | # | Call | Answer used | Notes |
 |---|---|---|---|
-| 1 | `GET /v3/public-identities?filters=…` (non-admins) or the admin lookups above | identity IDs for the people and the approver | People and approver steps |
-| 2 | `GET /v3/requestable-objects?identity-id=<me>&types=ACCESS_PROFILE&types=ROLE…`, `GET /v2025/entitlements?filters=requestable eq true…` | catalog items `{id, type, name}` | `identity-id` is required for non-admins (403 without it) |
-| 3 | `POST /v2025/launchers/{launcherId}/launch` `{}` | `interactiveProcessId` | Launcher ID from the runtime config. Without *Launcher Access*: 401/403 or 500 "insufficient authorization" → the page says to request the profile |
-| 4 | `GET /beta/interactive-processes/{interactiveProcessId}/blocks` (every 1 s, up to 30 s) | the `FORM` block's form instance ID | **Beta**; the same call ISC's Launchpad makes. Needs a user session (the admin PAT gets 401) |
-| 5 | `PATCH /v2025/form-instances/{id}` (`/formData`, then `/state` `SUBMITTED`), `GET /v2025/form-instances/{id}` | `state`, `formErrors` | Up to 3 PATCHes (ASSIGNED → IN_PROGRESS → SUBMITTED); sent with `fetch` and the SDK's token |
-| 6 | `GET /v2025/generic-approvals?requesterId=<me>&sorters=-createdDate&limit=250`, `GET /v2025/generic-approvals/{id}` | the part's `Bulk access <INC>` approval and its decision | `requesterId` as a **query parameter**: the `filters=requesterId eq …` form returns nothing for non-admins [L] |
-| 7 | `GET /beta/interactive-processes/{id}/blocks` again, while waiting | an `ERROR` message block means the workflow stopped (for example a rule check) | — |
+| 1 | `GET /public-identities/v1?filters=…` (non-admins) or the admin lookups above | identity IDs for the people | People step |
+| 2 | `GET /requestable-objects/v1?identity-id=<me>&types=ACCESS_PROFILE&types=ROLE…`, `GET /entitlements/v1?filters=requestable eq true…` | catalog items `{id, type, name}` | `identity-id` is required for non-admins (403 without it) |
+| 3 | `GET /requestable-objects/v1?identity-id=<me>&types=ACCESS_PROFILE&limit=1&filters=id eq "<launcherAccessId>"` | `requestStatus` | Not `ASSIGNED` → "To submit, you need '<profile>'. Request it in the Request Center." and nothing is sent |
+| 4 | `POST /access-requests/v1`, once per 10 people, 3 in flight | `newRequests[]`, `existingRequests[]` | Every item carries the bulk comment `INC… \| Bulk access request by <me> \| <access> \| <justification>` and, for temporary access, `removeDate`. A 401/403 stops the rest; any other failure can be retried for just those people |
+| 5 | `GET /access-request-status/v1?requested-by=<me>&sorters=-created` | the requests, grouped by INC | My bulk requests |
 
-Not used: `GET /v2025/interactive-processes` exists and lists the caller's interactive processes [L], but the plugin
-already knows its process ID from the launch.
+**Launcher submit, call by call** (`plugin.submit: "launcher"`; once per part of ≤ 250 people):
+
+| # | Call | Answer used | Notes |
+|---|---|---|---|
+| 1–3 | as in direct mode | | |
+| 4 | `POST /launchers/v1/{launcherId}/launch` `{}` | `interactiveProcessId` | Launcher ID from the runtime config |
+| 5 | `GET /beta/interactive-processes/{interactiveProcessId}/blocks` (every 1 s, up to 30 s) | the `FORM` block's form instance ID | **Beta**; the same call ISC's Launchpad makes. Needs a user session |
+| 6 | `PATCH /form-instances/v1/{id}` (`/formData`, then `/state` `SUBMITTED`), `GET /form-instances/v1/{id}` | `state`, `formErrors` | Up to 3 PATCHes; sent with `fetch` and the SDK's token. The form has no approver field |
+| 7 | `GET /beta/interactive-processes/{id}/blocks` again (up to 2 min) | the workflow's `INFO` message ("Requested: …") or `ERROR` message ("Invalid INC number: …") | No answer within 2 min: shown as submitted, "you'll get an email with the result" |
+
+The Launcher's workflow files those requests in its owner's name (the PAT user), so they don't appear on the
+requester's *My bulk requests*; the requester gets the "Requested" email instead.
 
 ## 4. `sail` CLI (≥ 2.7.0)
 Run by `plugin/pluginlib.py` with `SAIL_BASE_URL`, `SAIL_CLIENT_ID` and `SAIL_CLIENT_SECRET` in its environment
@@ -167,47 +191,49 @@ strings. **Every one sends `X-SailPoint-Experimental: true`.**
 - **[D]:** developer.sailpoint.com/docs/ui-plugins/prerequisites says *"UI Plugins are an experimental, gated
   capability"*.
 
-## 5. Workflow engine: steps the generated workflows use
-Built by `core/bulkaccess/definitions.py`. **Library status** comes from `GET /v2025/workflow-library/{actions,operators,triggers}` [L].
+## 5. Workflow engine: steps the Launcher's workflow uses
+Built by `core/bulkaccess/definitions.py` (`bulk_workflow`). There is one workflow: the plugin no longer has its own.
+**Library status** comes from `GET /workflow-library/v1/actions` (and `operators`, `triggers`) [L].
 
-| Step type (`actionId`, version) | Workflow and step names | What it does | Library status [L] |
+| Step type (`actionId`, version) | Step names | What it does | Library status [L] |
 |---|---|---|---|
-| Trigger `idn:interactive-process-launched` (EVENT) | Launcher | Fires on any Launcher launch. Filtered with `filter.$: $[?(@.workflowId == '<own id>')]` | present, not deprecated |
-| Trigger EXTERNAL (`idn:external-http`) | Plugin (test-endpoint mode only) | Never called externally: the plugin runs the **disabled** workflow through `/workflows/{id}/test` | present, not deprecated |
-| `sp:interactive-form` v1 | Launcher: *Interactive Form* | Shows the form in the Launchpad (`formDefinitionId`, `interactiveProcessId`) | v1, not deprecated |
-| `sp:interactive-message` v1 | Launcher: *Notify Pending*, `Reject …` | INFO or ERROR message back in the Launchpad | v1, not deprecated |
-| `sp:get-identity` **v2** | both: *Get Requester*, *Get Approver* | Names and emails | v2 current (**v1 deprecated**, not used) |
-| `sp:compare-strings` (StringEquals, StringMatches) | both: self-approval, approver in people (JSONPath filter), INC regex, duration and unit regex, `Approved?` | Checks before and after the approval | present |
-| `sp:compare-boolean` (BooleanEquals) | Launcher: *Temporary?* (form TOGGLE) | Branch on the access type | present |
-| `sp:define-variable` | Launcher: *Define Variable Access* | `removeDuration`, `accessLabel` and `partLabel`, with transform `sp:transform:replace:string` | present |
-| `sp:update-variable` | Launcher: *Set Temporary Access*, *Set Part* | Builds `"30d"` and the label, with transform `sp:transform:concatenate:string`; copies the plugin's part label | present |
-| `sp:generic-approval` v1 | both: *Bulk Approval* | **One approval** (`approvalType SINGLE`, `singleApproverCategory IDENTITY`), with a timeout, the action at timeout and a priority | v1, not deprecated |
-| `sp:loop:iterator` v1 | both (live mode only): *Request Access* | One iteration per person (≤ 250), `context.$: "$"` | v1, not deprecated |
-| `sp:access:manage` **v2** (inside the loop) | both: *Manage Access* | `GRANT_ACCESS`, all items, `removeDuration` (`""` = permanent), comment `INC… \| Bulk access request by … \| Approved by … \| … \| …` | v2 current |
-| `sp:send-email` **v2** | both: pending, approved, denied, rejected | Requester (cc the approver), or `overrideRecipients` | v2 current (**v1 deprecated**, not used) |
-| `sp:operator-success` and `sp:operator-failure` | both | End steps (failure carries `failureName` and `description`) | present |
+| Trigger `idn:interactive-process-launched` (EVENT) | — | Fires on any Launcher launch. Filtered with `filter.$: $[?(@.workflowId == '<own id>')]` | present, not deprecated |
+| `sp:interactive-form` v1 | *Interactive Form* | Shows the form in the Launchpad (`formDefinitionId`, `interactiveProcessId`) | v1, not deprecated |
+| `sp:get-identity` **v2** | *Get Requester* | The requester's name and email | v2 current (**v1 deprecated**, not used) |
+| `sp:compare-strings` (StringMatches) | *INC Valid?*, *Part Given?*, *Duration Valid?*, *Unit Valid?*, *Within Limit?* | Checks before anything is requested | present |
+| `sp:compare-boolean` (BooleanEquals) | *Temporary?* (form TOGGLE) | Branch on the access type | present |
+| `sp:define-variable` | *Define Variable Access* | `removeDuration`, `accessLabel` and `partLabel`, with transform `sp:transform:replace:string` | present |
+| `sp:update-variable` | *Set Temporary Access*, *Set Part* | Builds `"30d"` and the label, with transform `sp:transform:concatenate:string`; copies the plugin's part label | present |
+| `sp:interactive-message` v1 | *Notify Requested* (INFO), *Reject Bad INC* / *Reject Bad Duration* / *Reject Bad Unit* / *Reject Too Long* (ERROR) | The answer in the Launchpad (and, in launcher submit mode, what the plugin reads from the blocks) | v1, not deprecated |
+| `sp:loop:iterator` v1 | *Request Access* (live mode only) | One iteration per person (≤ 250), `context.$: "$"` | v1, not deprecated |
+| `sp:access:manage` **v2** (inside the loop) | *Manage Access* | `GRANT_ACCESS`, all items, `removeDuration` (`""` = permanent), comment `INC… \| Bulk access request by … \| … \| …` | v2 current |
+| `sp:send-email` **v2** | *Email Requested*, *Email Reject …* | "Requested: …" (dry run: "Checked: …") or "Not requested: …" to the requester, or to `overrideRecipients` | v2 current (**v1 deprecated**, not used) |
+| `sp:operator-success` and `sp:operator-failure` | *End Step - Success*, *End Step - Rejected* | End steps (failure carries `failureName` and `description`) | present |
 
-**Deliberately not used:** `sp:create-approval-request` (the library now marks it **deprecated** [L], and it breaks
-on one-item lists), and `sp:serial:iterator` (it silently stops after 50 items) [L].
+**Deliberately not used:** `sp:generic-approval` (there's no bulk approval any more), `sp:create-approval-request`
+(the library marks it **deprecated** [L], and it breaks on one-item lists), and `sp:serial:iterator` (it silently
+stops after 50 items) [L].
 
 ## 6. Objects created, and the features they rely on
 | Object | API | Features relied on |
 |---|---|---|
-| **Form definition** "<prefix> Bulk Access Request Form" | `/v2025/form-definitions` | SECTION. SELECT with an **INTERNAL IDENTITY** data source (`maximum` ≤ 30) and with **STATIC** options holding full `{id,type,name}` objects (`maximum` ≤ 25). TEXT with **REGEX** validation. TEXTAREA (no MAX_LENGTH). **TOGGLE**. **HIDDEN** (`partLabel`, set only by the plugin). `formConditions` HIDE effects [L] |
-| **Workflow** "<prefix> Bulk Access Request" | `/v2025/workflows` | Enabled, Interactive trigger scoped to its own ID [L] |
-| **Workflow** "<prefix> Bulk Access Request (Plugin)" (only with `plugin.submit: "test-endpoint"`) | `/v2025/workflows` | **Disabled**, External trigger, started through `POST /v2025/workflows/{id}/test` (formerly v3 [L]) |
-| **Launcher** "<prefix> Bulk Access Request" | `/v2025/launchers` | `type: INTERACTIVE_PROCESS`, `reference: {type: WORKFLOW}`. ISC auto-creates an `assignedLaunchers` entitlement on the IdentityNow source [L] |
-| **Access profile** "<prefix> Bulk Access Request - Launcher Access" | `/v3/access-profiles` | Wraps the `assignedLaunchers` entitlement. Requestable, with `approvalSchemes: [{approverType: MANAGER}]` or none [L] |
-| **UI plugin** (alias `<prefix>-bulk-access`) | `/ui-plugins/v1` through `sail` | Slot `full-page`, `apiScopes: ["sp:scopes:all"]`, `restrictToUsers` (private = only the installer). Slots also carry `requiredCapabilities` [L] |
-| **Access requests** (runtime) | Manage Access v2 in the workflow | Requester = **workflow owner**. Item approval schemes still apply [L] |
-| **Generic approvals** (runtime) | `sp:generic-approval`, read through `/v2025/generic-approvals` | Named `Bulk access <INC>[ (k/n)]` [L] |
+| **Form definition** "<prefix> Bulk Access Request Form" | `/form-definitions/v1` | SECTION. SELECT with an **INTERNAL IDENTITY** data source (`maximum` ≤ 30) and with **STATIC** options holding full `{id,type,name}` objects (`maximum` ≤ 25). TEXT with **REGEX** validation. TEXTAREA (no MAX_LENGTH). **TOGGLE**. **HIDDEN** (`partLabel`, set only by the plugin). `formConditions` HIDE effects [L]. No approver field |
+| **Workflow** "<prefix> Bulk Access Request" | `/workflows/v1` | Enabled, Interactive trigger scoped to its own ID [L] |
+| **Launcher** "<prefix> Bulk Access Request" | `/launchers/v1` | `type: INTERACTIVE_PROCESS`, `reference: {type: WORKFLOW}`. ISC auto-creates an `assignedLaunchers` entitlement on the IdentityNow source [L] |
+| **Access profile** "<prefix> Bulk Access Request - Launcher Access" | `/access-profiles/v1` | Wraps the `assignedLaunchers` entitlement. Requestable, with `approvalSchemes: [{approverType: MANAGER}]` or none [L]. Also the plugin's submit gate |
+| **UI plugin** (alias `<prefix>-bulk-access`) | `/ui-plugins/v1` through `sail` | Slot `full-page`, `apiScopes: ["sp:scopes:all"]`, `restrictToUsers` (private = only the installer). Runtime config carries `submit`, `launcherId` (launcher mode), `launcherAccessId` and `noApproval` [L] |
+| **Access requests** (runtime) | `POST /access-requests/v1` from the plugin (requester = **the signed-in user**), or Manage Access v2 in the Launcher's workflow (requester = **the workflow owner**) | Each goes through its **item's own approval scheme** [L]. Items with no scheme (an access profile or role with `approvalSchemes: []`; an entitlement with none of its own when the tenant default is none) are **granted at once** [L]. If the requester is also an item's approver, ISC reassigns that approval to an admin [L] |
+
+Removed: the "<prefix> Bulk Access Request (Plugin)" workflow (only `plugin/uninstall.py` still looks for it, to delete
+it) and the runtime generic approvals named `Bulk access <INC>[ (k/n)]`.
 
 **`ENTITLEMENT` in the catalog** [L]+[S]: in the spec the `requestable-objects` `types` enum is only `ACCESS_PROFILE`
-and `ROLE` (v3, v2025 and v2026). On the test tenant, `types=ENTITLEMENT` alone returns **400**, and the repeated form
+and `ROLE`. On the test tenant, `types=ENTITLEMENT` alone returns **400**, and the repeated form
 (`types=ACCESS_PROFILE&types=ENTITLEMENT`) returns 200 **without any entitlement rows**, although 10 requestable
 entitlements exist. So both deployments ask `requestable-objects` for access profiles and roles only, and read
-requestable entitlements from `GET /v2025/entitlements?filters=requestable eq true` (plus `and name sw "<nameStartsWith>"`),
-which returned exactly those 10 [L]. Entitlement rows have no `type`, so the code tags them `ENTITLEMENT`. See the risks in [API_CONTRACT_ALIGNMENT.md](API_CONTRACT_ALIGNMENT.md#5-risks-and-what-to-watch).
+requestable entitlements from `GET /entitlements/v1?filters=requestable eq true` (plus `and name sw "<nameStartsWith>"`),
+which returned exactly those 10 [L]. Entitlement rows have no `type`, so the code tags them `ENTITLEMENT`. See the
+risks in [API_CONTRACT_ALIGNMENT.md](API_CONTRACT_ALIGNMENT.md#5-risks-and-what-to-watch).
 
 ## 7. Scopes: what `sp:scopes:all` covers
 Both the PAT and the plugin manifest ask for `sp:scopes:all`. The effective rights are still those of the user
@@ -218,9 +244,9 @@ calls above need:
 |---|---|
 | Identities and search | `idn:identity:read`, `sp:search:read`, `idn:accounts:read` |
 | Forms | `sp:forms:read`, `sp:forms:manage` |
-| Workflows | `sp:workflow:read`, `sp:workflow:manage`, `sp:workflow-execution:read`, `sp:workflow-execute:external` (test, cancel) |
-| Launchers | `sp:launcher-admin:read`, `sp:launcher-admin:write`, `sp:launcher-admin:delete`, `sp:launcher-user:launch` (e2e) |
-| Access model | `idn:entitlement:read`, `idn:access-profile:read`, `idn:access-profile:manage`, `idn:sources:read`, `idn:requestable-objects:read` |
-| Access requests | `idn:access-request:manage`, `idn:access-request-status:read` |
+| Workflows | `sp:workflow:read`, `sp:workflow:manage`, `sp:workflow-execution:read`, `sp:workflow-execute:external` (e2e cancel) |
+| Launchers | `sp:launcher-admin:read`, `sp:launcher-admin:write`, `sp:launcher-admin:delete`, `sp:launcher-user:launch` |
+| Access model | `idn:entitlement:read`, `idn:access-profile:read`, `idn:access-profile:manage`, `idn:sources:read`, and whatever reading roles and the entitlement request config need (not checked), `idn:requestable-objects:read` |
+| Access requests | `idn:access-request:manage`, `idn:access-request-status:read`, and reading the access request config (not checked) |
 | Approvals | `idn:access-request-approvals:read`, `idn:access-request-approvals:manage`, `sp:approvals:write` (bulk, ORG_ADMIN) |
 | UI plugins (`sail`) | rights `idn:plugins-ui:create`, `:read`, `:update`, `:delete` [D] |
