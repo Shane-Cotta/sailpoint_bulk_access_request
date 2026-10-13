@@ -179,8 +179,17 @@ export interface AccessRequestStatus {
   requesterComment?: { comment?: string } | null;
   /** When temporary access is removed (null or missing = permanent). */
   removeDate?: string | null;
-  /** The item's approvals so far (verified live): who it's with now while PENDING, and the scheme (e.g. SOURCE_OWNER). */
-  approvalDetails?: { status?: string; scheme?: string; currentOwner?: { name?: string } | null }[] | null;
+  /**
+   * The item's approvals so far (verified live): the scheme (e.g. SOURCE_OWNER), and who it's with while PENDING
+   * (`currentOwner`, which can be null; `originalOwner` is who it was assigned to).
+   */
+  approvalDetails?: {
+    status?: string; scheme?: string; currentOwner?: { name?: string } | null; originalOwner?: { name?: string } | null;
+  }[] | null;
+  /** The request's phases in order (SOD_PHASE, …, APPROVAL_PHASE, PROVISIONING_PHASE); the current one has no `finished`. */
+  accessRequestPhases?: { name?: string; state?: string; finished?: string | null }[] | null;
+  /** Why it was cancelled, e.g. "Already has a pending request for this item" (by System). */
+  cancelledRequestDetails?: { comment?: string | null } | null;
 }
 
 /**
@@ -614,16 +623,17 @@ export class BulkApiService {
     return out;
   }
 
-  /**
-   * Which chosen people already hold (or have pending) which chosen items. Best effort: a check that
-   * fails, or a person missing from the search index, just gives no warning.
-   */
   /** Whether existingAccess() can check entitlements for the signed-in user (ORG_ADMIN only). */
   entitlementsChecked(): boolean {
     return this.isAdmin();
   }
 
-  async existingAccess(personIds: string[], items: AccessItem[], concurrency = 5): Promise<ExistingAccess[]> {
+  /**
+   * Which chosen people already hold (or have pending) which chosen items. Best effort: a person missing from the
+   * search index gives no warning, and a call that fails is skipped; `onError` hears about each failure.
+   */
+  async existingAccess(personIds: string[], items: AccessItem[], concurrency = 5,
+                       onError: (err: unknown) => void = () => undefined): Promise<ExistingAccess[]> {
     if (!personIds.length || !items.length) return [];
     const objects = items.filter((i) => i.type !== 'ENTITLEMENT');
     // Access profiles and roles work for anyone (requestable-objects takes another person's identity-id, verified as a
@@ -645,7 +655,7 @@ export class BulkApiService {
             const status = r['requestStatus'];
             if (status === 'ASSIGNED' || status === 'PENDING') out.push({ personId: id, itemId: String(r['id']), status });
           }
-        }).catch(() => undefined));
+        }).catch(onError));
       }
       // Entitlements, pending: open requests for this person (the row `id` is the item's ID).
       if (entitlements.size) {
@@ -657,7 +667,7 @@ export class BulkApiService {
               out.push({ personId: id, itemId: String(r['id']), status: 'PENDING' });
             }
           }
-        }).catch(() => undefined));
+        }).catch(onError));
       }
     }
     // Entitlements, held: the identities search index lists each person's access.
@@ -675,7 +685,7 @@ export class BulkApiService {
               }
             }
           }
-        }).catch(() => undefined));
+        }).catch(onError));
       }
     }
     await pool(jobs, concurrency);

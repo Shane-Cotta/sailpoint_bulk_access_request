@@ -50,7 +50,10 @@
                     <tr>
                       <td>{{ r.person }}</td>
                       <td>{{ r.item }}</td>
-                      <td><p-tag [severity]="requestLabel(r).severity" [value]="requestLabel(r).label" /></td>
+                      <td>
+                        <p-tag [severity]="requestLabel(r).severity" [value]="requestLabel(r).label" />
+                        @if (r.reason) { <span class="reason">{{ r.reason }}</span> }
+                      </td>
                       <td>
                         @if (r.removeDate) { <span class="temp">Temporary until {{ day(r.removeDate) }}</span> }
                         @else { <span class="muted">Permanent</span> }

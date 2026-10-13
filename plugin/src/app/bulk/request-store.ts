@@ -107,6 +107,8 @@ export class RequestStore implements OnDestroy {
   readonly inc = signal('');
   readonly justification = signal('');
   readonly existing = signal<ExistingAccess[]>([]);
+  /** Why the "already has it" check couldn't run (its first failure), or null. */
+  readonly existingError = signal<string | null>(null);
   readonly submission = signal<SubmissionStatus | null>(null);
 
   // How long the access lasts (CONTRACTS §2). Only offered when the config allows it.
@@ -201,7 +203,12 @@ export class RequestStore implements OnDestroy {
   async checkExisting(): Promise<void> {
     this.existing.set([]);
     if (this.people().length > EXISTING_CHECK_MAX) return;
-    this.existing.set(await this.api.existingAccess(this.people().map((p) => p.id), this.items().map((o) => o.value)));
+    this.existingError.set(null);
+    const failed = (err: unknown) => {
+      if (!this.existingError()) this.existingError.set(describeError(err, 'read', 'who already has this access'));
+    };
+    this.existing.set(await this.api.existingAccess(this.people().map((p) => p.id), this.items().map((o) => o.value),
+      undefined, failed));
   }
 
   /** Send every part (direct requests a few at a time; Launcher runs one after another). */
@@ -374,6 +381,7 @@ export class RequestStore implements OnDestroy {
     this.inc.set('');
     this.justification.set('');
     this.existing.set([]);
+    this.existingError.set(null);
     this.submission.set(null);
     this.accessMode.set('permanent');
     this.durationN.set(30);

@@ -25,6 +25,10 @@ export interface RequestRow {
   status: RequestStatus;
   /** Who the request waits for (its pending approvals' current owners), when WAITING. */
   waitingFor: string[];
+  /** The phase it's in while IN_PROGRESS (e.g. PROVISIONING_PHASE), or null. */
+  phase: string | null;
+  /** Why SailPoint cancelled it, when it says (e.g. "Already has a pending request for this item"). */
+  reason: string | null;
   created: string;
   /** When temporary access is removed (null = permanent). */
   removeDate: string | null;
@@ -47,12 +51,18 @@ export interface BulkGroup {
 
 const NOT_GRANTED = ['REJECTED', 'CANCELLED', 'TERMINATED', 'ERROR', 'PROVISIONING_FAILED'];
 
-/** One access request's status (access-request-status `state` and its approvals). */
-export function requestStatus(r: Pick<AccessRequestStatus, 'state' | 'approvalDetails'>): RequestStatus {
+/** One access request's status (access-request-status `state`, its current phase and its approvals). */
+export function requestStatus(r: Pick<AccessRequestStatus, 'state' | 'approvalDetails' | 'accessRequestPhases'>): RequestStatus {
   if (r.state === 'REQUEST_COMPLETED') return 'DONE';
   if (NOT_GRANTED.includes(r.state)) return 'NOT_GRANTED';
-  if ((r.approvalDetails ?? []).some((a) => a.status === 'PENDING')) return 'WAITING';
+  const phase = currentPhase(r);
+  if (phase === 'APPROVAL_PHASE' || (!phase && (r.approvalDetails ?? []).some((a) => a.status === 'PENDING'))) return 'WAITING';
   return 'IN_PROGRESS';
+}
+
+/** The phase a request is in (the first one not finished), or null. */
+export function currentPhase(r: Pick<AccessRequestStatus, 'accessRequestPhases'>): string | null {
+  return (r.accessRequestPhases ?? []).find((p) => !p.finished && p.state !== 'NOT_EXECUTED')?.name ?? null;
 }
 
 /** One status for a group: all the same → that; any waiting → WAITING; all finished → PARTLY_DONE; else IN_PROGRESS. */
@@ -86,8 +96,10 @@ export function groupByInc(cfg: Pick<RuntimeConfig, 'incPattern'>, requesterId: 
       type: r.type,
       state: r.state,
       status,
-      waitingFor: status === 'WAITING'
-        ? uniq((r.approvalDetails ?? []).filter((a) => a.status === 'PENDING').map((a) => a.currentOwner?.name)) : [],
+      waitingFor: status === 'WAITING' ? uniq((r.approvalDetails ?? []).filter((a) => a.status === 'PENDING')
+        .map((a) => a.currentOwner?.name ?? a.originalOwner?.name)) : [],
+      phase: status === 'IN_PROGRESS' ? currentPhase(r) : null,
+      reason: r.cancelledRequestDetails?.comment || null,
       created: r.created ?? '',
       removeDate: r.removeDate ?? null,
     });
@@ -127,12 +139,13 @@ export function statusLabel(status: GroupStatus): { label: string; severity: Sev
 }
 
 /** One access request's status in plain English: who it waits for, or its state. */
-export function requestLabel(r: Pick<RequestRow, 'status' | 'state' | 'waitingFor'>): { label: string; severity: Severity } {
+export function requestLabel(r: Pick<RequestRow, 'status' | 'state' | 'waitingFor' | 'phase'>): { label: string; severity: Severity } {
   switch (r.status) {
     case 'WAITING':
       return { label: r.waitingFor.length ? `Waiting for ${r.waitingFor.join(', ')}` : 'Waiting for approval', severity: 'warn' };
     case 'DONE': return { label: 'Done', severity: 'success' };
     case 'NOT_GRANTED': return { label: { REJECTED: 'Rejected', CANCELLED: 'Cancelled' }[r.state] ?? 'Not granted', severity: 'danger' };
-    case 'IN_PROGRESS': return { label: r.state === 'EXECUTING' ? 'Provisioning' : 'In progress', severity: 'info' };
+    case 'IN_PROGRESS': return { label: r.phase === 'PROVISIONING_PHASE' ? 'Provisioning' : r.phase ? 'Checking' : 'In progress',
+      severity: 'info' };
   }
 }

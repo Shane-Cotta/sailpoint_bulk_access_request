@@ -215,6 +215,19 @@ describe('BulkApiService', () => {
     expect(found).toHaveLength(2);
   });
 
+  it('skips a person whose check fails, and says why through onError', async () => {
+    const refused = Object.assign(new Error('Forbidden'), { status: 403 });
+    const { api } = setup({
+      '/requestable-objects/v1?identity-id=p1': [{ id: 'ap', requestStatus: 'ASSIGNED' }],
+      '/requestable-objects/v1?identity-id=p2': Promise.reject(refused),
+    });
+    const errors: unknown[] = [];
+    const found = await api.existingAccess(['p1', 'p2'], [{ id: 'ap', type: 'ACCESS_PROFILE', name: 'X' }], 5,
+      (err) => errors.push(err));
+    expect(found).toEqual([{ personId: 'p1', itemId: 'ap', status: 'ASSIGNED' }]);
+    expect(errors).toEqual([refused]);
+  });
+
   it('checks entitlements through identity search (held) and access-request-status (pending)', async () => {
     const { api, plugin } = setup({
       '/search/v1': [

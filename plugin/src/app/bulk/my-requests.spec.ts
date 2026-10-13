@@ -1,5 +1,5 @@
 import { DEMO_CONFIG, DEMO_ME, DEMO_REQUESTS, demoPerson, demoRequest } from '../demo/fixtures';
-import { groupByInc, groupStatus, requestLabel, requestStatus, statusLabel } from './my-requests';
+import { currentPhase, groupByInc, groupStatus, requestLabel, requestStatus, statusLabel } from './my-requests';
 
 describe('My bulk requests grouping', () => {
   const groups = groupByInc(DEMO_CONFIG, DEMO_ME.id, DEMO_REQUESTS);
@@ -69,7 +69,39 @@ describe('My bulk requests grouping', () => {
     expect(groupStatus(['DONE', 'NOT_GRANTED'])).toBe('PARTLY_DONE');
     expect(groupStatus(['DONE', 'IN_PROGRESS'])).toBe('IN_PROGRESS');
     expect(statusLabel('PARTLY_DONE')).toEqual({ label: 'Partly granted', severity: 'warn' });
-    expect(requestLabel({ status: 'NOT_GRANTED', state: 'REJECTED', waitingFor: [] }).label).toBe('Rejected');
-    expect(requestLabel({ status: 'IN_PROGRESS', state: 'EXECUTING', waitingFor: [] }).label).toBe('Provisioning');
+    expect(requestLabel({ status: 'NOT_GRANTED', state: 'REJECTED', waitingFor: [], phase: null }).label).toBe('Rejected');
+    expect(requestLabel({ status: 'IN_PROGRESS', state: 'EXECUTING', waitingFor: [], phase: 'PROVISIONING_PHASE' }).label)
+      .toBe('Provisioning');
+    expect(requestLabel({ status: 'IN_PROGRESS', state: 'EXECUTING', waitingFor: [], phase: 'SOD_PHASE' }).label).toBe('Checking');
+    expect(requestLabel({ status: 'IN_PROGRESS', state: 'EXECUTING', waitingFor: [], phase: null }).label).toBe('In progress');
+  });
+
+  it('reads the phase, who an approval is assigned to, and why SailPoint cancelled a request (rows seen live)', () => {
+    const phases = (current: string) => ['SOD_PHASE', 'APPROVAL_PHASE', 'PROVISIONING_PHASE'].map((name, i, all) => ({
+      name, state: name === current ? 'EXECUTING' : i < all.indexOf(current) ? 'COMPLETED' : 'NOT_EXECUTED',
+      finished: i < all.indexOf(current) ? '2026-10-13T18:46:44Z' : null,
+    }));
+    expect(currentPhase({ accessRequestPhases: phases('SOD_PHASE') })).toBe('SOD_PHASE');
+    expect(currentPhase({ accessRequestPhases: [] })).toBeNull();
+    // Still in the SOD check: no approval yet.
+    expect(requestStatus({ state: 'EXECUTING', approvalDetails: [], accessRequestPhases: phases('SOD_PHASE') })).toBe('IN_PROGRESS');
+    expect(requestStatus({ state: 'EXECUTING', approvalDetails: [], accessRequestPhases: phases('APPROVAL_PHASE') })).toBe('WAITING');
+    expect(requestStatus({ state: 'EXECUTING', approvalDetails: [{ status: 'APPROVED' }],
+      accessRequestPhases: phases('PROVISIONING_PHASE') })).toBe('IN_PROGRESS');
+
+    const base = demoRequest(demoPerson('Alan Bradley'), 'PACS Radiologist Workstation', 'EXECUTING', '2026-10-13T19:42:00Z',
+      'INC0040001 | Bulk access request by Jordan Lee | Permanent | why');
+    const waiting = { ...base, accessRequestPhases: phases('APPROVAL_PHASE'),
+      approvalDetails: [{ status: 'PENDING', scheme: 'ACCESS_PROFILE_OWNER', currentOwner: null, originalOwner: { name: 'Aisha Bello' } }] };
+    const cancelled = { ...base, id: 'other', name: 'VPN - Remote Access', state: 'CANCELLED', approvalDetails: [],
+      cancelledRequestDetails: { comment: 'Already has a pending request for this item' } };
+    const checking = { ...base, id: 'third', name: 'Epic - Clinician Read Only', approvalDetails: [],
+      accessRequestPhases: phases('SOD_PHASE') };
+    const [g] = groupByInc(DEMO_CONFIG, DEMO_ME.id, [waiting, cancelled, checking]);
+    expect(g.requests.map((r) => [r.item, requestLabel(r).label, r.reason])).toEqual([
+      ['Epic - Clinician Read Only', 'Checking', null],
+      ['PACS Radiologist Workstation', 'Waiting for Aisha Bello', null],
+      ['VPN - Remote Access', 'Cancelled', 'Already has a pending request for this item'],
+    ]);
   });
 });

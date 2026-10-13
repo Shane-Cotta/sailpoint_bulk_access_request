@@ -1,4 +1,4 @@
-import { Component, computed, inject, OnInit, output, signal } from '@angular/core';
+import { Component, computed, effect, inject, output, signal, untracked } from '@angular/core';
 import { ButtonModule } from 'primeng/button';
 import { MessageModule } from 'primeng/message';
 import { ProgressSpinnerModule } from 'primeng/progressspinner';
@@ -15,7 +15,7 @@ import { EXISTING_CHECK_MAX, partsSummary, RequestStore, type PartState } from '
   templateUrl: './review-step.component.html',
   styleUrl: './steps.scss',
 })
-export class ReviewStepComponent implements OnInit {
+export class ReviewStepComponent {
   protected readonly store = inject(RequestStore);
   protected readonly cfg = inject(BulkConfigService).config;
   protected readonly configError = inject(BulkConfigService).error;
@@ -65,8 +65,12 @@ export class ReviewStepComponent implements OnInit {
     return [...byItem.values()];
   });
 
-  ngOnInit(): void {
-    if (!this.store.submission()) void this.check();
+  constructor() {
+    // The stepper creates this step once, when the page opens (with nothing chosen yet), so check each time the
+    // step is shown rather than on init.
+    effect(() => {
+      if (this.store.step() === 4 && !this.store.submission()) untracked(() => void this.check());
+    });
   }
 
   private async check(): Promise<void> {
