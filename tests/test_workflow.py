@@ -456,3 +456,10 @@ def test_governance_connector_settings_map_to_our_options():
     assert mapped <= ours
     assert ops.GOVERNANCE_REASSIGN_KEYS["reassignWorkflows"] is None        # the connector does workflows; we don't
     assert len(ops.GOVERNANCE_REASSIGN_KEYS) == 8                           # its eight checkboxes
+
+
+def test_every_step_explains_itself(built):
+    c, body = built
+    for name, step, _ in all_steps(body["definition"]["steps"]):
+        assert (step.get("description") or "").strip(), f"{name} has no description"
+        assert "{{" not in step["description"], f"{name}: a description is plain text"

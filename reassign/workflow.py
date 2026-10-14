@@ -388,6 +388,74 @@ def description(cfg: Config) -> str:
             f"they own" + "".join(f" and their {w.noun}" for w in pending_work(cfg)) + f" to {to}.")
 
 
+def step_descriptions(cfg: Config) -> dict[str, str]:
+    """What each step checks or does, and why: shown as the step's Description in the workflow builder."""
+    inactive = " or ".join(cfg.inactive_states) or "an inactive state"
+    d = {
+        GET_DEPARTED: "Looks up the person who left, to find their manager. Nothing is changed here.",
+        DEFINE_OWNER: "Starts with the fallback owner as the new owner (reason: fallback). The manager replaces them "
+                      "below if usable. To change the fallback owner, edit newOwnerId here.",
+        HAS_MANAGER: "Do they have a manager? Without one, everything goes to the fallback owner.",
+        GET_MANAGER: "Looks up the manager, to check that they're still active.",
+        MANAGER_INACTIVE: f"Has the manager left too (lifecycle state {inactive})? Then the fallback owner is used "
+                          "instead, so nothing ends up with someone who can't act on it.",
+        USE_MANAGER: "The manager is usable: makes them the new owner (reason: manager).",
+        OWNER_USABLE: "Stops if the new owner would be the person who left (for example, they are the fallback owner) "
+                      "or the fallback owner was never filled in. Reassigning would then change nothing or fail.",
+        GET_NEW_OWNER: "Looks up the new owner before anything changes. A governance group given an unknown owner loses "
+                       "its owner without an error, so the owner must exist first. An unknown ID stops the run here.",
+        NEW_OWNER_FOUND: "Continues only if the new owner exists.",
+        NEW_OWNER_ACTIVE: f"Stops if the new owner has left too (lifecycle state {inactive}): they couldn't act as owner.",
+        GET_APPROVALS: "Lists the approvals waiting for the person who left: access requests, forms and workflows (up "
+                       f"to {PAGE}). It also returns approvals of governance groups they're in; those are left out next.",
+        HAS_APPROVALS: "Are any pending approvals assigned to them personally? Approvals assigned to a governance group "
+                       "stay with the group, so they're not counted.",
+        REASSIGN_APPROVALS: "Gives each of their own pending approvals to the new owner, with a comment. SailPoint records "
+                            "the reassignment in the approval's history.",
+        REASSIGN_APPROVAL: "Reassigns this approval to the new owner.",
+        APPROVAL_REASSIGNED: "This approval is done.",
+        RECHECK_APPROVALS: "Checks that no pending approval is still assigned to them personally (a reassignment can fail, "
+                           f"or they had more than {PAGE}).",
+        GET_CERTS: f"Lists the active, unfinished certifications they're the reviewer of (up to {PAGE}).",
+        HAS_CERTS: "Do they review any open certification themselves? If not, the next step is skipped.",
+        REASSIGN_CERTS: "Moves each whole certification to the new owner through its campaign, with a reason, so the "
+                        "review isn't left with someone who has left.",
+        REASSIGN_CERT: "Queues the move of this certification to the new owner.",
+        CERT_REASSIGNED: "This certification is queued.",
+        WAIT_CERTS: "Waits a minute. SailPoint queues certification moves, and they still show under the person who "
+                    "left for a few seconds; checking straight away could report a false failure.",
+        RECHECK_CERTS: "Checks that they no longer review any open certification (a move can fail, or they had more "
+                       f"than {PAGE}).",
+        ANYTHING_LEFT: "Is anything still theirs? If so, the run ends as Failed (after the alert email, if set). "
+                       "Otherwise it ends as Done.",
+        ALERT_ADMINS: "Emails the admins that some objects or pending work could not be moved, so someone follows up.",
+        DONE: "Everything they owned, and everything waiting for them, has a new owner.",
+    }
+    for ot in OBJECT_TYPES.values():
+        what, one = ot.plural.lower(), ot.singular.lower()
+        d[ot.step("Get Owned")] = (f"Lists the {what} the person who left owns (up to {PAGE})." if ot.server_filter else
+                                   f"Lists the first {PAGE} {what} in the tenant. This list can't filter by owner, so "
+                                   "theirs are picked out in the next step.")
+        d[ot.step("Owns")] = f"Do they own any {what}? If not, the next step is skipped."
+        d[ot.step("Reassign")] = (f"Gives each of their {what} to the new owner, in parallel (up to {PAGE}). A failed "
+                                  "change affects only that one; the recheck at the end reports it.")
+        d[f"Patch {ot.singular} Owner"] = f"Sets this {one}'s owner to the new owner."
+        d[f"{ot.singular} Reassigned"] = f"This {one} is done."
+        d[ot.step("Recheck")] = (f"Checks that they no longer own any {what} (a change can fail, or they owned more "
+                                 f"than {PAGE})." if ot.server_filter else
+                                 f"Checks again that none of the first {PAGE} {what} is still theirs.")
+    return d
+
+
+def _describe(steps: dict[str, Any], descriptions: Mapping[str, str]) -> None:
+    """Gives every step (loop bodies too) its description, keeping a failure step's own."""
+    for name, step in steps.items():
+        if step.get("type") != "failure" and name in descriptions:
+            step["description"] = descriptions[name]
+        if step.get("actionId") == "sp:loop:iterator":
+            _describe(step["attributes"]["steps"], descriptions)
+
+
 def build(cfg: Config, t: Target = Target()) -> dict[str, Any]:
     """The workflow body for POST/PUT /workflows/v1 (created disabled; `apply --enable` turns it on)."""
     types = [OBJECT_TYPES[k] for k in cfg.object_types]
@@ -495,6 +563,7 @@ def build(cfg: Config, t: Target = Target()) -> dict[str, Any]:
         f"identity profiles: theirs weren't among the first {PAGE}). Check this run's history, "
         "then run the workflow again or reassign the rest by hand.")
     steps[DONE] = _success()
+    _describe(steps, step_descriptions(cfg))
 
     return {
         "name": cfg.workflow_name,

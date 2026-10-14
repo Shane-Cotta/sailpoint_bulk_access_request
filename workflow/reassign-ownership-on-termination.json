@@ -17,7 +17,8 @@
         "attributes": {
           "id.$": "$.trigger.identity.id"
         },
-        "nextStep": "Define Variable Owner"
+        "nextStep": "Define Variable Owner",
+        "description": "Looks up the person who left, to find their manager. Nothing is changed here."
       },
       "Define Variable Owner": {
         "attributes": {
@@ -39,7 +40,8 @@
         },
         "type": "Mutation",
         "displayName": "New owner: the fallback, until a manager is found",
-        "nextStep": "Has Manager?"
+        "nextStep": "Has Manager?",
+        "description": "Starts with the fallback owner as the new owner (reason: fallback). The manager replaces them below if usable. To change the fallback owner, edit newOwnerId here."
       },
       "Has Manager?": {
         "type": "choice",
@@ -51,7 +53,8 @@
             "nextStep": "Get Manager"
           }
         ],
-        "defaultStep": "Owner Usable?"
+        "defaultStep": "Owner Usable?",
+        "description": "Do they have a manager? Without one, everything goes to the fallback owner."
       },
       "Get Manager": {
         "actionId": "sp:get-identity",
@@ -61,7 +64,8 @@
         "attributes": {
           "id.$": "$.getDepartedIdentity.managerRef.id"
         },
-        "nextStep": "Manager Inactive?"
+        "nextStep": "Manager Inactive?",
+        "description": "Looks up the manager, to check that they're still active."
       },
       "Manager Inactive?": {
         "type": "choice",
@@ -75,7 +79,8 @@
           }
         ],
         "defaultStep": "Use Manager",
-        "actionId": "sp:compare-strings"
+        "actionId": "sp:compare-strings",
+        "description": "Has the manager left too (lifecycle state terminated or archived)? Then the fallback owner is used instead, so nothing ends up with someone who can't act on it."
       },
       "Use Manager": {
         "attributes": {
@@ -97,7 +102,8 @@
         },
         "type": "Mutation",
         "displayName": "New owner: the manager",
-        "nextStep": "Owner Usable?"
+        "nextStep": "Owner Usable?",
+        "description": "The manager is usable: makes them the new owner (reason: manager)."
       },
       "Owner Usable?": {
         "type": "choice",
@@ -117,7 +123,8 @@
           }
         ],
         "defaultStep": "Get New Owner",
-        "actionId": "sp:compare-strings"
+        "actionId": "sp:compare-strings",
+        "description": "Stops if the new owner would be the person who left (for example, they are the fallback owner) or the fallback owner was never filled in. Reassigning would then change nothing or fail."
       },
       "Get New Owner": {
         "actionId": "sp:get-identity",
@@ -127,7 +134,8 @@
         "attributes": {
           "id.$": "$.defineVariableOwner.newOwnerId"
         },
-        "nextStep": "New Owner Found?"
+        "nextStep": "New Owner Found?",
+        "description": "Looks up the new owner before anything changes. A governance group given an unknown owner loses its owner without an error, so the owner must exist first. An unknown ID stops the run here."
       },
       "New Owner Found?": {
         "type": "choice",
@@ -139,7 +147,8 @@
             "nextStep": "New Owner Active?"
           }
         ],
-        "defaultStep": "Stop - No Usable Owner"
+        "defaultStep": "Stop - No Usable Owner",
+        "description": "Continues only if the new owner exists."
       },
       "New Owner Active?": {
         "type": "choice",
@@ -153,7 +162,8 @@
           }
         ],
         "defaultStep": "Get Owned Roles",
-        "actionId": "sp:compare-strings"
+        "actionId": "sp:compare-strings",
+        "description": "Stops if the new owner has left too (lifecycle state terminated or archived): they couldn't act as owner."
       },
       "Stop - No Usable Owner": {
         "actionId": "sp:operator-failure",
@@ -185,7 +195,8 @@
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:250",
           "requestContentType": "json"
         },
-        "nextStep": "Owns Roles"
+        "nextStep": "Owns Roles",
+        "description": "Lists the roles the person who left owns (up to 250)."
       },
       "Owns Roles": {
         "type": "choice",
@@ -197,7 +208,8 @@
             "nextStep": "Reassign Roles"
           }
         ],
-        "defaultStep": "Get Owned Access Profiles"
+        "defaultStep": "Get Owned Access Profiles",
+        "description": "Do they own any roles? If not, the next step is skipped."
       },
       "Reassign Roles": {
         "actionId": "sp:loop:iterator",
@@ -241,16 +253,19 @@
                   }
                 ]
               },
-              "nextStep": "Role Reassigned"
+              "nextStep": "Role Reassigned",
+              "description": "Sets this role's owner to the new owner."
             },
             "Role Reassigned": {
               "actionId": "sp:operator-success",
               "type": "success",
-              "displayName": ""
+              "displayName": "",
+              "description": "This role is done."
             }
           }
         },
-        "nextStep": "Get Owned Access Profiles"
+        "nextStep": "Get Owned Access Profiles",
+        "description": "Gives each of their roles to the new owner, in parallel (up to 250). A failed change affects only that one; the recheck at the end reports it."
       },
       "Get Owned Access Profiles": {
         "actionId": "sp:http",
@@ -275,7 +290,8 @@
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:250",
           "requestContentType": "json"
         },
-        "nextStep": "Owns Access Profiles"
+        "nextStep": "Owns Access Profiles",
+        "description": "Lists the access profiles the person who left owns (up to 250)."
       },
       "Owns Access Profiles": {
         "type": "choice",
@@ -287,7 +303,8 @@
             "nextStep": "Reassign Access Profiles"
           }
         ],
-        "defaultStep": "Get Owned Entitlements"
+        "defaultStep": "Get Owned Entitlements",
+        "description": "Do they own any access profiles? If not, the next step is skipped."
       },
       "Reassign Access Profiles": {
         "actionId": "sp:loop:iterator",
@@ -331,16 +348,19 @@
                   }
                 ]
               },
-              "nextStep": "Access Profile Reassigned"
+              "nextStep": "Access Profile Reassigned",
+              "description": "Sets this access profile's owner to the new owner."
             },
             "Access Profile Reassigned": {
               "actionId": "sp:operator-success",
               "type": "success",
-              "displayName": ""
+              "displayName": "",
+              "description": "This access profile is done."
             }
           }
         },
-        "nextStep": "Get Owned Entitlements"
+        "nextStep": "Get Owned Entitlements",
+        "description": "Gives each of their access profiles to the new owner, in parallel (up to 250). A failed change affects only that one; the recheck at the end reports it."
       },
       "Get Owned Entitlements": {
         "actionId": "sp:http",
@@ -365,7 +385,8 @@
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:250",
           "requestContentType": "json"
         },
-        "nextStep": "Owns Entitlements"
+        "nextStep": "Owns Entitlements",
+        "description": "Lists the entitlements the person who left owns (up to 250)."
       },
       "Owns Entitlements": {
         "type": "choice",
@@ -377,7 +398,8 @@
             "nextStep": "Reassign Entitlements"
           }
         ],
-        "defaultStep": "Get Owned Sources"
+        "defaultStep": "Get Owned Sources",
+        "description": "Do they own any entitlements? If not, the next step is skipped."
       },
       "Reassign Entitlements": {
         "actionId": "sp:loop:iterator",
@@ -421,16 +443,19 @@
                   }
                 ]
               },
-              "nextStep": "Entitlement Reassigned"
+              "nextStep": "Entitlement Reassigned",
+              "description": "Sets this entitlement's owner to the new owner."
             },
             "Entitlement Reassigned": {
               "actionId": "sp:operator-success",
               "type": "success",
-              "displayName": ""
+              "displayName": "",
+              "description": "This entitlement is done."
             }
           }
         },
-        "nextStep": "Get Owned Sources"
+        "nextStep": "Get Owned Sources",
+        "description": "Gives each of their entitlements to the new owner, in parallel (up to 250). A failed change affects only that one; the recheck at the end reports it."
       },
       "Get Owned Sources": {
         "actionId": "sp:http",
@@ -455,7 +480,8 @@
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:250",
           "requestContentType": "json"
         },
-        "nextStep": "Owns Sources"
+        "nextStep": "Owns Sources",
+        "description": "Lists the sources the person who left owns (up to 250)."
       },
       "Owns Sources": {
         "type": "choice",
@@ -467,7 +493,8 @@
             "nextStep": "Reassign Sources"
           }
         ],
-        "defaultStep": "Get Owned Apps"
+        "defaultStep": "Get Owned Apps",
+        "description": "Do they own any sources? If not, the next step is skipped."
       },
       "Reassign Sources": {
         "actionId": "sp:loop:iterator",
@@ -511,16 +538,19 @@
                   }
                 ]
               },
-              "nextStep": "Source Reassigned"
+              "nextStep": "Source Reassigned",
+              "description": "Sets this source's owner to the new owner."
             },
             "Source Reassigned": {
               "actionId": "sp:operator-success",
               "type": "success",
-              "displayName": ""
+              "displayName": "",
+              "description": "This source is done."
             }
           }
         },
-        "nextStep": "Get Owned Apps"
+        "nextStep": "Get Owned Apps",
+        "description": "Gives each of their sources to the new owner, in parallel (up to 250). A failed change affects only that one; the recheck at the end reports it."
       },
       "Get Owned Apps": {
         "actionId": "sp:http",
@@ -546,7 +576,8 @@
           "requestHeaders": "X-SailPoint-Experimental:true",
           "requestContentType": "json"
         },
-        "nextStep": "Owns Apps"
+        "nextStep": "Owns Apps",
+        "description": "Lists the apps the person who left owns (up to 250)."
       },
       "Owns Apps": {
         "type": "choice",
@@ -558,7 +589,8 @@
             "nextStep": "Reassign Apps"
           }
         ],
-        "defaultStep": "Get Owned Governance Groups"
+        "defaultStep": "Get Owned Governance Groups",
+        "description": "Do they own any apps? If not, the next step is skipped."
       },
       "Reassign Apps": {
         "actionId": "sp:loop:iterator",
@@ -603,16 +635,19 @@
                   }
                 ]
               },
-              "nextStep": "App Reassigned"
+              "nextStep": "App Reassigned",
+              "description": "Sets this app's owner to the new owner."
             },
             "App Reassigned": {
               "actionId": "sp:operator-success",
               "type": "success",
-              "displayName": ""
+              "displayName": "",
+              "description": "This app is done."
             }
           }
         },
-        "nextStep": "Get Owned Governance Groups"
+        "nextStep": "Get Owned Governance Groups",
+        "description": "Gives each of their apps to the new owner, in parallel (up to 250). A failed change affects only that one; the recheck at the end reports it."
       },
       "Get Owned Governance Groups": {
         "actionId": "sp:http",
@@ -637,7 +672,8 @@
           "urlParams": "limit:250",
           "requestContentType": "json"
         },
-        "nextStep": "Owns Governance Groups"
+        "nextStep": "Owns Governance Groups",
+        "description": "Lists the first 250 governance groups in the tenant. This list can't filter by owner, so theirs are picked out in the next step."
       },
       "Owns Governance Groups": {
         "type": "choice",
@@ -649,7 +685,8 @@
             "nextStep": "Reassign Governance Groups"
           }
         ],
-        "defaultStep": "Get Owned Identity Profiles"
+        "defaultStep": "Get Owned Identity Profiles",
+        "description": "Do they own any governance groups? If not, the next step is skipped."
       },
       "Reassign Governance Groups": {
         "actionId": "sp:loop:iterator",
@@ -693,16 +730,19 @@
                   }
                 ]
               },
-              "nextStep": "Governance Group Reassigned"
+              "nextStep": "Governance Group Reassigned",
+              "description": "Sets this governance group's owner to the new owner."
             },
             "Governance Group Reassigned": {
               "actionId": "sp:operator-success",
               "type": "success",
-              "displayName": ""
+              "displayName": "",
+              "description": "This governance group is done."
             }
           }
         },
-        "nextStep": "Get Owned Identity Profiles"
+        "nextStep": "Get Owned Identity Profiles",
+        "description": "Gives each of their governance groups to the new owner, in parallel (up to 250). A failed change affects only that one; the recheck at the end reports it."
       },
       "Get Owned Identity Profiles": {
         "actionId": "sp:http",
@@ -727,7 +767,8 @@
           "urlParams": "limit:250",
           "requestContentType": "json"
         },
-        "nextStep": "Owns Identity Profiles"
+        "nextStep": "Owns Identity Profiles",
+        "description": "Lists the first 250 identity profiles in the tenant. This list can't filter by owner, so theirs are picked out in the next step."
       },
       "Owns Identity Profiles": {
         "type": "choice",
@@ -739,7 +780,8 @@
             "nextStep": "Reassign Identity Profiles"
           }
         ],
-        "defaultStep": "Get Pending Approvals"
+        "defaultStep": "Get Pending Approvals",
+        "description": "Do they own any identity profiles? If not, the next step is skipped."
       },
       "Reassign Identity Profiles": {
         "actionId": "sp:loop:iterator",
@@ -783,16 +825,19 @@
                   }
                 ]
               },
-              "nextStep": "Identity Profile Reassigned"
+              "nextStep": "Identity Profile Reassigned",
+              "description": "Sets this identity profile's owner to the new owner."
             },
             "Identity Profile Reassigned": {
               "actionId": "sp:operator-success",
               "type": "success",
-              "displayName": ""
+              "displayName": "",
+              "description": "This identity profile is done."
             }
           }
         },
-        "nextStep": "Get Pending Approvals"
+        "nextStep": "Get Pending Approvals",
+        "description": "Gives each of their identity profiles to the new owner, in parallel (up to 250). A failed change affects only that one; the recheck at the end reports it."
       },
       "Get Pending Approvals": {
         "actionId": "sp:http",
@@ -817,7 +862,8 @@
           "urlParams": "approverId:{{$.trigger.identity.id}}\nfilters:status eq \"PENDING\"\nlimit:250",
           "requestContentType": "json"
         },
-        "nextStep": "Has Pending Approvals?"
+        "nextStep": "Has Pending Approvals?",
+        "description": "Lists the approvals waiting for the person who left: access requests, forms and workflows (up to 250). It also returns approvals of governance groups they're in; those are left out next."
       },
       "Has Pending Approvals?": {
         "type": "choice",
@@ -829,7 +875,8 @@
             "nextStep": "Reassign Pending Approvals"
           }
         ],
-        "defaultStep": "Get Open Certifications"
+        "defaultStep": "Get Open Certifications",
+        "description": "Are any pending approvals assigned to them personally? Approvals assigned to a governance group stay with the group, so they're not counted."
       },
       "Reassign Pending Approvals": {
         "actionId": "sp:loop:iterator",
@@ -867,16 +914,19 @@
                   "comment": "Reassigned automatically: the approver has left (workflow Reassign Ownership on Termination)."
                 }
               },
-              "nextStep": "Approval Reassigned"
+              "nextStep": "Approval Reassigned",
+              "description": "Reassigns this approval to the new owner."
             },
             "Approval Reassigned": {
               "actionId": "sp:operator-success",
               "type": "success",
-              "displayName": ""
+              "displayName": "",
+              "description": "This approval is done."
             }
           }
         },
-        "nextStep": "Get Open Certifications"
+        "nextStep": "Get Open Certifications",
+        "description": "Gives each of their own pending approvals to the new owner, with a comment. SailPoint records the reassignment in the approval's history."
       },
       "Get Open Certifications": {
         "actionId": "sp:http",
@@ -901,7 +951,8 @@
           "urlParams": "reviewer-identity:{{$.trigger.identity.id}}\nfilters:phase eq \"ACTIVE\" and completed eq false\nlimit:250",
           "requestContentType": "json"
         },
-        "nextStep": "Has Open Certifications?"
+        "nextStep": "Has Open Certifications?",
+        "description": "Lists the active, unfinished certifications they're the reviewer of (up to 250)."
       },
       "Has Open Certifications?": {
         "type": "choice",
@@ -913,7 +964,8 @@
             "nextStep": "Reassign Open Certifications"
           }
         ],
-        "defaultStep": "Recheck Roles"
+        "defaultStep": "Recheck Roles",
+        "description": "Do they review any open certification themselves? If not, the next step is skipped."
       },
       "Reassign Open Certifications": {
         "actionId": "sp:loop:iterator",
@@ -957,16 +1009,19 @@
                   "reason": "Reassigned automatically: the reviewer has left (workflow Reassign Ownership on Termination)."
                 }
               },
-              "nextStep": "Certification Reassigned"
+              "nextStep": "Certification Reassigned",
+              "description": "Queues the move of this certification to the new owner."
             },
             "Certification Reassigned": {
               "actionId": "sp:operator-success",
               "type": "success",
-              "displayName": ""
+              "displayName": "",
+              "description": "This certification is queued."
             }
           }
         },
-        "nextStep": "Wait For Certifications"
+        "nextStep": "Wait For Certifications",
+        "description": "Moves each whole certification to the new owner through its campaign, with a reason, so the review isn't left with someone who has left."
       },
       "Wait For Certifications": {
         "actionId": "sp:sleep",
@@ -977,7 +1032,8 @@
           "type": "waitFor",
           "duration": "1m"
         },
-        "nextStep": "Recheck Roles"
+        "nextStep": "Recheck Roles",
+        "description": "Waits a minute. SailPoint queues certification moves, and they still show under the person who left for a few seconds; checking straight away could report a false failure."
       },
       "Recheck Roles": {
         "actionId": "sp:http",
@@ -1002,7 +1058,8 @@
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:1",
           "requestContentType": "json"
         },
-        "nextStep": "Recheck Access Profiles"
+        "nextStep": "Recheck Access Profiles",
+        "description": "Checks that they no longer own any roles (a change can fail, or they owned more than 250)."
       },
       "Recheck Access Profiles": {
         "actionId": "sp:http",
@@ -1027,7 +1084,8 @@
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:1",
           "requestContentType": "json"
         },
-        "nextStep": "Recheck Entitlements"
+        "nextStep": "Recheck Entitlements",
+        "description": "Checks that they no longer own any access profiles (a change can fail, or they owned more than 250)."
       },
       "Recheck Entitlements": {
         "actionId": "sp:http",
@@ -1052,7 +1110,8 @@
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:1",
           "requestContentType": "json"
         },
-        "nextStep": "Recheck Sources"
+        "nextStep": "Recheck Sources",
+        "description": "Checks that they no longer own any entitlements (a change can fail, or they owned more than 250)."
       },
       "Recheck Sources": {
         "actionId": "sp:http",
@@ -1077,7 +1136,8 @@
           "urlParams": "filters:owner.id eq \"{{$.trigger.identity.id}}\"\nlimit:1",
           "requestContentType": "json"
         },
-        "nextStep": "Recheck Apps"
+        "nextStep": "Recheck Apps",
+        "description": "Checks that they no longer own any sources (a change can fail, or they owned more than 250)."
       },
       "Recheck Apps": {
         "actionId": "sp:http",
@@ -1103,7 +1163,8 @@
           "requestHeaders": "X-SailPoint-Experimental:true",
           "requestContentType": "json"
         },
-        "nextStep": "Recheck Governance Groups"
+        "nextStep": "Recheck Governance Groups",
+        "description": "Checks that they no longer own any apps (a change can fail, or they owned more than 250)."
       },
       "Recheck Governance Groups": {
         "actionId": "sp:http",
@@ -1128,7 +1189,8 @@
           "urlParams": "limit:250",
           "requestContentType": "json"
         },
-        "nextStep": "Recheck Identity Profiles"
+        "nextStep": "Recheck Identity Profiles",
+        "description": "Checks again that none of the first 250 governance groups is still theirs."
       },
       "Recheck Identity Profiles": {
         "actionId": "sp:http",
@@ -1153,7 +1215,8 @@
           "urlParams": "limit:250",
           "requestContentType": "json"
         },
-        "nextStep": "Recheck Pending Approvals"
+        "nextStep": "Recheck Pending Approvals",
+        "description": "Checks again that none of the first 250 identity profiles is still theirs."
       },
       "Recheck Pending Approvals": {
         "actionId": "sp:http",
@@ -1178,7 +1241,8 @@
           "urlParams": "approverId:{{$.trigger.identity.id}}\nfilters:status eq \"PENDING\"\nlimit:250",
           "requestContentType": "json"
         },
-        "nextStep": "Recheck Open Certifications"
+        "nextStep": "Recheck Open Certifications",
+        "description": "Checks that no pending approval is still assigned to them personally (a reassignment can fail, or they had more than 250)."
       },
       "Recheck Open Certifications": {
         "actionId": "sp:http",
@@ -1203,7 +1267,8 @@
           "urlParams": "reviewer-identity:{{$.trigger.identity.id}}\nfilters:phase eq \"ACTIVE\" and completed eq false\nlimit:250",
           "requestContentType": "json"
         },
-        "nextStep": "Anything Left?"
+        "nextStep": "Anything Left?",
+        "description": "Checks that they no longer review any open certification (a move can fail, or they had more than 250)."
       },
       "Anything Left?": {
         "type": "choice",
@@ -1255,7 +1320,8 @@
             "nextStep": "Stop - Ownership Not Fully Reassigned"
           }
         ],
-        "defaultStep": "Done"
+        "defaultStep": "Done",
+        "description": "Is anything still theirs? If so, the run ends as Failed (after the alert email, if set). Otherwise it ends as Done."
       },
       "Stop - Ownership Not Fully Reassigned": {
         "actionId": "sp:operator-failure",
@@ -1267,7 +1333,8 @@
       "Done": {
         "actionId": "sp:operator-success",
         "type": "success",
-        "displayName": ""
+        "displayName": "",
+        "description": "Everything they owned, and everything waiting for them, has a new owner."
       }
     }
   },
