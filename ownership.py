@@ -178,6 +178,28 @@ def cmd_doctor(cfg: config_mod.Config, _a: argparse.Namespace) -> int:
         except TenantError as exc:
             bad(f"Open certifications: GET {api.CERTIFICATIONS}: {exc}")
 
+    # SailPoint's ISC Governance connector can reassign on its own, to the manager, when the leaver's governance
+    # account is disabled; two reassigners on one termination race each other (README: Alongside SailPoint's tools).
+    try:
+        sources = ops.governance_connector_sources(tenant)
+    except TenantError as exc:
+        sources = []
+        warn(f"could not look for ISC Governance connector sources ({exc})")
+    if not sources:
+        ok("no ISC Governance connector source, so nothing else reassigns on termination")
+    ours = set(cfg.object_types) | {k for k, on in (("pendingApprovals", cfg.pending_approvals),
+                                                     ("pendingCertifications", cfg.pending_certifications)) if on}
+    for src in sources:
+        attrs = src.get("connectorAttributes") or {}
+        on = [k for k in ops.GOVERNANCE_REASSIGN_KEYS if attrs.get(k) is True]
+        clash = [k for k in on if ops.GOVERNANCE_REASSIGN_KEYS[k] in ours]
+        if clash:
+            warn(f"ISC Governance connector source {src.get('name')!r} also reassigns {', '.join(clash)} (to the "
+                 "manager, when the account is disabled). Turn those off there, or the matching types off here")
+        else:
+            ok(f"ISC Governance connector source {src.get('name')!r}: none of its reassignment settings overlap"
+               + (f" (it does {', '.join(on)})" if on else ""))
+
     print(f"\n{len(problems)} problem(s), {len(warnings)} warning(s).")
     return 1 if problems else 0
 

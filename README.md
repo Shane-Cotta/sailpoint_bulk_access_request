@@ -189,8 +189,24 @@ history.
 - **More object types** (for example, workflows whose owner left): each is one more entry in `OBJECT_TYPES` in
   `reassign/workflow.py`, plus a test object in `reassign/ops.py`. The APIs are listed in
   [docs/RESEARCH.md](docs/RESEARCH.md).
-- **Alongside SailPoint's own tools:** the *ISC Governance* connector can also reassign ownership when someone is
-  disabled, and `sail reassign` is a CLI for one-off moves. Don't run two automatic reassigners on the same event.
+- **Alongside SailPoint's own tools:** `sail reassign` is a CLI for one-off moves. SailPoint's **ISC Governance
+  connector** can also reassign, automatically, when the person's governance account is **disabled** (a lifecycle state
+  that disables it). Don't let both reassign the same things: they act on different events in no guaranteed order,
+  and the connector always picks the manager (no fallback, no check that the manager is still active), so whichever
+  writes last wins, and a connector that goes first leaves this workflow nothing to do. `doctor` finds connector
+  sources and warns about overlap. The connector's settings are keys in its source's `connectorAttributes`:
+
+  | Connector setting | Same as here | Connector only / here only |
+  |---|---|---|
+  | `reassignSources`, `reassignRoles`, `reassignAccessProfiles`, `reassignEntitlements`, `reassignGovGroups` | the object types of the same name | |
+  | `reassignAccessRequests` ("Pending Request Decisions") | `pendingApprovals` | the connector moves them only if the leaver also owns an access item (documented); here always, plus form and workflow approvals |
+  | `reassignCertifications` ("Pending Certification Decisions") | `pendingCertifications` | |
+  | `reassignWorkflows` | — | connector only (a workflow owner must be an admin) |
+  | — | apps, identity profiles | here only |
+
+  Simplest: keep the connector's eight `reassign*` settings off (it's still useful for user levels and governance
+  groups) and let this workflow do the reassigning. To split the work instead, turn each type on in only one of the
+  two.
 
 ## Files
 

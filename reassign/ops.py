@@ -428,3 +428,22 @@ def find_test_campaign(tenant: Tenant, prefix: str) -> dict[str, Any] | None:
     rows = tenant.call("GET", f"{api.CAMPAIGNS}?filters={by_name}&limit=5") or []
     # Deleting an active campaign cancels it in the background (status CANCELING, seen live): those are on their way.
     return next((c for c in rows if c.get("name") == name and c.get("status") not in ("CANCELING", "CANCELED")), None)
+
+
+# ── SailPoint's ISC Governance connector (doctor: does it reassign the same things?) ───
+GOVERNANCE_CONNECTOR_TYPE = "05bde7b6-a1ad-4ac7-9dab-4e341ae4a7b7"   # "SailPoint Identity Security Cloud Governance"
+# Its reassignment settings (source connectorAttributes, read live) → what of ours they overlap with. A missing key
+# is off. reassignWorkflows has no counterpart here.
+GOVERNANCE_REASSIGN_KEYS = {
+    "reassignSources": "sources", "reassignRoles": "roles", "reassignAccessProfiles": "accessProfiles",
+    "reassignEntitlements": "entitlements", "reassignGovGroups": "governanceGroups",
+    "reassignAccessRequests": "pendingApprovals", "reassignCertifications": "pendingCertifications",
+    "reassignWorkflows": None,
+}
+
+
+def governance_connector_sources(tenant: Tenant) -> list[dict[str, Any]]:
+    """Sources of the ISC Governance connector, each with its connectorAttributes (read one by one)."""
+    by_type = q('type eq "' + GOVERNANCE_CONNECTOR_TYPE + '"')
+    rows = tenant.call("GET", f"{api.SOURCES}?filters={by_type}") or []
+    return [tenant.call("GET", f"{api.SOURCES}/{r['id']}") or r for r in rows]

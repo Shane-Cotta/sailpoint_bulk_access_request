@@ -447,3 +447,12 @@ def test_test_input_matches_trigger_shape():
     p = wf.test_input("id1", "jo", "terminated")
     assert p["identity"] == {"id": "id1", "name": "jo", "type": "IDENTITY"}
     assert p["newLifecycleState"] == "terminated" and "oldLifecycleState" in p
+
+
+def test_governance_connector_settings_map_to_our_options():
+    from reassign import ops
+    ours = set(config_mod.OBJECT_TYPE_KEYS) | {"pendingApprovals", "pendingCertifications"}
+    mapped = {v for v in ops.GOVERNANCE_REASSIGN_KEYS.values() if v}
+    assert mapped <= ours
+    assert ops.GOVERNANCE_REASSIGN_KEYS["reassignWorkflows"] is None        # the connector does workflows; we don't
+    assert len(ops.GOVERNANCE_REASSIGN_KEYS) == 8                           # its eight checkboxes

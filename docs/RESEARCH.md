@@ -106,11 +106,23 @@ reassign covers both kinds of approval in one call, so the workflow uses that.
   `idn:sources:manage` and the matching read scopes (docs).
 
 ## 5. How others solve it
-- **ISC Governance connector**, reassignment settings (SailPoint's recommendation): when the identity's governance
-  account is disabled, it reassigns owned objects and pending work to the manager. It requires a manager, and has no
-  documented fallback.
-  [Docs](https://documentation.sailpoint.com/connectors/saas/identity_security_cloud_gov/help/saas_connectivity/identity_security_cloud_governance/reassignment_settings.html),
-  [CoLab predecessor](https://github.com/sailpoint-oss/colab-saas-conn-identitynow-management).
+- **ISC Governance connector**, reassignment settings (researched 2026-10-14, partly hands-on in the demo tenant):
+  - **When:** after the identity's governance account is disabled (usually by a lifecycle state that disables it),
+    not on the lifecycle event itself; the delay isn't documented. ([docs](https://documentation.sailpoint.com/connectors/saas/identity_security_cloud_gov/help/saas_connectivity/identity_security_cloud_governance/reassignment_settings.html))
+  - **Settings** (source `connectorAttributes`, read **live**; a missing key is off): `reassignSources`,
+    `reassignRoles`, `reassignAccessProfiles`, `reassignEntitlements`, `reassignGovGroups`, `reassignWorkflows`,
+    `reassignCertifications`, `reassignAccessRequests`. Nothing for apps, identity profiles, form/workflow approvals
+    or work items.
+  - **To whom:** the direct manager only; without one "the objects and tasks cannot be reassigned" (docs). No fallback,
+    and nothing documents a check that the manager is still active.
+  - **Pending request decisions** move only if the disabled user also owns an access item (docs; an open issue per
+    SailPoint support, [100903](https://developer.sailpoint.com/discuss/t/100903)).
+  - **Identify a source:** `type` (and `connectorAttributes.spConnectorSpecId`) `05bde7b6-a1ad-4ac7-9dab-4e341ae4a7b7`,
+    `connectorName` "SailPoint Identity Security Cloud Governance", script `IdentitySecurityCloudGovernance-saas`
+    (**live**; `doctor` uses the type).
+  - The [CoLab predecessor](https://github.com/sailpoint-oss/colab-saas-conn-identitynow-management) has no
+    reassignment code at all (it manages user levels, governance groups, lifecycle states, enable/disable).
+  - Overlap and how to run them together: README, "Adapting it to your organisation".
 - **`sail reassign`** (SailPoint CLI): one-off moves of sources, roles, access profiles, entitlements, identity
   profiles, governance groups and workflows, with `--dry-run`.
   [Docs](https://developer.sailpoint.com/docs/tools/cli/reassign/).
