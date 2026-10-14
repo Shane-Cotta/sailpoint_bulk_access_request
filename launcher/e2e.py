@@ -34,6 +34,7 @@ import calendar
 import random
 import sys
 import time
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -145,7 +146,10 @@ def main(argv=None) -> int:
 
     # 2. Find the form instance assigned to us and submit it
     def instance():
-        res = t.call("GET", f"{api.FORM_INSTANCES}?limit=50") or {}
+        # Filtered to our form, at the list's maximum: the list returns oldest first and ignores offset, so with
+        # limit=50 a tenant with more forms than that never showed the new one (seen live).
+        flt = urllib.parse.quote(f'formDefinitionId eq "{form["id"]}"')
+        res = t.call("GET", f"{api.FORM_INSTANCES}?limit=250&filters={flt}") or {}
         rows = res.get("results") if isinstance(res, dict) else res
         # Only a form created by *this* launch: an older open form (e.g. one a person left
         # half-filled in the Launchpad) must never be picked up and submitted.

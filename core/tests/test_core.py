@@ -1186,3 +1186,18 @@ def test_who_gets_which_email():
     for attrs in (s["attributes"] for s in steps.values()):
         assert attrs["recipientEmailList.$"] == "$.getRequester.attributes.email" and "carbonCopy.$" not in attrs
 
+
+
+@pytest.mark.parametrize("overrides", [{}, {"mode": "live"}, {"mode": "live", "temporaryAccess__maxDays": 90},
+                                       {"temporaryAccess__enabled": False}])
+def test_every_launcher_step_explains_itself(overrides):
+    wf = definitions.bulk_workflow(cfg_with(**overrides), owner_id="o", form_id="f")
+
+    def walk(steps):
+        for name, step in steps.items():
+            yield name, step
+            if step.get("actionId") == "sp:loop:iterator":
+                yield from walk(step["attributes"]["steps"])
+    for name, step in walk(wf["definition"]["steps"]):
+        assert (step.get("description") or "").strip(), f"{name} has no description"
+        assert "{{" not in step["description"]

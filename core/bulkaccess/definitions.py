@@ -398,6 +398,66 @@ def _choice(display: str, comparator: str, a: str, b: Any, yes: str, no: str, *,
             "defaultStep": no}
 
 
+def launcher_step_descriptions(cfg: Config) -> dict[str, str]:
+    """What each Launcher workflow step checks or does, and why: shown as the step's Description in the builder."""
+    units = launcher_workflow_units(cfg)
+    unit_words = ", ".join(u.lower() for u in units) or "none"
+    stopped = "Nothing is requested."
+    d = {
+        "Interactive Form": "Shows the bulk request form in the Launchpad to the person who launched it (people, items, "
+                            "INC, justification, how long the access lasts) and waits for them to submit it.",
+        "Get Requester": "Looks up who submitted the form: their name goes on every access request's comment and they "
+                         "receive the emails.",
+        "INC Valid?": f"Is the INC number in the right format ({cfg.inc_pattern})? The form checks it too; this repeats "
+                      "the check because the form can also be filled in through the API (the plugin does).",
+        "Reject Bad INC": f"Tells the requester in the Launchpad that the INC number is invalid. {stopped}",
+        "Email Reject Bad INC": "Emails the requester the same message, so they still have it after closing the "
+                                "Launchpad.",
+        DEFINE_ACCESS: "Starts with permanent access and a single part. The steps below change these when temporary "
+                       "access was chosen, or when the plugin sent the request in parts.",
+        "Part Given?": "Did the plugin send this as one part of a bigger request (\" (2/3)\")? The Launchpad never does; "
+                       "only a well-formed part label is used, so a stray value can't end up in the messages.",
+        "Set Part": "Keeps the part label, so the messages and the email say which part this is.",
+        "Temporary?": "Was temporary access chosen? If not, the access is permanent.",
+        "Duration Valid?": "Is the duration a whole number of 1 or more? An invalid duration would make the access "
+                           f"request step fail, so it's stopped here instead. {stopped}",
+        "Unit Valid?": f"Was an allowed unit chosen ({unit_words})?",
+        "Set Temporary Access": "Builds the removal duration the access request needs (for example 30d) and the label "
+                                "shown on the requests and emails (for example Temporary: 30d).",
+        "Within Limit?": f"Is the access no longer than the {cfg.temporary_max_days}-day maximum set by the admins?",
+        "Reject Too Long": f"Tells the requester the access would last longer than allowed. {stopped}",
+        "Email Reject Too Long": "Emails the requester the same message.",
+        "Reject Bad Duration": f"Tells the requester the duration isn't a whole number of 1 or more. {stopped}",
+        "Email Reject Bad Duration": "Emails the requester the same message.",
+        "Reject Bad Unit": f"Tells the requester to choose a unit for the duration. {stopped}",
+        "Email Reject Bad Unit": "Emails the requester the same message.",
+        "Notify Requested": ("Tells the requester in the Launchpad that the access is being requested. Each item is then "
+                             "approved the way it's set up in SailPoint." if cfg.live else
+                             "Tells the requester the request passed every check. Dry-run mode: nothing is requested."),
+        "Request Access": "Requests every chosen item for each person: one access request per person, in parallel (up "
+                          "to 250 people per run). SailPoint allows few people per request and no loop inside a loop, "
+                          "hence one loop over the people.",
+        "Manage Access": "Files this person's access request: every chosen item, the bulk comment (INC, requester, "
+                         "access, justification) and, for temporary access, the removal duration. The workflow's owner "
+                         "is recorded as the requester.",
+        "End Step - Success Item": "This person's request is filed.",
+        "Email Requested": ("Emails the requester what was requested, for whom, and where to follow it." if cfg.live else
+                            "Emails the requester that the request was checked. Dry-run mode: nothing is requested."),
+        "End Step - Success": ("The access requests are filed; each now waits for its own approval, if it has one."
+                               if cfg.live else "The request passed every check (dry run)."),
+    }
+    return d
+
+
+def _describe(steps: dict[str, Any], descriptions: dict[str, str]) -> None:
+    """Gives every step (loop bodies too) its description, keeping a failure step's own."""
+    for name, step in steps.items():
+        if step.get("type") != "failure" and name in descriptions:
+            step["description"] = descriptions[name]
+        if step.get("actionId") == "sp:loop:iterator":
+            _describe(step["attributes"]["steps"], descriptions)
+
+
 def bulk_workflow(cfg: Config, *, owner_id: str, owner_name: str | None = None, form_id: str,
                   workflow_id: str | None = None, links: EmailLinks | None = None) -> dict[str, Any]:
     """The Launcher's workflow. `workflow_id` (known after creation) scopes the trigger; `links` (the tenant's UI
@@ -535,6 +595,7 @@ def bulk_workflow(cfg: Config, *, owner_id: str, owner_name: str | None = None, 
                                 "nextStep": "End Step - Success"}
     steps["End Step - Success"] = _success()
     steps["End Step - Rejected"] = _failure()
+    _describe(steps, launcher_step_descriptions(cfg))
 
     trigger: dict[str, Any] = {"type": "EVENT", "attributes": {"id": "idn:interactive-process-launched"}}
     if workflow_id:
