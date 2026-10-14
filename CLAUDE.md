@@ -103,6 +103,22 @@ and re-checked on `/v1` on 2026-10-13 (same filters and shapes). Run history is 
   - `POST /workgroups/v1/{id}/members/bulk-add` answers **207** (multi-status, 201 per member).
   - HTTP Request v3's JSON body is `requestContentType: "json"` + `jsonRequestBody` (an object; `{{…}}` templates in
     its values work like in `jsonPatchRequestBody`).
+- **Certifications (verified 2026-10-14):**
+  - `GET /certifications/v1?reviewer-identity=<id>&filters=phase eq "ACTIVE" and completed eq false` lists someone
+    else's open certifications for an admin; each row has `campaign.id` and `reviewer{id,type}`. A reviewer-identity
+    that doesn't exist is a **404**.
+  - `POST /campaigns/v1/{campaignId}/reassign {certificationIds: [id], reassignTo: {id, type: "IDENTITY"}, reason}`
+    moves whole certifications. It answers with a queued task (`type: ADMIN_REASSIGN`, `status: QUEUED`): the
+    certification keeps its ID, gets the new reviewer and a `reassignment.from` (old reviewer), and is renamed
+    "Reassignment from '…' to <new>". It still listed under the old reviewer right after the call and had moved 10 s
+    later, so the workflow waits a minute before rechecking. An unknown target is a 404 (nothing changes).
+    `POST /certifications/v1/{id}/reassign` moves review items instead (would need a loop inside the loop).
+  - Test fixture: a `SEARCH` campaign `{searchCampaignInfo: {type: IDENTITY, reviewer: {type, id}, identityIds}}`, no
+    emails, goes PENDING → STAGED in about 5 minutes; `POST /campaigns/v1/{id}/activate {timeZone}` → ACTIVE and the
+    certification exists ~20 s later. Deleting an active campaign (`POST /campaigns/v1/delete {ids}`) cancels it in the
+    background (status CANCELING); a second delete is a 400.
+- **Wait (`sp:sleep` v1):** `{"type": "waitFor", "duration": "1m"}` (ISC's own format: `1m`, `20m`, `1h`, `2d`); it runs in
+  test-endpoint runs too (`TimerStarted`/`TimerFired` in the history).
 - **Loops (`sp:loop:iterator`):**
   - A failing HTTP step fails **only that iteration**: the history shows `ChildWorkflowExecutionFailed` with the status.
   - The loop step itself completes, and the run continues. The Recheck steps then route to *Ownership not fully reassigned*.

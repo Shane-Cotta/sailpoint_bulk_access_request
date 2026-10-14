@@ -48,6 +48,7 @@ class Config:
     alert_emails: tuple[str, ...]
     parameter: str
     pending_approvals: bool = True
+    pending_certifications: bool = True
 
     @property
     def workflow_name(self) -> str:
@@ -64,7 +65,8 @@ def defaults(path: str = "<defaults>") -> Config:
     return Config(path=path, prefix="", env_file=".env", fallback_owner=None, workflow_owner=None,
                   owner_strategy=OWNER_STRATEGIES[0], termination_states=DEFAULT_TERMINATION_STATES,
                   inactive_states=DEFAULT_INACTIVE_STATES, object_types=OBJECT_TYPE_KEYS, alert_emails=(),
-                  parameter=DEFAULT_PARAMETER, pending_approvals=True)
+                  parameter=DEFAULT_PARAMETER, pending_approvals=True,
+                  pending_certifications=True)
 
 
 def _states(raw: Any, key: str, default: tuple[str, ...], *, allow_empty: bool = False) -> tuple[str, ...]:
@@ -136,6 +138,9 @@ def from_dict(data: dict[str, Any], path: str = "<dict>") -> Config:
     pending = data.get("pendingApprovals", d.pending_approvals)
     if not isinstance(pending, bool):
         raise ConfigError("pendingApprovals must be true or false")
+    certs = data.get("pendingCertifications", d.pending_certifications)
+    if not isinstance(certs, bool):
+        raise ConfigError("pendingCertifications must be true or false")
 
     env_file = data.get("envFile", d.env_file)
     if env_file is not None and not isinstance(env_file, str):
@@ -154,6 +159,7 @@ def from_dict(data: dict[str, Any], path: str = "<dict>") -> Config:
         alert_emails=tuple(emails),
         parameter=parameter.strip(),
         pending_approvals=pending,
+        pending_certifications=certs,
     )
 
 

@@ -9,7 +9,10 @@ Flow (see README.md for the picture):
   → for each enabled object type: Get Owned X → Owns X? → Reassign X (loop: Patch X Owner)
   → [pendingApprovals] Get Pending Approvals → Has Pending Approvals? → Reassign Pending Approvals
     (loop: Reassign Approval, POST /generic-approvals/v1/{id}/reassign)
-  → Recheck X … → [Recheck Pending Approvals] → Anything Left? → [Alert Admins] → failure | success
+  → [pendingCertifications] Get Open Certifications → Has Open Certifications? → Reassign Open Certifications
+    (loop: Reassign Certification, POST /campaigns/v1/{campaign}/reassign)
+  → Recheck X … → [Recheck Pending Approvals] → [Recheck Open Certifications] → Anything Left? → [Alert Admins]
+  → failure | success
 
 Facts this relies on are listed, with how they were verified, in CLAUDE.md and docs/RESEARCH.md.
 """
@@ -59,6 +62,16 @@ REASSIGN_APPROVALS = "Reassign Pending Approvals"
 REASSIGN_APPROVAL = "Reassign Approval"
 APPROVAL_REASSIGNED = "Approval Reassigned"
 RECHECK_APPROVALS = "Recheck Pending Approvals"
+GET_CERTS = "Get Open Certifications"
+HAS_CERTS = "Has Open Certifications?"
+REASSIGN_CERTS = "Reassign Open Certifications"
+REASSIGN_CERT = "Reassign Certification"
+CERT_REASSIGNED = "Certification Reassigned"
+RECHECK_CERTS = "Recheck Open Certifications"
+WAIT_CERTS = "Wait For Certifications"
+# The campaign reassign is queued (ADMIN_REASSIGN, QUEUED): the certification still lists under the leaver for a few
+# seconds (it had moved 10 s later, seen live), so the run waits before rechecking.
+CERT_WAIT = "1m"           # the format ISC's own Wait steps use ("1m", "20m", "1h", "2d")
 ANYTHING_LEFT = "Anything Left?"
 ALERT_ADMINS = "Alert Admins"
 STOP_LEFTOVERS = "Stop - Ownership Not Fully Reassigned"
@@ -277,6 +290,74 @@ def _reassign_approvals_loop(cfg: Config, t: Target, next_step: str) -> dict[str
     }
 
 
+# ── Open certifications (cfg.pending_certifications) ──────────────────────────
+# The departed identity's active, unfinished certifications as reviewer (reviewer-identity takes someone else's ID for
+# an admin; verified live). Each moves as a whole to the new owner through its campaign's reassign call, the only one
+# that moves a whole certification in one call (the certification's own reassign moves review items, which would need
+# a loop inside the loop).
+CERTS_LIST_PARAMS = ('reviewer-identity:{{' + DEPARTED_ID + '}}\nfilters:phase eq "ACTIVE" and completed eq false'
+                     '\nlimit:')
+REVIEWED_BY_DEPARTED = "[?(@.reviewer.id == " + DEPARTED_ID + ")]"
+CERT_REASON = "Reassigned automatically: the reviewer has left (workflow {workflow})."
+
+
+def _list_certs(t: Target, name: str, verb: str, limit: int, next_step: str) -> dict[str, Any]:
+    return _http(t, name, f"{verb} the departed identity's open certifications", "get",
+                 f"{t.api_url}{api.CERTIFICATIONS}", next_step, url_params=f"{CERTS_LIST_PARAMS}{limit}")
+
+
+def _wait(display: str, duration: str, next_step: str) -> dict[str, Any]:
+    return {"actionId": "sp:sleep", "type": "action", "versionNumber": 1, "displayName": display,
+            "attributes": {"type": "waitFor", "duration": duration}, "nextStep": next_step}
+
+
+def _reassign_certs_loop(cfg: Config, t: Target, next_step: str) -> dict[str, Any]:
+    body = {"certificationIds": ["{{$.loop.loopInput.id}}"],
+            "reassignTo": {"id": "{{$.loop.context." + NEW_OWNER_ID[2:] + "}}", "type": "IDENTITY"},
+            "reason": CERT_REASON.format(workflow=cfg.workflow_name)}
+    return {
+        "actionId": "sp:loop:iterator", "type": "action", "versionNumber": 1,
+        "displayName": "Give each open certification to the new owner",
+        "attributes": {
+            "input.$": "$." + _camel(GET_CERTS) + ".body" + REVIEWED_BY_DEPARTED,
+            "context.$": "$",
+            "start": REASSIGN_CERT,
+            "steps": {
+                REASSIGN_CERT: _http(t, REASSIGN_CERT, "Reassign the certification", "post",
+                                     f"{t.api_url}{api.CAMPAIGNS}/{{{{$.loop.loopInput.campaign.id}}}}/reassign",
+                                     CERT_REASSIGNED, body=body),
+                CERT_REASSIGNED: _success(),
+            },
+        },
+        "nextStep": next_step,
+    }
+
+
+@dataclass(frozen=True)
+class PendingWork:
+    """One kind of pending work the workflow moves after the objects: find, choose, loop, recheck."""
+    find: str
+    has: str
+    loop: str
+    recheck: str
+    loop_step: str
+    noun: str                 # "pending approvals"
+    filter: str               # JSONPath filter keeping what is the departed identity's own
+
+    def first(self, step: str) -> str:
+        return "$." + _camel(step) + ".body" + self.filter + ".id"
+
+
+APPROVALS = PendingWork(GET_APPROVALS, HAS_APPROVALS, REASSIGN_APPROVALS, RECHECK_APPROVALS, REASSIGN_APPROVAL,
+                        "pending approvals", ASSIGNED_TO_DEPARTED)
+CERTIFICATIONS = PendingWork(GET_CERTS, HAS_CERTS, REASSIGN_CERTS, RECHECK_CERTS, REASSIGN_CERT,
+                             "open certifications", REVIEWED_BY_DEPARTED)
+
+
+def pending_work(cfg: Config) -> list[PendingWork]:
+    return [k for k, on in ((APPROVALS, cfg.pending_approvals), (CERTIFICATIONS, cfg.pending_certifications)) if on]
+
+
 ALERT_BODY = (
     "<p>The workflow <b>$!{workflow}</b> could not move everything that <b>$!{departed}</b> owned.</p>"
     "<p>Some of the objects they owned (or approvals waiting for them) are still theirs (new owner: $!{newOwner}, "
@@ -304,7 +385,7 @@ def description(cfg: Config) -> str:
     to = ("their manager, or the fallback owner when they have no active manager"
           if cfg.owner_strategy == "manager-then-fallback" else "the fallback owner")
     return (f"When an identity's lifecycle state becomes {' or '.join(cfg.termination_states)}, gives the {what} "
-            f"they own" + (" and their pending approvals" if cfg.pending_approvals else "") + f" to {to}.")
+            f"they own" + "".join(f" and their {w.noun}" for w in pending_work(cfg)) + f" to {to}.")
 
 
 def build(cfg: Config, t: Target = Target()) -> dict[str, Any]:
@@ -371,40 +452,45 @@ def build(cfg: Config, t: Target = Target()) -> dict[str, Any]:
         "(Define Variable Owner → newOwnerId).")
 
     first_recheck = types[0].step("Recheck")
-    after_objects = GET_APPROVALS if cfg.pending_approvals else first_recheck
+    work = pending_work(cfg)
+    after_objects = work[0].find if work else first_recheck
     for i, ot in enumerate(types):
         after = types[i + 1].step("Get Owned") if i + 1 < len(types) else after_objects
         steps[ot.step("Get Owned")] = _list_owned(t, ot.step("Get Owned"), ot, "Find", PAGE, ot.step("Owns"))
         steps[ot.step("Owns")] = _choice(f"Owns any {ot.plural.lower()}?",
                                          [_present(ot.first_owned_id("Get Owned"), ot.step("Reassign"))], after)
         steps[ot.step("Reassign")] = _reassign_loop(t, ot, after)
-    if cfg.pending_approvals:
-        steps[GET_APPROVALS] = _list_approvals(t, GET_APPROVALS, "Find", PAGE, HAS_APPROVALS)
-        steps[HAS_APPROVALS] = _choice("Any pending approvals?",
-                                       [_present("$." + _camel(GET_APPROVALS) + ".body" + ASSIGNED_TO_DEPARTED + ".id",
-                                                 REASSIGN_APPROVALS)],
-                                       first_recheck)
-        steps[REASSIGN_APPROVALS] = _reassign_approvals_loop(cfg, t, first_recheck)
+    lister = {APPROVALS: _list_approvals, CERTIFICATIONS: _list_certs}
+    looper = {APPROVALS: _reassign_approvals_loop, CERTIFICATIONS: _reassign_certs_loop}
+    for i, w in enumerate(work):
+        after = work[i + 1].find if i + 1 < len(work) else first_recheck
+        steps[w.find] = lister[w](t, w.find, "Find", PAGE, w.has)
+        steps[w.has] = _choice(f"Any {w.noun}?", [_present(w.first(w.find), w.loop)], after)
+        if w is CERTIFICATIONS:    # the reassign is queued: let it land before anything rechecks
+            steps[w.loop] = looper[w](cfg, t, WAIT_CERTS)
+            steps[WAIT_CERTS] = _wait("Let the certification moves finish", CERT_WAIT, after)
+        else:
+            steps[w.loop] = looper[w](cfg, t, after)
 
     # Check that nothing is left: catches failed loop iterations and owners of more than PAGE objects.
-    last_recheck = RECHECK_APPROVALS if cfg.pending_approvals else ANYTHING_LEFT
+    last_recheck = work[0].recheck if work else ANYTHING_LEFT
     for i, ot in enumerate(types):
         after = types[i + 1].step("Recheck") if i + 1 < len(types) else last_recheck
         steps[ot.step("Recheck")] = _list_owned(t, ot.step("Recheck"), ot, "Recheck", 1 if ot.server_filter else PAGE,
                                                 after)
     leftovers = ALERT_ADMINS if cfg.alert_emails else STOP_LEFTOVERS
     left = [_present(ot.first_owned_id("Recheck"), leftovers) for ot in types]
-    if cfg.pending_approvals:
-        # A full page, filtered like the first list: group approvals would hide a leftover behind limit 1.
-        steps[RECHECK_APPROVALS] = _list_approvals(t, RECHECK_APPROVALS, "Recheck", PAGE, ANYTHING_LEFT)
-        left.append(_present("$." + _camel(RECHECK_APPROVALS) + ".body" + ASSIGNED_TO_DEPARTED + ".id", leftovers))
+    for i, w in enumerate(work):
+        # A full page, filtered like the first list: someone else's rows (a group's) would hide a leftover at limit 1.
+        steps[w.recheck] = lister[w](t, w.recheck, "Recheck", PAGE, work[i + 1].recheck if i + 1 < len(work) else ANYTHING_LEFT)
+        left.append(_present(w.first(w.recheck), leftovers))
     steps[ANYTHING_LEFT] = _choice("Anything still owned?", left, DONE)
     if cfg.alert_emails:
         steps[ALERT_ADMINS] = _alert(cfg, STOP_LEFTOVERS)
     steps[STOP_LEFTOVERS] = _failure(
         "Ownership not fully reassigned",
         f"The departed identity still owns some {', '.join(ot.plural.lower() for ot in types)}"
-        + (" or has pending approvals" if cfg.pending_approvals else "") + " after the "
+        + "".join(f" or has {w.noun}" for w in pending_work(cfg)) + " after the "
         f"reassignment: a change failed, or they had more than {PAGE} of one kind (for governance groups and "
         f"identity profiles: theirs weren't among the first {PAGE}). Check this run's history, "
         "then run the workflow again or reassign the rest by hand.")
@@ -426,8 +512,8 @@ def http_step_names(cfg: Config) -> list[str]:
     names = [n for k in cfg.object_types for n in (OBJECT_TYPES[k].step("Get Owned"),
                                                     f"Patch {OBJECT_TYPES[k].singular} Owner",
                                                     OBJECT_TYPES[k].step("Recheck"))]
-    if cfg.pending_approvals:
-        names += [GET_APPROVALS, REASSIGN_APPROVAL, RECHECK_APPROVALS]
+    for w in pending_work(cfg):
+        names += [w.find, w.loop_step, w.recheck]
     return names
 
 

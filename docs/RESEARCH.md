@@ -42,7 +42,7 @@ specs, the developer community, and a live demo tenant. **Live** means checked a
 | Kind | Find a person's | Move it | Status |
 |---|---|---|---|
 | Access-request and generic (form/workflow) approvals | `GET /generic-approvals/v1?approverId=<id>&filters=status eq "PENDING"` (**live**; also lists their governance groups' approvals) | `POST /generic-approvals/v1/{id}/reassign {reassignTo, comment}` (**live**) | Done (`pendingApprovals`) |
-| Certifications | `GET /certifications/v1` (reviewer) | `POST /certifications/v1/{id}/reassign` (route exists, **live**; body not tried) | Not yet |
+| Certifications | `GET /certifications/v1?reviewer-identity=<id>&filters=phase eq "ACTIVE" and completed eq false` (**live**) | Whole certification: `POST /campaigns/v1/{campaignId}/reassign {certificationIds, reassignTo{id,type}, reason}` (**live**). `POST /certifications/v1/{id}/reassign` moves individual review items instead | Done (`pendingCertifications`) |
 | Manual tasks (work items) | `GET /work-items/v1?ownerId=<id>` (**live**) | `POST /work-items/v1/{id}/forward` (route exists, **live**) | Not yet |
 | All four, going forward | `GET /reassignment-configurations/v1` | ISC's own out-of-office reassignment: types `ACCESS_REQUESTS`, `CERTIFICATIONS`, `MANUAL_TASKS`, `GENERIC_APPROVALS` (**live**, experimental) | Not used (experimental) |
 

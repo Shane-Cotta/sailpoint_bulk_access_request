@@ -366,3 +366,65 @@ def cancel_test_request(tenant: Tenant, approval: dict[str, Any]) -> None:
     if ref:
         tenant.call("POST", f"{api.ACCESS_REQUESTS}/cancel",
                     {"accountActivityId": ref, "comment": "ownership.py test: cleaning up"})
+
+
+# ── open certifications (cfg.pending_certifications; ownership.py test --pending-for) ───
+CERT_OPEN = q('phase eq "ACTIVE" and completed eq false')
+
+
+def open_certifications(tenant: Tenant, reviewer_id: str, limit: int = 250) -> list[dict[str, Any]]:
+    """The reviewer's active, unfinished certifications, as the workflow lists them."""
+    return tenant.call("GET", f"{api.CERTIFICATIONS}?reviewer-identity={q(reviewer_id)}&filters={CERT_OPEN}"
+                              f"&limit={limit}") or []
+
+
+def certification_reviewer(tenant: Tenant, cert_id: str) -> str | None:
+    return ((tenant.call("GET", f"{api.CERTIFICATIONS}/{cert_id}") or {}).get("reviewer") or {}).get("id")
+
+
+def make_test_certification(tenant: Tenant, prefix: str, reviewer_id: str, identity_id: str,
+                            timeout: float = 1200, log=print) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A real open certification for `reviewer_id`: a search campaign (no emails) reviewing `identity_id`'s access,
+    activated. SailPoint prepares and generates it in the background (about 5 minutes, seen live). Returns
+    (campaign, certification)."""
+    from datetime import datetime, timedelta, timezone
+    deadline = (datetime.now(timezone.utc) + timedelta(days=7)).strftime("%Y-%m-%dT23:59:59.999Z")
+    camp = tenant.call("POST", api.CAMPAIGNS, {
+        "name": f"{prefix} Certification", "type": "SEARCH", "description": ABOUT, "deadline": deadline,
+        "emailNotificationEnabled": False, "autoRevokeAllowed": False, "recommendationsEnabled": False,
+        "searchCampaignInfo": {"type": "IDENTITY", "reviewer": {"type": "IDENTITY", "id": reviewer_id},
+                               "identityIds": [identity_id]}})
+    log("  waiting for SailPoint to prepare and activate the test campaign (about 5 minutes)…")
+    end = time.monotonic() + timeout
+    activated = False
+    while time.monotonic() < end:
+        status = (tenant.call("GET", f"{api.CAMPAIGNS}/{camp['id']}") or {}).get("status")
+        if status == "STAGED" and not activated:
+            tenant.call("POST", f"{api.CAMPAIGNS}/{camp['id']}/activate", {"timeZone": "UTC"})
+            activated = True
+        if status == "ACTIVE":
+            mine = [c for c in open_certifications(tenant, reviewer_id)
+                    if (c.get("campaign") or {}).get("id") == camp["id"]]
+            if mine:
+                return camp, mine[0]
+        time.sleep(20)
+    raise TenantError(0, f"the test campaign had no certification after {timeout:.0f} s", {"campaign": camp})
+
+
+def delete_test_campaign(tenant: Tenant, campaign: dict[str, Any], prefix: str) -> None:
+    """Delete (an active one: cancel, in the background) the test campaign. A campaign already being cancelled
+    refuses a second delete (400), which is fine."""
+    if str(campaign.get("name", "")).startswith(prefix):
+        try:
+            tenant.call("POST", f"{api.CAMPAIGNS}/delete", {"ids": [campaign["id"]]})
+        except TenantError as exc:
+            if exc.status != 400:
+                raise
+
+
+def find_test_campaign(tenant: Tenant, prefix: str) -> dict[str, Any] | None:
+    name = f"{prefix} Certification"
+    by_name = q('name eq "' + name + '"')
+    rows = tenant.call("GET", f"{api.CAMPAIGNS}?filters={by_name}&limit=5") or []
+    # Deleting an active campaign cancels it in the background (status CANCELING, seen live): those are on their way.
+    return next((c for c in rows if c.get("name") == name and c.get("status") not in ("CANCELING", "CANCELED")), None)

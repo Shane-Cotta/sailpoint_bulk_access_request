@@ -41,6 +41,9 @@ VARIANTS = {
     "alerts": {"alertEmails": ["iam-team@example.com"]},
     "no-approvals": {"pendingApprovals": False},
     "approvals-roles-only": {"objectTypes": only("roles"), "pendingApprovals": True},
+    "no-certifications": {"pendingCertifications": False},
+    "certifications-only": {"pendingApprovals": False, "pendingCertifications": True},
+    "no-pending-work": {"pendingApprovals": False, "pendingCertifications": False},
 }
 
 
@@ -184,6 +187,14 @@ def test_http_steps(built):
             else:
                 assert a["method"] == "get" and a["url"] == f"{wf.API_URL}/generic-approvals/v1"
             continue
+        if name in (wf.GET_CERTS, wf.RECHECK_CERTS, wf.REASSIGN_CERT):
+            assert a.get("requestHeaders") is None and a["requestContentType"] == "json"
+            if name == wf.REASSIGN_CERT:
+                assert a["method"] == "post"
+                assert a["url"] == f"{wf.API_URL}/campaigns/v1/{{{{$.loop.loopInput.campaign.id}}}}/reassign"
+            else:
+                assert a["method"] == "get" and a["url"] == f"{wf.API_URL}/certifications/v1"
+            continue
         assert a["method"] in ("get", "patch")
         ot = next(o for o in wf.OBJECT_TYPES.values() if o.plural in name or o.singular in name)
         assert a.get("requestHeaders") == ot.headers
@@ -296,7 +307,7 @@ def test_disabled_types_are_left_out():
 
 
 def test_pending_approvals_are_reassigned_after_the_objects_and_rechecked():
-    c = cfg()
+    c = cfg(pendingCertifications=False)
     assert c.pending_approvals                                       # on by default
     steps = wf.build(c)["definition"]["steps"]
     last = wf.OBJECT_TYPES[c.object_types[-1]]
@@ -326,8 +337,49 @@ def test_pending_approvals_are_reassigned_after_the_objects_and_rechecked():
     assert "pending approvals" in wf.description(c)
 
 
-def test_pending_approvals_can_be_turned_off():
+def test_open_certifications_are_reassigned_whole_after_the_approvals():
+    c = cfg()
+    assert c.pending_certifications                                  # on by default
+    steps = wf.build(c)["definition"]["steps"]
+    first_recheck = wf.OBJECT_TYPES[c.object_types[0]].step("Recheck")
+    # Objects → approvals → certifications → rechecks (objects, approvals, certifications) → Anything Left?
+    assert steps[wf.HAS_APPROVALS]["defaultStep"] == wf.GET_CERTS
+    assert steps[wf.REASSIGN_APPROVALS]["nextStep"] == wf.GET_CERTS
+    get = steps[wf.GET_CERTS]["attributes"]
+    assert get["urlParams"] == ('reviewer-identity:{{$.trigger.identity.id}}\n'
+                                'filters:phase eq "ACTIVE" and completed eq false\nlimit:250')
+    mine = "[?(@.reviewer.id == $.trigger.identity.id)]"
+    has = steps[wf.HAS_CERTS]
+    assert has["choiceList"] == [{"comparator": "IsPresent", "variableA.$": f"$.getOpenCertifications.body{mine}.id",
+                                  "nextStep": wf.REASSIGN_CERTS}]
+    assert has["defaultStep"] == first_recheck
+    loop = steps[wf.REASSIGN_CERTS]
+    assert loop["attributes"]["input.$"] == f"$.getOpenCertifications.body{mine}" and loop["nextStep"] == wf.WAIT_CERTS
+    wait = steps[wf.WAIT_CERTS]                    # the campaign reassign is queued; let it land before the recheck
+    assert (wait["actionId"], wait["attributes"]["type"], wait["nextStep"]) == ("sp:sleep", "waitFor", first_recheck)
+    post = loop["attributes"]["steps"][wf.REASSIGN_CERT]["attributes"]
+    assert post["jsonRequestBody"] == {
+        "certificationIds": ["{{$.loop.loopInput.id}}"],
+        "reassignTo": {"id": "{{$.loop.context.defineVariableOwner.newOwnerId}}", "type": "IDENTITY"},
+        "reason": "Reassigned automatically: the reviewer has left (workflow ACME Reassign Ownership on Termination)."}
+    assert steps[wf.RECHECK_APPROVALS]["nextStep"] == wf.RECHECK_CERTS
+    assert steps[wf.RECHECK_CERTS]["nextStep"] == wf.ANYTHING_LEFT
+    assert {"comparator": "IsPresent", "variableA.$": f"$.recheckOpenCertifications.body{mine}.id",
+            "nextStep": wf.STOP_LEFTOVERS} in steps[wf.ANYTHING_LEFT]["choiceList"]
+    assert "pending approvals and their open certifications" in wf.description(c)
+
+
+def test_certifications_alone_follow_the_objects():
     c = cfg(pendingApprovals=False)
+    steps = wf.build(c)["definition"]["steps"]
+    last = wf.OBJECT_TYPES[c.object_types[-1]]
+    assert steps[last.step("Owns")]["defaultStep"] == wf.GET_CERTS
+    assert steps[last.step("Recheck")]["nextStep"] == wf.RECHECK_CERTS
+    assert wf.GET_APPROVALS not in steps
+
+
+def test_pending_approvals_can_be_turned_off():
+    c = cfg(pendingApprovals=False, pendingCertifications=False)
     steps = wf.build(c)["definition"]["steps"]
     assert not {wf.GET_APPROVALS, wf.HAS_APPROVALS, wf.REASSIGN_APPROVALS, wf.RECHECK_APPROVALS} & set(steps)
     last = wf.OBJECT_TYPES[c.object_types[-1]]
@@ -384,6 +436,7 @@ def test_example_config_loads():
     ({"http": {"parameter": " "}}, "http.parameter"),
     ({"prefix": "-bad"}, "prefix"),
     ({"pendingApprovals": "yes"}, "pendingApprovals"),
+    ({"pendingCertifications": 1}, "pendingCertifications"),
 ])
 def test_config_errors(bad, message):
     with pytest.raises(config_mod.ConfigError, match=message):

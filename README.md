@@ -2,8 +2,8 @@
 
 A SailPoint Identity Security Cloud (ISC) workflow. When someone leaves the organisation, it moves everything they
 own to their **manager**. If there's no usable manager, it moves it to a **fallback owner** you choose. That covers
-**roles, access profiles, entitlements, sources, apps, governance groups and identity profiles**, and the **approvals
-still waiting for them**. Nothing is left orphaned, so approvals, certifications and access reviews that go to the
+**roles, access profiles, entitlements, sources, apps, governance groups and identity profiles**, the **approvals
+still waiting for them**, and the **certifications they still have to review**. Nothing is left orphaned, so approvals, certifications and access reviews that go to the
 owner keep working, and nobody's request waits on someone who has left.
 
 It works in any ISC tenant. Everything organisation-specific is in one config file, or, without Python, in four
@@ -24,7 +24,8 @@ flowchart TD
   U -- no --> X1[Stop: no usable new owner — nothing changed]
   U -- yes --> R["For each type they own:<br/>roles, access profiles, entitlements,<br/>sources, apps, governance groups,<br/>identity profiles → new owner"]
   R --> P["Their pending approvals<br/>(access requests, forms, workflows)<br/>→ new owner (optional)"]
-  P --> C{Anything still owned or pending?}
+  P --> Q["Their open certifications<br/>(as reviewer) → new owner (optional)"]
+  Q --> C{Anything still owned or pending?}
   C -- yes --> E["Email the admins (optional)"] --> X2[Stop: not fully reassigned]
   C -- no --> D[Done]
 ```
@@ -47,7 +48,10 @@ flowchart TD
   the approver has left (workflow …)"*. SailPoint records it in the approval's history as a manual reassignment.
   - Only approvals assigned to **them personally** move. An approval assigned to a governance group they're in stays
     with the group.
-  - Certifications and manual tasks (work items) are not moved yet.
+- **Open certifications** (`pendingCertifications`, on by default): every active, unfinished certification they're
+  the reviewer of moves, as a whole, to the same new owner, with the reason *"Reassigned automatically: the reviewer
+  has left (workflow …)"* (the campaign's reassign call).
+- Manual tasks (work items) are not moved yet.
 - **Safety:**
   - The workflow never makes the person who left the owner again.
   - It never patches with an unfilled placeholder.
@@ -92,8 +96,9 @@ python ownership.py doctor --config config/<tenant>.json      # read-only: is th
 python ownership.py apply  --config config/<tenant>.json --dry-run
 python ownership.py apply  --config config/<tenant>.json      # creates it DISABLED
 python ownership.py test   --config config/<tenant>.json --departed <test identity>
-#   add --approval-for <another test identity> to also give the departed identity two real pending approvals
-#   (one assigned to them, one to a governance group they're in) and check only the first moves; takes minutes
+#   add --pending-for <another test identity> to also give the departed identity real pending work: two approvals
+#   (one assigned to them, one to a governance group they're in; only the first may move) and a test certification
+#   they review (a throwaway campaign, no emails). Takes 5-15 minutes.
 python ownership.py apply  --config config/<tenant>.json --enable
 ```
 
@@ -119,6 +124,7 @@ python ownership.py apply  --config config/<tenant>.json --enable
 | `inactiveStates` | `["terminated", "archived"]` | A manager in one of these counts as gone, so the fallback is used; a fallback owner in one stops the run. `[]` skips these checks |
 | `objectTypes` | all `true` | `{"roles": …, "accessProfiles": …, "entitlements": …, "sources": …, "apps": …, "governanceGroups": …, "identityProfiles": …}`. Set a type to `false` to leave it alone; its steps aren't generated. A key you leave out counts as `true`, so an older config with only the first three gets the new types too |
 | `pendingApprovals` | `true` | Also reassign the access-request, form and workflow approvals waiting for the person who left (only those assigned to them personally, not a governance group's) |
+| `pendingCertifications` | `true` | Also reassign the active, unfinished certifications they're the reviewer of |
 | `alertEmails` | `[]` | Up to 10 addresses emailed when something couldn't be reassigned |
 | `http.parameter` | `Ownership Reassignment API` | Name or ID of the Parameter Storage entry the HTTP steps authenticate with |
 

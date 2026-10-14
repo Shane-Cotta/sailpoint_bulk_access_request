@@ -7,6 +7,8 @@ legacy `v3`, `beta` and `v202X` paths lose support in Q2 2028. One exception: so
 
 ACCESS_PROFILES = "/access-profiles/v1"
 ACCESS_REQUESTS = "/access-requests/v1"
+CAMPAIGNS = "/campaigns/v1"
+CERTIFICATIONS = "/certifications/v1"
 ENTITLEMENTS = "/entitlements/v1"
 GENERIC_APPROVALS = "/generic-approvals/v1"
 IDENTITIES = "/identities/v1"

@@ -1,6 +1,6 @@
 {
   "name": "Reassign Ownership on Termination",
-  "description": "When an identity's lifecycle state becomes terminated, gives the roles, access profiles, entitlements, sources, apps, governance groups and identity profiles they own and their pending approvals to their manager, or the fallback owner when they have no active manager.",
+  "description": "When an identity's lifecycle state becomes terminated, gives the roles, access profiles, entitlements, sources, apps, governance groups and identity profiles they own and their pending approvals and their open certifications to their manager, or the fallback owner when they have no active manager.",
   "owner": {
     "type": "IDENTITY",
     "id": "__WORKFLOW_OWNER_ID__"
@@ -829,7 +829,7 @@
             "nextStep": "Reassign Pending Approvals"
           }
         ],
-        "defaultStep": "Recheck Roles"
+        "defaultStep": "Get Open Certifications"
       },
       "Reassign Pending Approvals": {
         "actionId": "sp:loop:iterator",
@@ -875,6 +875,107 @@
               "displayName": ""
             }
           }
+        },
+        "nextStep": "Get Open Certifications"
+      },
+      "Get Open Certifications": {
+        "actionId": "sp:http",
+        "type": "action",
+        "versionNumber": 3,
+        "displayName": "Find the departed identity's open certifications",
+        "attributes": {
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "__PARAMETER_ID__",
+            "paramType": "1.4",
+            "refID": "0d9c5cea-9b70-5a53-9794-32f7375a211b"
+          },
+          "method": "get",
+          "url": "__API_URL__/certifications/v1",
+          "urlParams": "reviewer-identity:{{$.trigger.identity.id}}\nfilters:phase eq \"ACTIVE\" and completed eq false\nlimit:250",
+          "requestContentType": "json"
+        },
+        "nextStep": "Has Open Certifications?"
+      },
+      "Has Open Certifications?": {
+        "type": "choice",
+        "displayName": "Any open certifications?",
+        "choiceList": [
+          {
+            "comparator": "IsPresent",
+            "variableA.$": "$.getOpenCertifications.body[?(@.reviewer.id == $.trigger.identity.id)].id",
+            "nextStep": "Reassign Open Certifications"
+          }
+        ],
+        "defaultStep": "Recheck Roles"
+      },
+      "Reassign Open Certifications": {
+        "actionId": "sp:loop:iterator",
+        "type": "action",
+        "versionNumber": 1,
+        "displayName": "Give each open certification to the new owner",
+        "attributes": {
+          "input.$": "$.getOpenCertifications.body[?(@.reviewer.id == $.trigger.identity.id)]",
+          "context.$": "$",
+          "start": "Reassign Certification",
+          "steps": {
+            "Reassign Certification": {
+              "actionId": "sp:http",
+              "type": "action",
+              "versionNumber": 3,
+              "displayName": "Reassign the certification",
+              "attributes": {
+                "param_authenticationRef": "oauth",
+                "param_oauth": {
+                  "mapping": {
+                    "auth_client_id": "clientId",
+                    "auth_client_secret": "clientSecret",
+                    "auth_credential_location": "credentialLocation",
+                    "auth_token_url": "tokenURL"
+                  },
+                  "paramID": "__PARAMETER_ID__",
+                  "paramType": "1.4",
+                  "refID": "857d3a5e-ba95-56dd-bee7-5b2af1ee3b68"
+                },
+                "method": "post",
+                "url": "__API_URL__/campaigns/v1/{{$.loop.loopInput.campaign.id}}/reassign",
+                "requestContentType": "json",
+                "jsonRequestBody": {
+                  "certificationIds": [
+                    "{{$.loop.loopInput.id}}"
+                  ],
+                  "reassignTo": {
+                    "id": "{{$.loop.context.defineVariableOwner.newOwnerId}}",
+                    "type": "IDENTITY"
+                  },
+                  "reason": "Reassigned automatically: the reviewer has left (workflow Reassign Ownership on Termination)."
+                }
+              },
+              "nextStep": "Certification Reassigned"
+            },
+            "Certification Reassigned": {
+              "actionId": "sp:operator-success",
+              "type": "success",
+              "displayName": ""
+            }
+          }
+        },
+        "nextStep": "Wait For Certifications"
+      },
+      "Wait For Certifications": {
+        "actionId": "sp:sleep",
+        "type": "action",
+        "versionNumber": 1,
+        "displayName": "Let the certification moves finish",
+        "attributes": {
+          "type": "waitFor",
+          "duration": "1m"
         },
         "nextStep": "Recheck Roles"
       },
@@ -1077,6 +1178,31 @@
           "urlParams": "approverId:{{$.trigger.identity.id}}\nfilters:status eq \"PENDING\"\nlimit:250",
           "requestContentType": "json"
         },
+        "nextStep": "Recheck Open Certifications"
+      },
+      "Recheck Open Certifications": {
+        "actionId": "sp:http",
+        "type": "action",
+        "versionNumber": 3,
+        "displayName": "Recheck the departed identity's open certifications",
+        "attributes": {
+          "param_authenticationRef": "oauth",
+          "param_oauth": {
+            "mapping": {
+              "auth_client_id": "clientId",
+              "auth_client_secret": "clientSecret",
+              "auth_credential_location": "credentialLocation",
+              "auth_token_url": "tokenURL"
+            },
+            "paramID": "__PARAMETER_ID__",
+            "paramType": "1.4",
+            "refID": "10384eab-d679-526e-9701-8b65788f38c1"
+          },
+          "method": "get",
+          "url": "__API_URL__/certifications/v1",
+          "urlParams": "reviewer-identity:{{$.trigger.identity.id}}\nfilters:phase eq \"ACTIVE\" and completed eq false\nlimit:250",
+          "requestContentType": "json"
+        },
         "nextStep": "Anything Left?"
       },
       "Anything Left?": {
@@ -1122,6 +1248,11 @@
             "comparator": "IsPresent",
             "variableA.$": "$.recheckPendingApprovals.body[?(@.assignedTo[0].identityID == $.trigger.identity.id)].id",
             "nextStep": "Stop - Ownership Not Fully Reassigned"
+          },
+          {
+            "comparator": "IsPresent",
+            "variableA.$": "$.recheckOpenCertifications.body[?(@.reviewer.id == $.trigger.identity.id)].id",
+            "nextStep": "Stop - Ownership Not Fully Reassigned"
           }
         ],
         "defaultStep": "Done"
@@ -1131,7 +1262,7 @@
         "type": "failure",
         "displayName": "",
         "failureName": "Ownership not fully reassigned",
-        "description": "The departed identity still owns some roles, access profiles, entitlements, sources, apps, governance groups, identity profiles or has pending approvals after the reassignment: a change failed, or they had more than 250 of one kind (for governance groups and identity profiles: theirs weren't among the first 250). Check this run's history, then run the workflow again or reassign the rest by hand."
+        "description": "The departed identity still owns some roles, access profiles, entitlements, sources, apps, governance groups, identity profiles or has pending approvals or has open certifications after the reassignment: a change failed, or they had more than 250 of one kind (for governance groups and identity profiles: theirs weren't among the first 250). Check this run's history, then run the workflow again or reassign the rest by hand."
       },
       "Done": {
         "actionId": "sp:operator-success",
