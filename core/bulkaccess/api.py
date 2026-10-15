@@ -17,6 +17,7 @@ IDENTITIES = "/identities/v1"
 LAUNCHERS = "/launchers/v1"
 REQUESTABLE_OBJECTS = "/requestable-objects/v1"
 ROLES = "/roles/v1"
+SEARCH = "/search/v1"
 WORKFLOW_EXECUTIONS = "/workflow-executions/v1"   # history: /{id}/history-v2 (the v1 lineage of execution history)
 WORKFLOWS = "/workflows/v1"
 

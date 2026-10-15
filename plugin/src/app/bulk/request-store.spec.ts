@@ -2,7 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { SailpointPluginService } from '@core';
 
 import { applyScenario, DemoPluginService } from '../demo/demo';
-import { crowdPeople, DEMO_CONFIG, DEMO_LAUNCHER_ACCESS, DEMO_ME, demoItem, demoPerson } from '../demo/fixtures';
+import { crowdPeople, DEMO_CONFIG, DEMO_SUBMIT_ACCESS, DEMO_ME, demoItem, demoPerson } from '../demo/fixtures';
 import type { DemoScenario } from '../demo/scenario';
 import { providePluginTesting } from '../testing/plugin.testing';
 import { BulkApiService } from './bulk-api.service';
@@ -72,15 +72,15 @@ describe('RequestStore', () => {
   });
 
   describe('directly (submit: "direct", the default)', () => {
-    it('checks the Launcher Access, then files every item for every person as the user, with the bulk comment', async () => {
+    it('checks the Submit Access, then files every item for every person as the user, with the bulk comment', async () => {
       scenario('review');
       const get = vi.spyOn(plugin, 'get');
       const post = vi.spyOn(plugin, 'post');
       await run(store.submit());
 
-      expect(get.mock.calls.map((c) => String(c[0])).filter((p) => p.includes(DEMO_LAUNCHER_ACCESS))).toEqual([
-        `/requestable-objects/v1?identity-id=${DEMO_ME.id}&types=ACCESS_PROFILE&limit=1`
-          + `&filters=${encodeURIComponent(`id eq "${DEMO_LAUNCHER_ACCESS}"`)}`,
+      expect(get.mock.calls.map((c) => String(c[0])).filter((p) => p.includes(DEMO_SUBMIT_ACCESS))).toEqual([
+        `/requestable-objects/v1?identity-id=${DEMO_ME.id}&types=ROLE&limit=1`
+          + `&filters=${encodeURIComponent(`id eq "${DEMO_SUBMIT_ACCESS}"`)}`,
       ]);
       const comment = `INC0048391 | Bulk access request by ${DEMO_ME.name} | Permanent | ${store.justification()}`;
       expect(post.mock.calls).toEqual([['/access-requests/v1', {
@@ -163,14 +163,14 @@ describe('RequestStore', () => {
         message: 'Dry-run mode: everything checks out, but nothing was requested.' });
     });
 
-    it('turns away a user without the Launcher Access profile before sending anything', async () => {
-      scenario('launcher-denied');
+    it('turns away a user without the Submit Access role before sending anything', async () => {
+      scenario('submit-denied');
       const post = vi.spyOn(plugin, 'post');
       await run(store.submit());
       expect(post).not.toHaveBeenCalled();
       expect(store.submission()?.state).toBe('error');
       expect(store.sendFailed()[0].message)
-        .toBe("To submit, you need 'ACME Bulk Access Request - Launcher Access'. Request it in the Request Center.");
+        .toBe("To submit, you need 'ACME Bulk Access Request - Submit Access'. Request it in the Request Center.");
     });
 
     it('says when it could not check the access, and skips the check when no profile is installed', async () => {
@@ -181,7 +181,7 @@ describe('RequestStore', () => {
 
       store.reset();
       scenario('review');
-      config().update((c) => ({ ...c, launcherAccessId: null }));
+      config().update((c) => ({ ...c, submitAccessId: null }));
       get.mockClear();
       await run(store.submit());
       expect(get.mock.calls.some((c) => String(c[0]).startsWith('/requestable-objects/v1'))).toBe(false);
@@ -266,7 +266,7 @@ describe('RequestStore', () => {
       await run(store.submit());
       expect(post).toHaveBeenCalledTimes(1);
       expect(store.submission()?.state).toBe('error');
-      const message = "To submit, you need 'ACME Bulk Access Request - Launcher Access'. Request it in the Request Center.";
+      const message = "To submit, you need 'ACME Bulk Access Request - Submit Access'. Request it in the Request Center.";
       expect(store.sendFailed().map((p) => p.message)).toEqual([message, message, message]);
       expect(store.submission()?.message).toContain(message);
     });
@@ -354,7 +354,7 @@ describe('RequestStore', () => {
   });
 
   it('words a refused call for what was being done and for the submit mode', () => {
-    const cfg = { submit: 'launcher' as const, launcherAccessName: 'ACME Bulk Access Request - Launcher Access' };
+    const cfg = { submit: 'launcher' as const, submitAccessName: 'ACME Bulk Access Request - Submit Access' };
     // Reads (people, catalog, history) say what couldn't be loaded, never blame ORG_ADMIN.
     const read = describeError({ status: 403 }, 'read', 'the catalog');
     expect(read).toContain("so the catalog couldn't be loaded");
@@ -362,9 +362,9 @@ describe('RequestStore', () => {
     expect(describeError({ status: 400, body: { messages: [{ text: 'bad input' }] } })).toBe('bad input');
     // Launcher mode: the missing access, by its configured name.
     expect(describeSubmitError({ status: 403 }, cfg))
-      .toBe("To submit, you need 'ACME Bulk Access Request - Launcher Access'. Request it in the Request Center.");
+      .toBe("To submit, you need 'ACME Bulk Access Request - Submit Access'. Request it in the Request Center.");
     expect(describeSubmitError({ status: 500, body: { messages: [{ text: 'insufficient authorization' }] } }, cfg))
-      .toContain("you need 'ACME Bulk Access Request - Launcher Access'");
+      .toContain("you need 'ACME Bulk Access Request - Submit Access'");
     expect(describeSubmitError({ status: 500, body: { messages: [{ text: 'boom' }] } }, cfg)).toBe('boom');
     // Direct mode: SailPoint may not let this user request for others.
     const direct = describeSubmitError({ status: 403 }, { ...cfg, submit: 'direct' });

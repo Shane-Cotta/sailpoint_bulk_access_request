@@ -14,6 +14,11 @@ Updated on 2026-10-13:
 - **The plugin files the access requests itself** (`plugin.submit: "direct"`, the default), as the signed-in user.
   The workflow test endpoint (`"test-endpoint"`) is gone.
 
+Updated on 2026-10-14:
+- **Who may submit is a role.** The plugin installer creates the requestable role "<prefix> Bulk Access Request - Submit
+  Access" (§1 #32–35) and requests it for holders of the *Launcher Access* profile (§1 #36, #29). With the Launcher
+  deployed the role contains that profile, which is then not requestable on its own. The plugin's gate reads the role.
+
 Related: [API_CONTRACT_ALIGNMENT.md](API_CONTRACT_ALIGNMENT.md) (versions, deprecations, how to migrate) ·
 [REQUIREMENTS_CHECKLIST.md](REQUIREMENTS_CHECKLIST.md) (a checklist to run against a tenant) ·
 [END_TO_END_WALKTHROUGH.md](END_TO_END_WALKTHROUGH.md) (the lifecycle step by step, with the calls each step makes).
@@ -34,9 +39,9 @@ the spec wasn't consulted for that call (added on 2026-10-13).
 ## 0. At a glance
 | Component | Credentials | Who | API calls (distinct) |
 |---|---|---|---|
-| **Installer CLI** (`bulkaccess.py`, `launcher/*.py`, `plugin/*.py`, `core/bulkaccess/catalog.py`) | Personal access token (PAT), `client_credentials`, scope `sp:scopes:all` | An ORG_ADMIN (or the `owner` service identity) | 31 |
+| **Installer CLI** (`bulkaccess.py`, `launcher/*.py`, `plugin/*.py`, `core/bulkaccess/catalog.py`) | Personal access token (PAT), `client_credentials`, scope `sp:scopes:all` | An ORG_ADMIN (or the `owner` service identity) | 36 |
 | **E2E test** (`launcher/e2e.py`, optional) | The same PAT | ORG_ADMIN who also holds Launcher access | 8 (plus the installer's lookups) |
-| **UI plugin** (Angular page inside ISC) | The signed-in user's ISC session, through `@sailpoint/ui-plugin-sdk` (manifest `apiScopes: ["sp:scopes:all"]`) | *New request*: any holder of the *Launcher Access* profile. *My bulk requests*: the user's own. *Approvals* tab: any item approver | 19 |
+| **UI plugin** (Angular page inside ISC) | The signed-in user's ISC session, through `@sailpoint/ui-plugin-sdk` (manifest `apiScopes: ["sp:scopes:all"]`) | *New request*: any holder of the *Submit Access* role. *My bulk requests*: the user's own. *Approvals* tab: any item approver | 19 |
 | **`sail` CLI** (`plugin/install.py --deploy`, `plugin/uninstall.py --plugin`) | The same PAT, passed through environment variables | ORG_ADMIN with UI-plugin rights | 7 (all `/ui-plugins/v1`, experimental) |
 | **Workflow engine** (the Launcher's workflow) | Runs as the workflow owner | — | 6 actions, 3 operators, 1 trigger, 2 transforms |
 
@@ -72,9 +77,9 @@ And `POST /oauth/token` (not versioned). **Not used:** `/v3`, `/v2024`, `/v2025`
 | 16 | `PUT /launchers/v1/{id}` | Update the Launcher, and re-enable it (it switches itself off when its workflow is disabled) | `launcher/install.py` | ORG_ADMIN | `sp:launcher-admin:write` | GA [L] |
 | 17 | `DELETE /launchers/v1/{id}` | Uninstall | `launcher/uninstall.py` | ORG_ADMIN | `sp:launcher-admin:delete` | GA [S] |
 | 18 | `GET /entitlements/v1?filters=value eq "<launcherId>"` | Find the auto-created `assignedLaunchers` entitlement (polled: it appears asynchronously) | `launcher/install.py` | Any | `idn:entitlement:read` | GA [L] |
-| 19 | `GET /access-profiles/v1?filters=name eq …` | Find the *Launcher Access* profile (the plugin's submit gate reads its ID) | `launcher/install.py`, `launcher/uninstall.py`, `pluginlib.py`, `export` | ORG_ADMIN, ROLE_ADMIN, ROLE_SUBADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN | `idn:access-profile:read` | GA [L] |
-| 20 | `POST /access-profiles/v1` | Create it (requestable, MANAGER approval or none) | `launcher/install.py` | same as 19 | `idn:access-profile:manage`, `idn:entitlement:read`, `idn:identity:read`, `idn:sources:read` | GA [L] |
-| 21 | `PATCH /access-profiles/v1/{id}` | Update its entitlement and `accessRequestConfig` | `launcher/install.py` | ORG_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN | `idn:access-profile:manage` | GA [L] |
+| 19 | `GET /access-profiles/v1?filters=name eq …` | Find the *Launcher Access* profile (the plugin installer puts it in the *Submit Access* role) | `launcher/install.py`, `launcher/status.py`, `launcher/uninstall.py`, `plugin/install.py`, `export` | ORG_ADMIN, ROLE_ADMIN, ROLE_SUBADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN | `idn:access-profile:read` | GA [L] |
+| 20 | `POST /access-profiles/v1` | Create it (MANAGER approval or none; requestable only without the plugin) | `launcher/install.py` | same as 19 | `idn:access-profile:manage`, `idn:entitlement:read`, `idn:identity:read`, `idn:sources:read` | GA [L] |
+| 21 | `PATCH /access-profiles/v1/{id}` | Update only what differs: description, entitlement, `requestable`, `accessRequestConfig` | `launcher/install.py` | ORG_ADMIN, SOURCE_ADMIN, SOURCE_SUBADMIN | `idn:access-profile:manage` | GA [L] |
 | 22 | `DELETE /access-profiles/v1/{id}` | Uninstall | `launcher/uninstall.py` | same as 21 | `idn:access-profile:manage` | GA [S] |
 | 23 | `GET /requestable-objects/v1?types=…&types=…&limit=250&offset=N` | The Request Center catalog's access profiles and roles (only the configured ones among `ACCESS_PROFILE`, `ROLE`) | `catalog.requestable_objects` (both installers) | ORG_ADMIN (no `identity-id` means admin only) | `idn:requestable-objects:read` | GA [L]. See the `ENTITLEMENT` note in §6 |
 | 24 | `GET /entitlements/v1?filters=requestable eq true[ and name sw "…"]&sorters=name&limit=250&offset=N` | Requestable entitlements (when `catalog.types` has `ENTITLEMENT`) | `catalog.requestable_objects` | Any | `idn:entitlement:read` | GA [L] |
@@ -82,9 +87,14 @@ And `POST /oauth/token` (not versioned). **Not used:** `/v3`, `/v2024`, `/v2025`
 | 26 | `GET /roles/v1?filters=id in (…)` (50 IDs per call) | Each catalog role's `accessRequestConfig.approvalSchemes` | `catalog.no_approval_ids` | not checked | not checked | GA [L] |
 | 27 | `GET /entitlements/v1/{id}/entitlement-request-config` | Each catalog entitlement's own approval schemes (one call per entitlement, at install time only) | `catalog.no_approval_ids` | not checked | not checked | GA [L] |
 | 28 | `GET /access-request-config/v1` | (a) `entitlementRequestConfig.grantRequestApprovalSchemes`: the default for entitlements with no schemes of their own. (b) `requestOnBehalfOfConfig.allowRequestOnBehalfOfAnyoneByAnyone`: whether `plugin.submit: "direct"` can work (otherwise the installer falls back to `"launcher"`) | `catalog.no_approval_ids`, `pluginlib.may_request_for_others` | not checked | not checked | GA [L] |
-| 29 | `POST /access-requests/v1` | `--grant`: request the *Launcher Access* profile for given identities (`GRANT_ACCESS`) | `launcher/install.py` | ORG_ADMIN, USER | `idn:access-request:manage` | GA [L] |
+| 29 | `POST /access-requests/v1` | `--grant`: request the *Submit Access* role (or, without the plugin, the *Launcher Access* profile) for given identities (`GRANT_ACCESS`); and request the role for holders of the profile who lack it, 10 per request | `submit_access.request` (`plugin/install.py`, `launcher/install.py`) | ORG_ADMIN, USER | `idn:access-request:manage` | GA [L] |
 | 30 | `GET /generic-approvals/v1?include-comments=true&limit=250&filters=status eq "PENDING" and type eq "ACCESS_REQUEST_APPROVAL"` | `status`: pending item approvals whose comment is a bulk comment, counted per INC | `plugin/status.py` | APPROVAL_OWNER | `idn:access-request-approvals:read` | GA [L] |
 | 31 | `GET /ui-plugins/v1/resolve-alias?alias=…` (with `X-SailPoint-Experimental: true`) | The plugin's ID, so the Launcher's emails can link to the plugin page | `tenant.plugin_instance_id` (`launcher/install.py`) | — | — | **Experimental** [L] |
+| 32 | `GET /roles/v1?filters=name eq …` | Find the *Submit Access* role | `submit_access.find_named` (`plugin/install.py`, `plugin/status.py`, `plugin/uninstall.py`, `launcher/uninstall.py`, `export`) | not checked | not checked | GA [L] |
+| 33 | `POST /roles/v1` | Create the *Submit Access* role: requestable, MANAGER approval or none, `accessProfiles` = the *Launcher Access* profile (with the Launcher) or `[]`, `entitlements: []` (an empty role is accepted) | `submit_access.apply_role` (`plugin/install.py`) | not checked | not checked | GA [L] |
+| 34 | `PATCH /roles/v1/{id}` | Update only what differs (description, `accessProfiles`, `requestable`, `accessRequestConfig`); `launcher/uninstall.py` takes the profile out of `accessProfiles` | `submit_access.apply_role`, `launcher/uninstall.py` | not checked | not checked | GA [D] |
+| 35 | `DELETE /roles/v1/{id}` | Uninstall (succeeds while the role is assigned) | `plugin/uninstall.py` | not checked | not checked | GA [L] |
+| 36 | `POST /search/v1` (`indices: ["identities"]`, query `@access(id:"<id>")`) | Holders of the *Launcher Access* profile and of the role: who gets the role (migration); `plugin/status.py` counts holders | `submit_access.holders` (`plugin/install.py`, `plugin/status.py`) | not checked | `sp:search:read` | GA [L] |
 
 Dropped since 2026-10-09: `GET /workflows/{id}/executions` (deprecated, removal July 2028; `status` no longer lists
 runs), the plugin workflow's `POST`/`PUT` (there's no plugin workflow), and the bulk approvals listed in `status`.
@@ -123,7 +133,7 @@ host: the manifest's `contentSecurityPolicies` is empty.
 | Review step | `GET /requestable-objects/v1?identity-id=<id>&types=…&filters=id in (…)` | "Already has it" for access profiles and roles (up to 100 people) | ORG_ADMIN; a non-admin may pass another person's ID | `idn:requestable-objects:read` | GA [L] |
 | Review step (ORG_ADMIN only) | `POST /search/v1` (`indices: ["identities"]`, `id:(…)`, includes `access.id`, `access.type`) | "Already has it" for entitlements (held), 100 people per call | see People search | `sp:search:read` | GA [L]. Identities missing from the index get no warning |
 | Review step (ORG_ADMIN only) | `GET /access-request-status/v1?requested-for=<id>&request-state=EXECUTING&limit=250` | "Already requested" for entitlements (the row `id` is the item's ID) | ORG_ADMIN; any user for their own [D] | `idn:access-request-status:read` | GA [L] |
-| **Submit gate** (both modes) | `GET /requestable-objects/v1?identity-id=<me>&types=ACCESS_PROFILE&limit=1&filters=id eq "<launcherAccessId>"` | Does the user hold the *Launcher Access* profile (`requestStatus: ASSIGNED`)? If not, nothing is sent and the page says which profile to request. Skipped when no profile is installed | any user, for their own `identity-id` | `idn:requestable-objects:read` | GA [L, non-admin] |
+| **Submit gate** (both modes) | `GET /requestable-objects/v1?identity-id=<me>&types=ROLE&limit=1&filters=id eq "<submitAccessId>"` | Does the user hold the *Submit Access* role (`requestStatus: ASSIGNED`)? If not, nothing is sent and the page says which role to request. Skipped when the runtime config has no role ID (a dry-run install) | any user, for their own `identity-id` | `idn:requestable-objects:read` | GA [L, non-admin] (2026-10-14) |
 | **Submit** (`"direct"`, the default) | `POST /access-requests/v1` `{requestedFor: [≤ 10 IDs], requestType: GRANT_ACCESS, requestedItems: [{type, id, comment, removeDate?}]}` | File every chosen item for up to 10 people **as the signed-in user**, 3 calls at a time; the response's `newRequests[]` and `existingRequests[]` are counted | ORG_ADMIN, USER | `idn:access-request:manage` | GA [L, non-admin]. Needs the tenant's "request for others" setting (§1 #28). Each request then goes through its item's own approval |
 | Submit (`"launcher"`) | `POST /launchers/v1/{id}/launch` `{}` | Start the Launcher once per part (≤ 250 people), as the signed-in user → `{interactiveProcessId}` | ORG_ADMIN [S]; live: **any holder of the Launcher's `assignedLaunchers` entitlement** | `sp:launcher-user:launch` | GA [L\*] (verified as a non-admin on v2025). Without access: 401/403, or 500 "insufficient authorization" |
 | Submit (`"launcher"`) | `GET /beta/interactive-processes/{ipid}/blocks` | Poll (1 s, up to 30 s) until the `FORM` block names the form instance; then (every 2–5 s, up to 2 min) look for the workflow's `INFO` message ("Requested: …") or `ERROR` message (stopped) | the process owner [L] | — | **Beta** [L] (as a non-admin; the admin PAT gets 401: needs a user session). No GA path |
@@ -140,7 +150,7 @@ My bulk requests calls again on `/v1` on 2026-10-13; the page branches on `conte
 
 | Feature | Non-admin | How |
 |---|---|---|
-| Submit | ✔ with the *Launcher Access* profile | Gate: `requestable-objects?identity-id=<me>` (ASSIGNED). Then `"direct"`: `POST /access-requests/v1`; or `"launcher"`: launch, interactive-process blocks, own form instance |
+| Submit | ✔ with the *Submit Access* role | Gate: `requestable-objects?identity-id=<me>&types=ROLE` (ASSIGNED). Then `"direct"`: `POST /access-requests/v1`; or `"launcher"`: launch, interactive-process blocks, own form instance |
 | People search, pasted lists | ✔ | `/public-identities/v1` (identities, search and accounts are 403) |
 | Catalog | ✔ | `requestable-objects?identity-id=<me>` (403 without it), `/entitlements/v1` |
 | "Already has it" | access profiles and roles ✔; entitlements skipped (said on the review step) | `requestable-objects?identity-id=<person>`; search is 403 and another person's `access-request-status` is 400 |
@@ -153,7 +163,7 @@ My bulk requests calls again on `/v1` on 2026-10-13; the page branches on `conte
 |---|---|---|---|
 | 1 | `GET /public-identities/v1?filters=…` (non-admins) or the admin lookups above | identity IDs for the people | People step |
 | 2 | `GET /requestable-objects/v1?identity-id=<me>&types=ACCESS_PROFILE&types=ROLE…`, `GET /entitlements/v1?filters=requestable eq true…` | catalog items `{id, type, name}` | `identity-id` is required for non-admins (403 without it) |
-| 3 | `GET /requestable-objects/v1?identity-id=<me>&types=ACCESS_PROFILE&limit=1&filters=id eq "<launcherAccessId>"` | `requestStatus` | Not `ASSIGNED` → "To submit, you need '<profile>'. Request it in the Request Center." and nothing is sent |
+| 3 | `GET /requestable-objects/v1?identity-id=<me>&types=ROLE&limit=1&filters=id eq "<submitAccessId>"` | `requestStatus` | Not `ASSIGNED` → "To submit, you need '<role>'. Request it in the Request Center." and nothing is sent |
 | 4 | `POST /access-requests/v1`, once per 10 people, 3 in flight | `newRequests[]`, `existingRequests[]` | Every item carries the bulk comment `INC… \| Bulk access request by <me> \| <access> \| <justification>` and, for temporary access, `removeDate`. A 401/403 stops the rest; any other failure can be retried for just those people |
 | 5 | `GET /access-request-status/v1?requested-by=<me>&sorters=-created` | the requests, grouped by INC | My bulk requests |
 
@@ -220,8 +230,9 @@ stops after 50 items) [L].
 | **Form definition** "<prefix> Bulk Access Request Form" | `/form-definitions/v1` | SECTION. SELECT with an **INTERNAL IDENTITY** data source (`maximum` ≤ 30) and with **STATIC** options holding full `{id,type,name}` objects (`maximum` ≤ 25). TEXT with **REGEX** validation. TEXTAREA (no MAX_LENGTH). **TOGGLE**. No HIDDEN element (it makes the Launchpad render an empty form); the plugin's `partLabel` is an extra formData key. `formConditions` HIDE effects [L]. No approver field |
 | **Workflow** "<prefix> Bulk Access Request" | `/workflows/v1` | Enabled, Interactive trigger scoped to its own ID [L] |
 | **Launcher** "<prefix> Bulk Access Request" | `/launchers/v1` | `type: INTERACTIVE_PROCESS`, `reference: {type: WORKFLOW}`. ISC auto-creates an `assignedLaunchers` entitlement on the IdentityNow source [L] |
-| **Access profile** "<prefix> Bulk Access Request - Launcher Access" | `/access-profiles/v1` | Wraps the `assignedLaunchers` entitlement. Requestable, with `approvalSchemes: [{approverType: MANAGER}]` or none [L]. Also the plugin's submit gate |
-| **UI plugin** (alias `<prefix>-bulk-access`) | `/ui-plugins/v1` through `sail` | Slot `full-page`, `apiScopes: ["sp:scopes:all"]`, `restrictToUsers` (private = only the installer). Runtime config carries `submit`, `launcherId` (launcher mode), `launcherAccessId` and `noApproval` [L] |
+| **Access profile** "<prefix> Bulk Access Request - Launcher Access" | `/access-profiles/v1` | Wraps the `assignedLaunchers` entitlement. `approvalSchemes: [{approverType: MANAGER}]` or none [L]. Requestable only when the plugin isn't deployed; with the plugin, people get it through the role below |
+| **Role** "<prefix> Bulk Access Request - Submit Access" (plugin) | `/roles/v1` | Requestable, `approvalSchemes: [{approverType: MANAGER}]` or none; contains the *Launcher Access* profile when the Launcher is deployed, else empty (no source or entitlement needed) [L]. The plugin's submit gate: `requestable-objects` `types=ROLE` → `requestStatus: ASSIGNED` for a holder, from a non-admin's own session [L] |
+| **UI plugin** (alias `<prefix>-bulk-access`) | `/ui-plugins/v1` through `sail` | Slot `full-page`, `apiScopes: ["sp:scopes:all"]`, `restrictToUsers` (private = only the installer). Runtime config carries `submit`, `launcherId` (launcher mode), `submitAccessId` / `submitAccessName` (the role) and `noApproval` [L] |
 | **Access requests** (runtime) | `POST /access-requests/v1` from the plugin (requester = **the signed-in user**), or Manage Access v2 in the Launcher's workflow (requester = **the workflow owner**) | Each goes through its **item's own approval scheme** [L]. Items with no scheme (an access profile or role with `approvalSchemes: []`; an entitlement with none of its own when the tenant default is none) are **granted at once** [L]. If the requester is also an item's approver, ISC reassigns that approval to an admin [L] |
 
 Removed: the "<prefix> Bulk Access Request (Plugin)" workflow (only `plugin/uninstall.py` still looks for it, to delete
@@ -246,7 +257,7 @@ calls above need:
 | Forms | `sp:forms:read`, `sp:forms:manage` |
 | Workflows | `sp:workflow:read`, `sp:workflow:manage`, `sp:workflow-execution:read`, `sp:workflow-execute:external` (e2e cancel) |
 | Launchers | `sp:launcher-admin:read`, `sp:launcher-admin:write`, `sp:launcher-admin:delete`, `sp:launcher-user:launch` |
-| Access model | `idn:entitlement:read`, `idn:access-profile:read`, `idn:access-profile:manage`, `idn:sources:read`, and whatever reading roles and the entitlement request config need (not checked), `idn:requestable-objects:read` |
+| Access model | `idn:entitlement:read`, `idn:access-profile:read`, `idn:access-profile:manage`, `idn:sources:read`, and whatever reading, creating, updating and deleting roles and the entitlement request config need (not checked), `idn:requestable-objects:read` |
 | Access requests | `idn:access-request:manage`, `idn:access-request-status:read`, and reading the access request config (not checked) |
 | Approvals | `idn:access-request-approvals:read`, `idn:access-request-approvals:manage`, `sp:approvals:write` (bulk, ORG_ADMIN) |
 | UI plugins (`sail`) | rights `idn:plugins-ui:create`, `:read`, `:update`, `:delete` [D] |

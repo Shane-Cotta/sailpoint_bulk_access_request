@@ -325,27 +325,62 @@ def test_form_people_picker_is_capped_at_sailpoints_30_selection_limit():
     assert els["people"]["config"]["maximum"] == config.FORM_SELECT_MAX == 30
 
 
-def test_catalog_never_offers_the_profile_that_grants_the_tool_itself():
-    cfg = cfg_with(catalog__nameStartsWith="ACME")
-    opts = rules.catalog_options(cfg, [
-        {"id": "1", "type": "ACCESS_PROFILE", "name": "ACME Bulk Access Request - Launcher Access"},
-        {"id": "2", "type": "ACCESS_PROFILE", "name": "ACME Bulk Test Access"},
-    ])
+def test_catalog_never_offers_what_grants_the_tool_itself():
+    rows = [{"id": "1", "type": "ACCESS_PROFILE", "name": "ACME Bulk Access Request - Launcher Access"},
+            {"id": "2", "type": "ACCESS_PROFILE", "name": "ACME Bulk Test Access"},
+            {"id": "3", "type": "ROLE", "name": "ACME Bulk Access Request - Submit Access"}]
+    # With the plugin: its role (the Launcher Access profile isn't requestable then, so it isn't listed).
+    opts = rules.catalog_options(cfg_with(catalog__nameStartsWith="ACME", catalog__types=["ACCESS_PROFILE", "ROLE"]),
+                                 rows[1:])
+    assert [o["label"] for o in opts] == ["ACME Bulk Test Access"]
+    # The Launcher alone: the Launcher Access profile.
+    opts = rules.catalog_options(cfg_with(catalog__nameStartsWith="ACME", deployments__plugin=False), rows[:2])
     assert [o["label"] for o in opts] == ["ACME Bulk Test Access"]
 
 
 def test_launcher_access_profile_wraps_the_assigned_launchers_entitlement():
     ent = {"id": "e1", "name": "ACME Bulk Access Request", "source": {"id": "s1", "name": "IdentityNow"}}
-    ap = definitions.launcher_access_profile(config.load(EXAMPLE), "o", ent)
-    assert ap["name"] == "ACME Bulk Access Request - Launcher Access"
-    assert ap["requestable"] is True and ap["entitlements"] == [{"id": "e1", "type": "ENTITLEMENT", "name": "ACME Bulk Access Request"}]
-    assert ap["source"]["id"] == "s1"
-    assert ap["accessRequestConfig"]["approvalSchemes"] == [{"approverType": "MANAGER"}]
-    assert "and the 'ACME Bulk Access Request' page" in ap["description"]
-    no_approval = definitions.launcher_access_profile(cfg_with(access__launcherApproval="NONE"), "o", ent)
-    assert no_approval["accessRequestConfig"]["approvalSchemes"] == []
     launcher_only = definitions.launcher_access_profile(cfg_with(deployments__plugin=False), "o", ent)
-    assert "page" not in launcher_only["description"]
+    assert launcher_only["name"] == "ACME Bulk Access Request - Launcher Access"
+    assert launcher_only["entitlements"] == [{"id": "e1", "type": "ENTITLEMENT", "name": "ACME Bulk Access Request"}]
+    assert launcher_only["source"]["id"] == "s1"
+    assert launcher_only["requestable"] is True                       # people request it themselves
+    assert launcher_only["accessRequestConfig"]["approvalSchemes"] == [{"approverType": "MANAGER"}]
+    assert "Submit Access" not in launcher_only["description"]
+    # With the plugin, the Submit Access role contains it: one door, so it isn't requestable on its own.
+    ap = definitions.launcher_access_profile(config.load(EXAMPLE), "o", ent)
+    assert ap["requestable"] is False and "Request 'ACME Bulk Access Request - Submit Access' instead" in ap["description"]
+    no_approval = definitions.launcher_access_profile(cfg_with(access__approval="NONE"), "o", ent)
+    assert no_approval["accessRequestConfig"]["approvalSchemes"] == []
+
+
+def test_submit_role_is_requestable_needs_no_source_and_contains_the_launcher_access():
+    cfg = config.load(EXAMPLE)
+    access = {"id": "la-1", "name": cfg.launcher_access_profile_name}
+    role = definitions.submit_role(cfg, "o", access)
+    assert role["name"] == cfg.submit_role_name == cfg.submit_access_name == "ACME Bulk Access Request - Submit Access"
+    assert (role["requestable"], role["enabled"], role["entitlements"]) == (True, True, [])
+    assert role["accessProfiles"] == [{"id": "la-1", "type": "ACCESS_PROFILE", "name": cfg.launcher_access_profile_name}]
+    assert role["accessRequestConfig"]["approvalSchemes"] == [{"approverType": "MANAGER"}]
+    assert "page and the 'ACME Bulk Access Request' Launcher" in role["description"]
+    alone = definitions.submit_role(cfg_with(access__approval="NONE"), "o")
+    assert alone["accessProfiles"] == [] and alone["accessRequestConfig"]["approvalSchemes"] == []
+    assert "Launcher" not in alone["description"]
+    # Without the plugin, people request the Launcher Access profile itself.
+    assert cfg_with(deployments__plugin=False).submit_access_name == "ACME Bulk Access Request - Launcher Access"
+
+
+def test_role_and_profile_changes_patch_only_what_differs():
+    cfg = config.load(EXAMPLE)
+    wanted = definitions.submit_role(cfg, "o", {"id": "la-1", "name": "x"})
+    assert definitions.role_changes({**wanted, "id": "r", "owner": {"id": "someone"}}, wanted) == []
+    stale = {**wanted, "accessProfiles": [], "requestable": False,
+             "accessRequestConfig": {"approvalSchemes": [], "commentsRequired": False}}
+    assert [op["path"] for op in definitions.role_changes(stale, wanted)] == [
+        "/accessProfiles", "/requestable", "/accessRequestConfig"]
+    ent = {"id": "e1", "name": "n", "source": {"id": "s1", "name": "IdentityNow"}}
+    ap = definitions.launcher_access_profile(cfg, "o", ent)
+    assert [op["path"] for op in definitions.access_profile_changes({**ap, "requestable": True}, ap)] == ["/requestable"]
 
 
 def test_failure_end_step_has_the_fields_the_validator_requires():
@@ -628,15 +663,19 @@ def test_the_workflow_is_a_complete_graph(overrides):
 
 
 # ── config compatibility ──────────────────────────────────────────────────────
-def test_old_launcher_access_approval_key_still_works_with_a_note():
+def test_old_access_approval_keys_still_work_with_a_note():
     data = json.loads(EXAMPLE.read_text())
     del data["access"]
     data["launcher"] = {"accessApproval": "NONE"}
     cfg = config.from_dict(data)
-    assert cfg.launcher_access_approval == "NONE"
-    assert any("launcher.accessApproval" in d and "access.launcherApproval" in d for d in cfg.deprecations)
-    data["access"] = {"launcherApproval": "MANAGER"}                         # the new key wins
-    assert config.from_dict(data).launcher_access_approval == "MANAGER"
+    assert cfg.access_approval == "NONE"
+    assert any("launcher.accessApproval" in d and "access.approval" in d for d in cfg.deprecations)
+    data = json.loads(EXAMPLE.read_text())
+    data["access"] = {"launcherApproval": "NONE"}
+    cfg = config.from_dict(data)
+    assert cfg.access_approval == "NONE" and cfg.deprecations == ("`access.launcherApproval` is now `access.approval`.",)
+    data["access"] = {"approval": "MANAGER", "launcherApproval": "NONE"}     # the new key wins
+    assert config.from_dict(data).access_approval == "MANAGER"
     assert config.load(EXAMPLE).deprecations == ()
 
 
@@ -682,7 +721,9 @@ def test_show_config_launcher_only(tmp_path, capsys):
     out = _show(tmp_path, capsys, deployments__plugin=False, people__max=10, launcher={"accessApproval": "NONE"})
     assert "People:      up to 10 (Launcher form)" in out
     assert "(plugin off)" in out and "  plugin:" not in out
-    assert "Deprecated:  `launcher.accessApproval` is now `access.launcherApproval`." in out
+    assert "Deprecated:  `launcher.accessApproval` is now `access.approval`." in out
+    assert "Access:      people request 'ACME Bulk Access Request - Launcher Access' in the Request Center; " \
+           "approval: their manager" in out                                 # the example's access.approval wins
 
 
 def test_show_config_plugin_only(tmp_path, capsys):
@@ -692,7 +733,8 @@ def test_show_config_plugin_only(tmp_path, capsys):
     assert "Launcher form" not in out and "(launcher off)" in out
     assert "Temporary:   at most 14 days" in out
     assert "  plugin:    end date\n" in out and "  launcher:" not in out
-    assert "anyone who can open the plugin can submit" in out and "Email:" not in out
+    assert "holders of the role 'ACME Bulk Access Request - Submit Access' can submit" in out and "Email:" not in out
+    assert "  plugin:    role 'ACME Bulk Access Request - Submit Access'\n" in out
 
 
 def test_show_config_through_the_launcher_sends_parts(tmp_path, capsys):
@@ -709,8 +751,9 @@ def test_apply_runs_only_enabled_deployments_with_the_right_flags(tmp_path, monk
     monkeypatch.setattr(cli, "run_script", lambda d, script, argv, **k: calls.append((d, script, argv)) or 0)
     both = _config_file(tmp_path, plugin__public=True)
     assert cli.main(["apply", "--config", both, "--dry-run", "--grant", "me"]) == 0
-    assert calls == [("launcher", "install", ["--config", both, "--dry-run", "--grant", "me"]),
-                     ("plugin", "install", ["--config", both, "--dry-run", "--public"])]
+    # --grant goes to the plugin installer: its role is what people hold (it includes the Launcher)
+    assert calls == [("launcher", "install", ["--config", both, "--dry-run"]),
+                     ("plugin", "install", ["--config", both, "--dry-run", "--grant", "me", "--public"])]
     calls.clear()
     private = _config_file(tmp_path)
     assert cli.main(["apply", "--config", private, "--only", "plugin", "--deploy"]) == 0
@@ -719,6 +762,8 @@ def test_apply_runs_only_enabled_deployments_with_the_right_flags(tmp_path, monk
     launcher_only = _config_file(tmp_path, deployments__plugin=False)
     assert cli.main(["status", "--config", launcher_only]) == 0
     assert calls == [("launcher", "status", ["--config", launcher_only])]
+    assert cli.main(["apply", "--config", launcher_only, "--grant", "me"]) == 0
+    assert calls[-1] == ("launcher", "install", ["--config", launcher_only, "--grant", "me"])
     with pytest.raises(config.ConfigError, match="switched off"):
         cli.main(["apply", "--config", launcher_only, "--only", "plugin"])
 
@@ -733,6 +778,10 @@ def test_uninstall_previews_unless_yes(tmp_path, monkeypatch):
     calls.clear()
     assert cli.main(["uninstall", "--config", path, "--yes", "--only", "launcher"]) == 0
     assert calls == [("launcher", ["--config", path, "--yes"], None)]
+    calls.clear()   # retiring a deployment: switch it off, apply, then uninstall it by name
+    plugin_only = _config_file(tmp_path, deployments__launcher=False)
+    assert cli.main(["uninstall", "--config", plugin_only, "--yes", "--only", "launcher"]) == 0
+    assert calls == [("launcher", ["--config", plugin_only, "--yes"], None)]
 
 
 def test_cli_loads_both_folders_scripts_without_mixing_them_up():
@@ -751,7 +800,9 @@ def test_export_offline_builds_every_object_with_placeholders(tmp_path):
     files = sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*.json"))
     # The plugin has no workflow of its own: it files requests directly, or goes through the Launcher's.
     assert files == ["launcher/access-profile.json", "launcher/form.json", "launcher/launcher.json",
-                     "launcher/workflow.json"]
+                     "launcher/workflow.json", "plugin/submit-role.json"]
+    role = json.loads((tmp_path / "plugin/submit-role.json").read_text())
+    assert role["accessProfiles"][0]["id"] == "<LAUNCHER_ACCESS_PROFILE_ID>"
     wf = json.loads((tmp_path / "launcher/workflow.json").read_text())
     assert wf["definition"]["steps"]["Interactive Form"]["attributes"]["formDefinitionId"] == "<FORM_DEFINITION_ID>"
     assert wf["trigger"]["attributes"]["filter.$"] == "$[?(@.workflowId == '<WORKFLOW_ID>')]"
@@ -1010,7 +1061,7 @@ def test_end_date_choice_maps_onto_the_launcher_form():
 def test_show_config_says_who_can_submit_from_the_plugin(tmp_path, capsys):
     out = _show(tmp_path, capsys)
     assert 'plugin.submit "direct": the plugin files the access requests itself' in out
-    assert "holders of 'ACME Bulk Access Request - Launcher Access' can submit" in out
+    assert "holders of the role 'ACME Bulk Access Request - Submit Access' can submit" in out
     out = _show(tmp_path, capsys, plugin__submit="launcher")
     assert 'plugin.submit "launcher": the plugin launches' in out
 

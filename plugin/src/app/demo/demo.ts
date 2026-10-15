@@ -6,7 +6,7 @@
  * Scenarios: new (empty), people (600 chosen: no limit), items, details, inc-error (a mistyped INC),
  * temporary (details with temporary access), review (one item has no approval: the warning), submitted (filed
  * directly, the default), parts-review and parts-submitted (600 people through the Launcher: 3 runs of 250,
- * temporary), launcher-denied (a user without the Launcher Access profile submits), history,
+ * temporary), submit-denied (a user without the Submit Access role submits), history,
  * approvals (a non-admin item approver: 300 + 40 approvals from two bulk requests, and 3 others),
  * approvals-partial (the same, with throttling, failures and colleagues deciding first).
  */
@@ -20,7 +20,7 @@ import { BulkConfigService } from '../bulk/bulk-config.service';
 import { NavService } from '../bulk/nav';
 import { RequestStore } from '../bulk/request-store';
 import {
-  crowdPeople, DEMO_CATALOG, DEMO_COLLEAGUE, DEMO_CONFIG, DEMO_CROWD, DEMO_HELD, DEMO_IDENTITIES, DEMO_LAUNCHER_ACCESS,
+  crowdPeople, DEMO_CATALOG, DEMO_COLLEAGUE, DEMO_CONFIG, DEMO_CROWD, DEMO_HELD, DEMO_IDENTITIES, DEMO_SUBMIT_ACCESS,
   DEMO_ME, DEMO_PENDING, DEMO_PENDING_INCS, DEMO_REQUESTS, demoItem, demoItemApproval, demoPerson, demoRequest,
 } from './fixtures';
 import type { DemoScenario } from './scenario';
@@ -82,8 +82,8 @@ export class DemoPluginService {
   /** Launcher mode: each launch's interactive process (run k), the form it assigns, and the workflow's answer. */
   private processes = new Map<string, { k: number; polls: number; answer?: { title: string; message: string } }>();
   private forms = new Map<string, { k: number; state: string; formData?: Record<string, unknown> }>();
-  /** false: play a user without the Launcher Access profile (the page and the Launcher turn them away). */
-  launcherAccess = true;
+  /** false: play a user without the Submit Access role (the page and the Launcher turn them away). */
+  submitAccess = true;
 
   whenReady(): Promise<PluginContext> {
     return Promise.resolve(this._context()!);
@@ -146,10 +146,10 @@ export class DemoPluginService {
       // `filters=id in (…)` narrows it to the chosen items (the "already has it" check).
       const who = params.get('identity-id');
       if (!who && !this.user()?.capabilities.isOrgAdmin) return Promise.reject(apiError(403, 'Forbidden'));
-      if (who === DEMO_ME.id && filterValues(path).includes(DEMO_LAUNCHER_ACCESS)) {
-        // The submit gate: does the user hold the Launcher Access profile?
-        return delay([{ id: DEMO_LAUNCHER_ACCESS, type: 'ACCESS_PROFILE', name: DEMO_CONFIG.launcherAccessName,
-          requestStatus: this.launcherAccess ? 'ASSIGNED' : 'AVAILABLE' }] as T);
+      if (who === DEMO_ME.id && filterValues(path).includes(DEMO_SUBMIT_ACCESS)) {
+        // The submit gate: does the user hold the Submit Access role?
+        return delay([{ id: DEMO_SUBMIT_ACCESS, type: 'ROLE', name: DEMO_CONFIG.submitAccessName,
+          requestStatus: this.submitAccess ? 'ASSIGNED' : 'AVAILABLE' }] as T);
       }
       const held = (who && DEMO_HELD[who]) || {};
       const wanted = (params.get('filters') ?? '').startsWith('id in') ? new Set(filterValues(path)) : null;
@@ -277,8 +277,8 @@ export class DemoPluginService {
       return delay({} as T, 300);
     }
     if (/^\/launchers\/v1\/[^/]+\/launch$/.test(path)) {
-      // A user without the Launcher Access profile can't start it.
-      if (!this.launcherAccess) return Promise.reject(apiError(403, 'Forbidden'));
+      // A user without the Submit Access role (and so the Launcher Access profile) can't start it.
+      if (!this.submitAccess) return Promise.reject(apiError(403, 'Forbidden'));
       const k = this.runs++;
       const processId = `01DEMOPROCESS${String(k).padStart(13, '0')}`;
       this.processes.set(processId, { k, polls: 0 });
@@ -321,7 +321,7 @@ export class DemoPluginService {
    * pending is skipped (existingRequests); one with no approval of its own is granted at once.
    */
   private requestAccess(body: Record<string, unknown>): Promise<unknown> {
-    if (!this.launcherAccess) return Promise.reject(apiError(403, 'Forbidden'));
+    if (!this.submitAccess) return Promise.reject(apiError(403, 'Forbidden'));
     const people = (body['requestedFor'] as string[]) ?? [];
     const items = (body['requestedItems'] as { id: string; comment?: string; removeDate?: string }[]) ?? [];
     const created = new Date().toISOString();
@@ -366,9 +366,9 @@ export function applyScenario(scenario: DemoScenario, store: RequestStore, nav: 
   if (scenario === 'parts-review' || scenario === 'parts-submitted') {
     more.config?.config.update((c) => ({ ...c, submit: 'launcher' }));
   }
-  if (scenario === 'launcher-denied' && more.plugin instanceof DemoPluginService) {
+  if (scenario === 'submit-denied' && more.plugin instanceof DemoPluginService) {
     more.plugin.setOrgAdmin(false);
-    more.plugin.launcherAccess = false;
+    more.plugin.submitAccess = false;
   }
   if (scenario === 'history') {
     nav.tab.set('mine');
@@ -421,7 +421,7 @@ export function applyScenario(scenario: DemoScenario, store: RequestStore, nav: 
     return;
   }
   store.step.set(4);
-  if (['submitted', 'parts-submitted', 'launcher-denied'].includes(scenario)) void store.submit();
+  if (['submitted', 'parts-submitted', 'submit-denied'].includes(scenario)) void store.submit();
 }
 
 export function demoProviders(scenario: DemoScenario): (Provider | EnvironmentProviders)[] {

@@ -12,7 +12,9 @@ Creates, by prefixed name and idempotently:
   3. the Launcher ("<prefix> Bulk Access Request") shown in users' Launchpad,
   4. the "<prefix> Bulk Access Request - Launcher Access" access profile. SailPoint only
      shows a Launcher to identities holding its `assignedLaunchers` entitlement, so users
-     request this profile in the Request Center (or you grant it with --grant).
+     request this profile in the Request Center (or you grant it with --grant). With the
+     plugin deployed too it isn't requestable on its own: the plugin's Submit Access role
+     contains it (plugin/install.py), and that role is what people request.
 
 Re-run with --sync-catalog whenever the Request Center catalog changes (it also refreshes which items have no
 approval of their own: the form labels those "No approval: granted right away").
@@ -28,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
 
 from bulkaccess import config as config_mod  # noqa: E402
-from bulkaccess import api, catalog, definitions, rules  # noqa: E402
+from bulkaccess import api, catalog, definitions, rules, submit_access  # noqa: E402
 from bulkaccess.tenant import Tenant, TenantError  # noqa: E402
 
 
@@ -46,8 +48,7 @@ def launcher_entitlement(tenant: Tenant, launcher_id: str, attempts: int = 10) -
 
 
 def find_access_profile(tenant: Tenant, name: str) -> dict | None:
-    q = urllib.parse.quote(f'name eq "{name}"')
-    return next((a for a in tenant.call("GET", f"{api.ACCESS_PROFILES}?filters={q}&limit=5") or [] if a.get("name") == name), None)
+    return submit_access.find_named(tenant, api.ACCESS_PROFILES, name)
 
 
 def find_form(tenant: Tenant, name: str) -> dict | None:
@@ -114,7 +115,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", required=True, help="config/<tenant>.json")
     ap.add_argument("--dry-run", action="store_true", help="print the JSON bodies; change nothing")
     ap.add_argument("--sync-catalog", action="store_true", help="only refresh the form's catalog choices")
-    ap.add_argument("--grant", default="", help="comma-separated identity IDs (or 'me') to give Launcher access now")
+    ap.add_argument("--grant", default="", help="comma-separated identity IDs (or 'me') to give Launcher access now (with the plugin "
+                                                "deployed, the plugin installer grants its Submit Access role instead)")
     a = ap.parse_args(argv)
 
     cfg = config_mod.load(a.config)
@@ -221,19 +223,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Access profile created: {access['id']}  {ap_body['name']}")
 
     grantees = [me["id"] if g.strip() == "me" else g.strip() for g in a.grant.split(",") if g.strip()]
-    if grantees:
-        import time
-        body = {"requestedFor": grantees, "requestType": "GRANT_ACCESS",
-                "requestedItems": [{"type": "ACCESS_PROFILE", "id": access["id"],
-                                    "comment": f"Granted by bulk-access-request installer ({cfg.prefix})"}]}
-        for attempt in range(10):   # a brand-new access profile takes a little while to become requestable
-            try:
-                tenant.call("POST", api.ACCESS_REQUESTS, body)
-                break
-            except TenantError as exc:
-                if exc.status != 400 or "not found" not in str(exc) or attempt == 9:
-                    raise
-                time.sleep(6)
+    if grantees and cfg.deploy_plugin:
+        print(f"note: --grant: the plugin installer requests '{cfg.submit_role_name}' (it includes Launcher access).")
+    elif grantees:
+        submit_access.request(tenant, {"type": "ACCESS_PROFILE", "id": access["id"]}, grantees,
+                              f"Granted by bulk-access-request installer ({cfg.prefix})")
         print(f"Launcher access requested for {len(grantees)} identit{'y' if len(grantees) == 1 else 'ies'} "
               "(it appears in their Launchpad once provisioned, usually within a minute).")
 

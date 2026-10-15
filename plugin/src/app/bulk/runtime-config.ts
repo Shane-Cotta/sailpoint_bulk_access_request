@@ -39,7 +39,8 @@ export interface TemporaryConfig {
  *    so every request carries the requester and each item is approved the way it's set up in SailPoint;
  *  - launcher: it starts the Launcher deployment's Launcher and submits its form as the signed-in user; the
  *    Launcher's workflow then files the requests (CONTRACTS §9).
- * Either way only holders of the Launcher Access profile may submit.
+ * Either way only holders of the Submit Access role may submit (with the Launcher deployed it contains the
+ * Launcher Access profile).
  */
 export type SubmitMode = 'direct' | 'launcher';
 const SUBMIT_MODES: readonly SubmitMode[] = ['direct', 'launcher'];
@@ -76,10 +77,10 @@ export interface RuntimeConfig {
   submit: SubmitMode;
   /** The Launcher to start in launcher mode (a non-admin can't list launchers, so install.py writes its ID). */
   launcherId: string | null;
-  /** The access profile whose holders may submit (null: not installed, so nobody is turned away). */
-  launcherAccessId: string | null;
+  /** The Submit Access role whose holders may submit (null: not installed, so nobody is turned away). */
+  submitAccessId: string | null;
   /** Its name: what a user without it is told to request. */
-  launcherAccessName: string;
+  submitAccessName: string;
   incPattern: string;
   incMessage: string;
   incExample: string;
@@ -103,8 +104,8 @@ export const DEFAULT_CONFIG: RuntimeConfig = {
   mode: 'dry-run',
   submit: 'direct',
   launcherId: null,
-  launcherAccessId: null,
-  launcherAccessName: 'Bulk Access Request - Launcher Access',
+  submitAccessId: null,
+  submitAccessName: 'Bulk Access Request - Submit Access',
   incPattern: '^INC\\d{7}$',
   incMessage: 'Enter a ServiceNow incident number: INC followed by 7 digits, e.g. INC0012345.',
   incExample: 'INC0012345',
@@ -158,8 +159,8 @@ export function parseRuntimeConfig(raw: unknown): RuntimeConfig {
   // Launcher mode without an ID (the committed neutral file) still loads, so the page can be browsed; submitting
   // then stops with MSG_LAUNCHER_ID. plugin/install.py always writes the ID in launcher mode.
   cfg.launcherId = str('launcherId') || null;
-  cfg.launcherAccessId = str('launcherAccessId') || null;
-  cfg.launcherAccessName = str('launcherAccessName') || cfg.launcherAccessName;
+  cfg.submitAccessId = str('submitAccessId') || null;
+  cfg.submitAccessName = str('submitAccessName') || cfg.submitAccessName;
   cfg.incPattern = str('incPattern') || cfg.incPattern;
   cfg.incMessage = str('incMessage') || cfg.incMessage;
   cfg.incExample = str('incExample') || cfg.incExample;

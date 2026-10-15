@@ -9,8 +9,9 @@ own approval, as SailPoint has it set up (owner, manager, source owner, governan
 justification travel on every request's comment (§4).
 
 ## Verified live
-2026-10-08 (test tenant, spikes) and 2026-10-13 (demo tenant, Phase 0 of the approver removal, as the non-admin
-`bulk.requester.test` with Launcher Access, and with the admin PAT):
+2026-10-08 (test tenant, spikes), 2026-10-13 (demo tenant, Phase 0 of the approver removal, as the non-admin
+`bulk.requester.test` with Launcher Access, and with the admin PAT) and 2026-10-14 (demo tenant, the Submit Access role,
+same users):
 
 | Fact | Result |
 |---|---|
@@ -24,7 +25,9 @@ justification travel on every request's comment (§4).
 | Items with no approval scheme | An access profile or role with `approvalSchemes: []` goes straight from the approval phase to provisioning (no approval). An entitlement with none of its own falls back to the tenant default `entitlementRequestConfig.grantRequestApprovalSchemes` (e.g. `sourceOwner`). |
 | Requester is the item's approver | The approval is reassigned to an admin, not auto-approved (same for the Launcher workflow owner: "…because the Identity X is the Requester"). |
 | Cancelling a request | `POST /access-requests/v1/cancel` `{accountActivityId, comment}`, where `accountActivityId` is the status row's `accessRequestId`; works for the requester while it is still open. |
-| Who may submit | `GET /requestable-objects/v1?identity-id=<me>&types=ACCESS_PROFILE&filters=id eq "<Launcher Access profile>"` → `requestStatus: ASSIGNED` for a holder (non-admin ✔). A non-admin can't GET the access profile itself (403). Replacing the profile's `/entitlements` makes it read `AVAILABLE` for holders until their identity is refreshed ✔, so the installer only PATCHes fields that differ. |
+| Who may submit | `GET /requestable-objects/v1?identity-id=<me>&types=ROLE&filters=id eq "<Submit Access role>"` → `requestStatus: ASSIGNED` once granted, `AVAILABLE` without it (non-admin ✔, 2026-10-14); the admin PAT sees the same about 20 s after provisioning. The same call with `types=ACCESS_PROFILE` works for an access profile (the earlier gate, ✔ 2026-10-13). A non-admin can't GET an access profile itself (403). Replacing a profile's `/entitlements` makes it read `AVAILABLE` for holders until their identity is refreshed ✔, so the installers only PATCH fields that differ. |
+| An empty requestable role | `POST /roles/v1` with `accessProfiles: []`, `entitlements: []` and no approval schemes is accepted; requested with `POST /access-requests/v1` (type `ROLE`) it is provisioned in about 2 s (`REQUEST_COMPLETED`). `DELETE /roles/v1/{id}` succeeds even while the role is assigned. |
+| Holders of an access profile or role | `POST /search/v1` on `identities` with the query `@access(id:"<id>")` lists them. |
 | GA `/v1` paths | Every path in `core/bulkaccess/api.py` and `plugin/src/app/bulk/api-paths.ts` answers without `X-SailPoint-Experimental`, with the same filters and shapes as the old `v3`/`v2025` ones (accounts filters and search results compared). `/workflow-executions/v1` has no list (404); `/{id}/history-v2` returns `{definition, trigger, history}`. |
 
 ## 1. The central config (`config/<tenant>.json`)
@@ -42,10 +45,13 @@ justification travel on every request's comment (§4).
 | `plugin_public` | `plugin.public` | default false; the installer pushes `--private` unless this or `--public` is set |
 | `plugin_submit` | `plugin.submit` | `"direct"` (default) or `"launcher"` (`config.PLUGIN_SUBMIT_MODES`); see §3 and §9 |
 | `plugin_submits_directly` / `plugin_submits_via_launcher` | derived | `deploy_plugin` and the mode |
-| `launcher_access_profile_name` | derived | `"{base_name} - Launcher Access"`: the profile that grants the Launcher and, in either submit mode, submitting from the plugin |
+| `launcher_access_profile_name` | derived | `"{base_name} - Launcher Access"`: the access profile that wraps the Launcher's `assignedLaunchers` entitlement |
+| `submit_role_name` | derived | `"{base_name} - Submit Access"`: the requestable role whose holders may submit from the plugin (§3). With the Launcher deployed it contains the Launcher Access profile |
+| `submit_access_name` | derived | what people request to make bulk requests: `submit_role_name` when `deploy_plugin`, else `launcher_access_profile_name`. The catalog never offers either |
+| `launcher_access_requestable` | derived | `not deploy_plugin`: with the plugin the Launcher Access profile comes through the role, so it isn't requestable on its own |
 | `old_plugin_workflow_name` | derived | `"{base_name} (Plugin)"`: the workflow the removed test-endpoint mode used; `plugin/install.py` and `status.py` point it out, `uninstall --only plugin` removes it |
 | `launcher_form_has_duration` | derived | the Launcher form gets its duration fields (durations allowed and a unit fits `maxDays`) |
-| `launcher_access_approval` | `access.launcherApproval` | the old `launcher.accessApproval` still works (it adds a note to `cfg.deprecations`) |
+| `access_approval` | `access.approval` | `"MANAGER"` (default) or `"NONE"`: who approves a request for the role, or without the plugin for the Launcher Access profile. Otherwise `` `access.approval` must be "MANAGER" or "NONE". `` The old `access.launcherApproval` and `launcher.accessApproval` still work, each adding a note to `cfg.deprecations` (`` `access.launcherApproval` is now `access.approval`. ``) |
 | `approvals_*` | `approvals.*` | the plugin's Approvals tab: `enabled` (default true), `concurrency` 1..8 (4), `useBulkEndpoint` `"auto"`/`"always"`/`"never"`, `maxRows` 250..20000 (5000), `showOther` (false), `denyCommentRequired` (true); see `docs/dev/BULK_APPROVALS_DESIGN.md` |
 | `plugin_approvals_enabled` | derived | `deploy_plugin and approvals_enabled` |
 | `help_contact` | `notifications.helpContact` | null or text ≤ 300 characters (whitespace collapsed): the emails' *Need help?* line |
@@ -69,7 +75,9 @@ The `approvals` block may be missing (older configs): every key takes its defaul
 `plugin.submit` problems (exact text): `` `plugin.submit` must be "direct" or "launcher". `` and, for `"launcher"` without
 the Launcher deployment, `` `plugin.submit` "launcher" needs the Launcher deployment: set `deployments.launcher` to true, or use "direct". ``
 
-`show-config` prints a `Submit:` line (how the plugin submits; who may: holders of the Launcher Access profile), an
+`show-config` prints a `plugin:` line for the role (`role '<name>' (contains '<Launcher Access profile>')` with the Launcher),
+a `Submit:` line (how the plugin submits; who may: `holders of the role '<role>' can submit`), an `Access:` line
+(`people request '<submit_access_name>' in the Request Center; approval: their manager|none, auto-approved`), an
 `Approval:` line (each item the way it's set up in SailPoint; items with no approval are granted right away), one
 `Approvals:` line and, when `plugin_approvals_enabled` and the plugin is private, the warning
 `non-admin approvers can't open a private plugin unless they are listed in the plugin's restrictToUsers`.
@@ -138,9 +146,10 @@ request is the person who asked, so ISC's self-approval protection works and the
 `plugin/install.py` checks `GET /access-request-config/v1` → `requestOnBehalfOfConfig.allowRequestOnBehalfOfAnyoneByAnyone`;
 when the tenant doesn't allow it, it writes `submit: "launcher"` (or stops with an error when the Launcher isn't deployed).
 
-1. **Gate:** `GET /requestable-objects/v1?identity-id=<me>&types=ACCESS_PROFILE&limit=1&filters=id eq "<launcherAccessId>"`;
-   `requestStatus` other than `ASSIGNED` → `To submit, you need '{launcherAccessName}'. Request it in the Request Center.`
-   and nothing is sent. No `launcherAccessId` in the runtime config (not installed) → no check. A failed check →
+1. **Gate:** `GET /requestable-objects/v1?identity-id=<me>&types=ROLE&limit=1&filters=id eq "<submitAccessId>"`
+   (`BulkApiService.hasSubmitAccess`); `requestStatus` other than `ASSIGNED` → `To submit, you need '{submitAccessName}'. Request it in the Request Center.`
+   (`errors.msgNeedsSubmitAccess`) and nothing is sent. No `submitAccessId` in the runtime config (a dry-run install that
+   would create the role, or the committed copy) → no check. A failed check →
    `Couldn't check that you may submit: …`.
 2. **Requests:** the deduplicated people in parts of 10 (`ACCESS_REQUEST_PEOPLE_MAX`), at most 3 in flight:
    ```json
@@ -182,8 +191,8 @@ when the tenant doesn't allow it, it writes `submit: "launcher"` (or stops with 
 
 ## 5. Plugin runtime config (`public/bulk-access.config.json`, written by `plugin/pluginlib.py`)
 `"submit": "direct" | "launcher"`, `"launcherId": string | null` (launcher mode only: looked up by name at install, since a
-non-admin can't list launchers), `"launcherAccessId": string | null` (the Launcher Access profile; the submit gate),
-`"launcherAccessName": string`, `"noApproval": [ids]` (catalog items with no approval of their own, worked out at every
+non-admin can't list launchers), `"submitAccessId": string | null` (the Submit Access role; the submit gate),
+`"submitAccessName": string` (the role's name), `"noApproval": [ids]` (catalog items with no approval of their own, worked out at every
 `apply` by `catalog.no_approval_ids`, sorted).
 `runtime-config.ts`: no `submit` (older install) or `"test-endpoint"` → `"direct"`; other values → `submit must be
 "direct" or "launcher".`; `"launcher"` without `launcherId` loads, but submitting stops with `MSG_LAUNCHER_ID`
@@ -216,6 +225,22 @@ with a clear error when it's missing. It runs each enabled deployment by calling
 approval of their own. `launcher/status.py` shows the installed objects (no run list: `GET /workflows/{id}/executions` is
 deprecated and has no `/v1` list); `plugin/status.py` shows the submit mode, a leftover old plugin workflow, and the pending
 item approvals of bulk requests grouped by INC.
+
+**Who may make bulk requests** (`core/bulkaccess/submit_access.py`, `definitions.submit_role` / `role_changes`):
+- `plugin/install.py` creates the requestable role `submit_role_name` (`POST /roles/v1`, `accessProfiles` = the Launcher
+  Access profile when the Launcher is deployed, else `[]`; `entitlements: []`; approval per `access_approval`), or PATCHes
+  only what differs (description, `accessProfiles`, `requestable`, `accessRequestConfig`). The Launcher Access profile gets
+  `requestable: launcher_access_requestable`.
+- **Migration:** holders of the Launcher Access profile (`POST /search/v1`, `@access(id:"<id>")`) who don't hold the role
+  get an access request for it (10 per request, approved per `access_approval`); a dry run lists them.
+- `--grant me|<ids>` requests `submit_access_name`: `bulkaccess.py apply` passes it to `plugin/install.py` (the role) when
+  `deploy_plugin`, otherwise to `launcher/install.py` (the profile).
+- `plugin/status.py` prints `Who may submit: holders of the role '<role>' (<id>, N holder(s))`, or the role as MISSING;
+  `launcher/status.py` marks the profile `!!` when its `requestable` isn't `launcher_access_requestable`.
+- `plugin/uninstall.py` deletes the role. `launcher/uninstall.py` first PATCHes the Launcher Access profile out of the role
+  (the role stays), then deletes as before. `uninstall --only <d>` also works for a deployment switched off in
+  `deployments`, so retiring the Launcher is: `deployments.launcher: false`, `apply`, `uninstall --only launcher --yes`.
+- `export` also writes `plugin/submit-role.json` (offline, the profile ID is `<LAUNCHER_ACCESS_PROFILE_ID>`).
 
 Every API path lives in one module per language: `core/bulkaccess/api.py` and `plugin/src/app/bulk/api-paths.ts`. All are
 GA `/<service>/v1` paths, except `GET /beta/interactive-processes/{id}/blocks` (launcher submit mode only; no GA path) and
@@ -290,7 +315,8 @@ Item approvers decide the per-person approvals a bulk request created, one INC a
 - The Launcher form's `items` SELECT keeps `maximum: catalog.maxItems` (≤ 25, under the 30-selection limit).
 
 ## 9. Submitting through the Launcher (`plugin.submit: "launcher"`, the fallback)
-The plugin drives the Launcher deployment as the **signed-in user**, so anyone holding the Launcher Access profile can submit.
+The plugin drives the Launcher deployment as the **signed-in user**, so anyone holding the Submit Access role (which
+contains the Launcher Access profile) can submit.
 The Launcher's workflow then files the requests, with the **workflow owner** as requester. Verified live on 2026-10-08 as a
 real **non-admin** with Launcher Access, using their own ISC UI session token (✔), and with the admin PAT (✔ PAT).
 
@@ -328,7 +354,7 @@ Access*), then *Part Given?* (`StringMatches` `PART_LABEL_REGEX` `^ \([1-9][0-9]
 A missing key (Launchpad) or a malformed one (`" (1/2) evil"`) leaves it empty ✔ PAT.
 
 **Errors:** a 401/403, or a 500 whose message says "insufficient authorization", on any of these calls →
-`To submit, you need '{launcherAccessName}'. Request it in the Request Center.` (`errors.ts` `describeSubmitError`),
+`To submit, you need '{submitAccessName}'. Request it in the Request Center.` (`errors.ts` `describeSubmitError`),
 and the remaining parts are not tried.
 
 ## 10. Emails (`definitions.py`: `requested_email`, `rejected_email`; Launcher workflow only)

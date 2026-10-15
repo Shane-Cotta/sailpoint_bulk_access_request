@@ -8,7 +8,7 @@ building, the dev server) are in [plugin/README.md](plugin/README.md).
 | You need | For | Why |
 |---|---|---|
 | **Python 3.10+** (nothing to `pip install`) | both | The installers use only the standard library. |
-| A **Personal Access Token** for an **ORG_ADMIN** user, scope `sp:scopes:all` | both | Creates the form, workflow, launcher, access profile and plugin, and reads each catalog item's approval setup. Everything created is owned by that user (or by `owner`). |
+| A **Personal Access Token** for an **ORG_ADMIN** user, scope `sp:scopes:all` | both | Creates the form, workflow, launcher, access profile, role and plugin, and reads each catalog item's approval setup. Everything created is owned by that user (or by `owner`). |
 | Workflows, **Forms** and **Launchers** available in the tenant | A | Standard in Identity Security Cloud. |
 | **UI Plugins** turned on in the tenant | B | The plugin is a page inside ISC. |
 | Node.js 22+ with **npm 11.12+**, and the SailPoint CLI `sail` 2.7+ | B, with `--deploy` | Builds and uploads the plugin. Install its dependencies once: `(cd plugin && npx -y npm@11 install)`. |
@@ -66,11 +66,11 @@ deployment, so the Launcher and the plugin behave the same way. Where SailPoint 
 | `notifications.helpContact` | `null` | The emails' *Need help?* line, up to 300 characters; web and email addresses in it become links. `null` = "Contact your SailPoint administrator." | A |
 | `notifications.uiBaseUrl` | `null` | Your tenant's UI address, for the links in the emails. `null` = derived from `SAIL_BASE_URL` (`https://acme.api.identitynow.com` → `https://acme.identitynow.com`). Set it if your users reach ISC at another address (a vanity domain). No query string, `#`, `$`, quotes or spaces. | A |
 | `owner` | `null` | Owner identity ID for the objects created. `null` = the PAT user. **Recommended: a dedicated service identity.** The workflow owner is the *requester* of every access request the Launcher's workflow files, and ISC escalates to an admin any item approval that would go to the requester (e.g. when the owner also owns or manages an item). With `null`, `show-config` and the installers print a note saying so (not an error). | A |
-| `access.launcherApproval` | `MANAGER` | Who approves requests for the *Launcher Access* profile: `MANAGER` (the requester's manager) or `NONE` (auto-approved). The old key `launcher.accessApproval` still works; `show-config` reminds you to rename it. | A |
+| `access.approval` | `MANAGER` | Who approves a request for access to the tool (the *Submit Access* role; with A alone, the *Launcher Access* profile): `MANAGER` (the requester's manager) or `NONE` (auto-approved). The old keys `access.launcherApproval` and `launcher.accessApproval` still work; `show-config` reminds you to rename them. | both |
 | `plugin.alias` | `<prefix in lowercase>-bulk-access` | The plugin's alias: lowercase letters, digits and dashes. | B |
 | `plugin.displayName` | `<prefix> Bulk Access Request` | The plugin's name in ISC. | B |
 | `plugin.public` | `false` | `false`: the plugin is uploaded private (visible only to you). `true`: visible to everyone. | B |
-| `plugin.submit` | `direct` | How the plugin submits. `direct`: it files the access requests itself, **as the signed-in user** (10 people per request), so they carry the requester's name and show in their Request Center; needs *Request for others* allowed in the tenant (the installer falls back to `launcher` if it isn't). `launcher`: it starts the Launcher (deployment A) and fills in its form as the signed-in user; the workflow then files the requests as its owner. Needs `deployments.launcher`. Either way, when A is installed only holders of the *Launcher Access* profile may submit. The old value `test-endpoint` now means `direct`, with a note. `show-config` says which applies. | B |
+| `plugin.submit` | `direct` | How the plugin submits. `direct`: it files the access requests itself, **as the signed-in user** (10 people per request), so they carry the requester's name and show in their Request Center; needs *Request for others* allowed in the tenant (the installer falls back to `launcher` if it isn't). `launcher`: it starts the Launcher (deployment A) and fills in its form as the signed-in user; the workflow then files the requests as its owner. Needs `deployments.launcher`. Either way, only holders of the *Submit Access* role may submit. The old value `test-endpoint` now means `direct`, with a note. `show-config` says which applies. | B |
 
 Keys named `_comment` are notes and are ignored.
 
@@ -86,7 +86,7 @@ the Launcher's form. Change the config and run `apply` again instead.
 ## 4. Install
 ```bash
 python bulkaccess.py apply --config config/<tenant>.json --dry-run              # prints every JSON body; changes nothing
-python bulkaccess.py apply --config config/<tenant>.json --grant me --deploy     # installs both, gives *you* Launcher access, uploads the plugin
+python bulkaccess.py apply --config config/<tenant>.json --grant me --deploy     # installs both, requests access to the tool for *you*, uploads the plugin
 python bulkaccess.py status --config config/<tenant>.json                       # everything should say [ok]
 ```
 `apply` runs every deployment that `deployments` turns on. The options:
@@ -95,7 +95,7 @@ python bulkaccess.py status --config config/<tenant>.json                       
 |---|---|
 | `--dry-run` | Preview: prints what it would send. Nothing changes in the tenant or on disk. |
 | `--only launcher` / `--only plugin` | Work on one deployment only. Also works with `status` and `uninstall`. |
-| `--grant me` or `--grant <id>,<id>` | **A:** give these identities Launcher access right away, instead of having them request it. |
+| `--grant me` or `--grant <id>,<id>` | Request access to the tool for these identities, instead of having them request it: the *Submit Access* role (B), or with A alone the *Launcher Access* profile. It's approved per `access.approval`. |
 | `--deploy` | **B:** also build the plugin and upload it with `sail`. Without it, `apply` updates the workflow and the generated files only. |
 
 `apply` is **idempotent**: run it again at any time, and always after you change the config. It finds its objects by
@@ -110,20 +110,25 @@ name and updates them.
 2. **Workflow** "<prefix> Bulk Access Request". It's enabled, and it only reacts to *its own* Launcher.
 3. **Launcher** "<prefix> Bulk Access Request". Users see it in their **Launchpad**.
 4. **Access profile** "<prefix> Bulk Access Request - Launcher Access". SailPoint only shows a Launcher to people
-   who hold its `assignedLaunchers` entitlement, so this profile controls who can use the tool. People request it
-   in the **Request Center**, approved by their manager if `access.launcherApproval` is `MANAGER` (auto-approved with
-   `NONE`). Or grant it with `--grant`. About a minute after it's granted, the Launcher appears in their Launchpad.
-   **The same profile lets them submit from the plugin.** Approvers need nothing: item approvers decide in
-   **Approvals → Access Requests** or the plugin's Approvals tab.
+   who hold its `assignedLaunchers` entitlement, so this profile controls who can use the Launcher. With A alone,
+   people request it in the **Request Center**, approved by their manager if `access.approval` is `MANAGER`
+   (auto-approved with `NONE`), or you grant it with `--grant`. With B deployed too, it isn't requestable on its own:
+   people get it through B's *Submit Access* role, which contains it. About a minute after it's granted, the Launcher
+   appears in their Launchpad. Approvers need nothing: item approvers decide in **Approvals → Access Requests** or the
+   plugin's Approvals tab.
 
-**Deployment B** writes the plugin's runtime config and manifest, and creates nothing else in the tenant. The runtime
-config carries the ID of A's *Launcher Access* profile (the page checks the signed-in user holds it before submitting),
-the Launcher's ID with `plugin.submit: "launcher"` (people who aren't admins can't list launchers), and `noApproval`: the
+**Deployment B** writes the plugin's runtime config and manifest, and creates one object in the tenant: the requestable
+**role** "<prefix> Bulk Access Request - Submit Access". Only its holders may submit from the plugin. People request it in
+the **Request Center** (approved per `access.approval`), or you request it for them with `--grant`. A role needs no source
+or entitlement, so it works without A. With A deployed, the role contains A's *Launcher Access* profile, so one request
+opens both the plugin's submit and the Launchpad. Everyone who already holds the *Launcher Access* profile but not the
+role is given the role: `apply` files an access request for them (approved per `access.approval`; `--dry-run` lists
+them). The runtime config carries the role's ID (the page checks the signed-in user holds it before submitting), the
+Launcher's ID with `plugin.submit: "launcher"` (people who aren't admins can't list launchers), and `noApproval`: the
 catalog items SailPoint grants without any approval (access profiles and roles with no approval scheme; entitlements with
 none of their own when the tenant's default for entitlements is none too). The page labels those items *"No approval:
 granted right away"* and warns on the review step. So **install A first**; `apply` does, and with `launcher` it stops
-with a clear message if the Launcher is missing. Without A there is no *Launcher Access* profile, and anyone who can open
-the plugin can submit. With `--deploy` it builds the page and uploads the plugin, private unless `plugin.public` is
+with a clear message if the Launcher is missing. With `--deploy` it builds the page and uploads the plugin, private unless `plugin.public` is
 `true`. To put it in the menu: **Admin → Global → System Settings → Customize Navbar → Custom Item → Destination:
 Plugin.** More in [plugin/README.md](plugin/README.md).
 
@@ -153,35 +158,51 @@ python launcher/e2e.py --config config/<tenant>.json --people <testIdentityId>,<
   dry-run until you're ready.
 
 For the plugin, submit a request from the page in `dry-run` mode: it checks everything and requests nothing. Then, in
-`live` mode with test identities, try it as a user who isn't an admin but holds the *Launcher Access* profile: the access
+`live` mode with test identities, try it as a user who isn't an admin but holds the *Submit Access* role: the access
 requests carry their name and appear in their **Request Center → My Requests** and the plugin's **My bulk requests**;
-someone without the profile is told to request it.
+someone without the role is told to request it.
 
 ## 6. Go live
 Set `"mode": "live"` (and clear `overrideRecipients`) in your config, then run `python bulkaccess.py apply` again.
 `status` shows `installed mode=live`.
+
+### Restricted access
+Items that only some people may request (for example privileged groups): don't leave them non-requestable (SailPoint
+refuses those for everyone, admins included). Make each one a requestable access profile in an access request segment.
+See [docs/sailpoint/SEGMENTS_AND_USER_LEVELS.md](docs/sailpoint/SEGMENTS_AND_USER_LEVELS.md), which also covers the
+user levels that may set this up.
 
 ## 7. Uninstall
 ```bash
 python bulkaccess.py uninstall --config config/<tenant>.json          # shows what it would delete
 python bulkaccess.py uninstall --config config/<tenant>.json --yes    # deletes it
 ```
-- It removes the objects of each deployment `deployments` turns on (or only `--only …`).
+- It removes the objects of each deployment `deployments` turns on (or only `--only …`, which also works for a
+  deployment already switched off in `deployments`).
 - It only deletes objects whose names this config produces. All of them start with the prefix.
+- B's uninstall deletes the *Submit Access* role: its holders lose it, and with it the *Launcher Access* profile it
+  contains. A's uninstall first takes the *Launcher Access* profile out of the role (the role stays, so plugin users can
+  still submit), then deletes A's objects.
 - Access already granted *through* bulk requests stays in place: it's ordinary access now, and it shows up in
   certifications as usual. Temporary access still ends on its remove date.
+
+### Retiring the Launcher (keeping the plugin)
+1. Set `deployments.launcher` to `false` in your config.
+2. Run `python bulkaccess.py apply --config config/<tenant>.json`. The *Submit Access* role no longer contains the
+   *Launcher Access* profile, and holders of the old profile who didn't have the role yet have been given it.
+3. Run `python bulkaccess.py uninstall --config config/<tenant>.json --only launcher --yes`.
 
 ## 8. Export the definitions as JSON
 ```bash
 python bulkaccess.py export --config config/<tenant>.json             # as installed in the tenant (read-only)
 python bulkaccess.py export --config config/<tenant>.json --offline   # as this code builds them, no tenant needed
 ```
-- It writes `launcher/form.json`, `launcher/workflow.json`, `launcher/launcher.json` and `launcher/access-profile.json`
-  (the plugin has no tenant definitions of its own).
+- It writes `launcher/form.json`, `launcher/workflow.json`, `launcher/launcher.json`, `launcher/access-profile.json`
+  and `plugin/submit-role.json`.
 - They go to `exports/<prefix>-<tenant|offline>/`, which git ignores, or to `--out DIR`.
 - SailPoint's own fields (ids, created, modified, execution counts) are left out, so exports diff cleanly. A workflow file
   can be imported with **Admin → Workflows → Import**.
-- Offline exports use placeholders such as `<FORM_DEFINITION_ID>` for IDs that only exist after install, and the form has
+- Offline exports use placeholders such as `<FORM_DEFINITION_ID>` or `<LAUNCHER_ACCESS_PROFILE_ID>` for IDs that only exist after install, and the form has
   no catalog items. Use them to review or diff what `apply` will create, not to install. `apply` remains the way to install.
 
 ## Advanced: the per-deployment scripts
@@ -192,7 +213,7 @@ option that `bulkaccess.py` doesn't offer:
 |---|---|
 | `launcher/install.py`, `launcher/status.py`, `launcher/uninstall.py` | `install.py --sync-catalog` (only refresh the form's catalog choices) |
 | `launcher/e2e.py` | the end-to-end test above |
-| `plugin/install.py`, `plugin/status.py`, `plugin/uninstall.py` | `install.py --public` (overrides `plugin.public`), `--workdir <folder>` (build in another copy); `status.py --plugin` / `uninstall.py --plugin` (look up or delete the plugin instance) |
+| `plugin/install.py`, `plugin/status.py`, `plugin/uninstall.py` | `install.py --public` (overrides `plugin.public`), `--workdir <folder>` (build in another copy), `--grant` (as above); `status.py --plugin` / `uninstall.py --plugin` (look up or delete the plugin instance) |
 
 ## How it works
 ```
@@ -204,7 +225,7 @@ Launchpad ─► Launcher ─► Workflow "<prefix> Bulk Access Request"
                            4. Launchpad message + "Requested" email (dry-run: "Checked", nothing was requested)
 
 UI plugin, plugin.submit "direct" (default)
-          ─► check the user holds the Launcher Access profile
+          ─► check the user holds the Submit Access role
           ─► POST /access-requests/v1 as the signed-in user: up to 10 people per request, every item,
              each with the bulk comment and (temporary access) its removeDate; 3 requests at a time
 UI plugin, plugin.submit "launcher"
@@ -249,9 +270,10 @@ Some of this design comes from limits we hit on a live tenant:
 | Symptom | Fix |
 |---|---|
 | `apply` or `show-config` stops with a config message | It names the key and the allowed values. Fix the config and run it again. |
-| The Launcher isn't in someone's Launchpad | They need the *Launcher Access* profile. Request or grant it, wait about a minute, then refresh. |
+| The Launcher isn't in someone's Launchpad | They need the *Submit Access* role (with A alone, the *Launcher Access* profile). Request or grant it, wait about a minute, then refresh. |
+| The *Launcher Access* profile isn't in the Request Center | Expected with the plugin deployed: people request the *Submit Access* role, which contains it. |
 | `HTTP 401 insufficient authorization` when launching | Same as above: the user doesn't hold the launcher's entitlement yet. |
-| The plugin says "To submit, you need '<prefix> Bulk Access Request - Launcher Access'…" | Same: request it in the Request Center (or `--grant`), wait about a minute, and submit again. If they already hold it, the profile's entitlement was changed since (e.g. the Launcher was recreated): SailPoint reports holders correctly again after their next identity refresh. |
+| The plugin says "To submit, you need '<prefix> Bulk Access Request - Submit Access'…" | They don't hold the role yet: request it in the Request Center (or `--grant`), wait about a minute, and submit again. If the plugin's runtime config is out of date (the role was recreated), run `apply` again. |
 | The plugin's submit says SailPoint refused the request (HTTP 403) | The tenant doesn't let this user request access for others (*Request for others* in Access Request Settings), or their session expired. Allow it, or set `plugin.submit: "launcher"` and run `apply`. |
 | The requester's Request Center doesn't show the item requests | Expected for Launcher requests: the workflow files them as its owner. They're in the owner's My Requests. Requests the plugin files directly are in the requester's own. |
 | Everyone got an item at once, without approval | The item has no approval of its own in SailPoint. The plugin warns about these (`noApproval`); add an approval scheme to the item if it needs one, then run `apply`. |

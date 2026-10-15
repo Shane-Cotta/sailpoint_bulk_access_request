@@ -23,7 +23,7 @@ Related: [API_INVENTORY.md](API_INVENTORY.md) (every call, with user levels and 
 ## The cast
 | Role | Example | User level | Needs |
 |---|---|---|---|
-| **Requester** | `bulk.requester.test` | User (not an admin) | The *"<prefix> Bulk Access Request - Launcher Access"* profile, and to see the plugin |
+| **Requester** | `bulk.requester.test` | User (not an admin) | The *"<prefix> Bulk Access Request - Submit Access"* role (with only the Launcher installed, the *"<prefix> Bulk Access Request - Launcher Access"* profile), and to see the plugin |
 | **Item approver** (for example the owner of an access profile, or the person's manager) | `bulk.approver.test` | User | Nothing (to see the plugin, for its Approvals tab) |
 | **People** getting the access | Test identities | — | — |
 | **Workflow owner** (Launcher only) | The admin who installed the tool (the PAT user), or the configured `owner` | ORG_ADMIN | Already set up by the installer |
@@ -33,32 +33,38 @@ The request: a few people × one or more items, optionally temporary, with an IN
 ## At a glance
 | # | Who | Where | ISC feature | Main API calls |
 |---|---|---|---|---|
-| 1 | Requester | Request Center | Access request for a requestable access profile | ISC's own |
+| 1 | Requester | Request Center | Access request for a requestable role (or access profile) | ISC's own |
 | 2 | Requester | Launchpad | Launcher (`assignedLaunchers` entitlement) | ISC's own |
 | 3 | Requester | The plugin | UI plugin, access requests | `public-identities/v1`, `requestable-objects/v1?identity-id=`, `entitlements/v1`, `POST access-requests/v1` |
 | 3b | Requester | Launchpad, or the plugin in launcher mode | Launcher, interactive form, workflow | `launchers/v1/{id}/launch`, `/beta/interactive-processes/{id}/blocks`, `form-instances/v1/{id}`; `sp:loop:iterator`, `sp:access:manage` v2 |
 | 4 | Item approvers | Approvals → **Access Requests**, or the plugin's Approvals tab | Access-request approvals (one per person and item) | `generic-approvals/v1?mine=true`, `generic-approvals/v1/{id}/approve` |
 | 5 | Requester | Plugin *My bulk requests*, Request Center *My Requests* | — | `access-request-status/v1?requested-by=<me>` |
 
-## 1. The requester gets Launcher Access (once)
+## 1. The requester gets Submit Access (once)
 **Who:** the requester. **Where:** Request Center.
 
-The installer created the access profile *"<prefix> Bulk Access Request - Launcher Access"*. It wraps the
-`assignedLaunchers` entitlement that ISC auto-creates for the Launcher on the IdentityNow source, and it's requestable.
-The requester finds it in **Request Center → Find Access**, selects it, adds a comment and submits.
+The Launcher installer created the access profile *"<prefix> Bulk Access Request - Launcher Access"*. It wraps the
+`assignedLaunchers` entitlement that ISC auto-creates for the Launcher on the IdentityNow source. The plugin installer
+created the requestable role *"<prefix> Bulk Access Request - Submit Access"*, which contains that profile, so the profile
+isn't requestable on its own. (With only the Launcher installed, there's no role and the profile is what people request.)
+The requester finds the role in **Request Center → Find Access**, selects it, adds a comment and submits.
+
+The screenshots in this section were taken with an earlier version, where requesters asked for the *Launcher Access*
+profile directly. The steps and screens are the same for the role.
 
 ![Request Center: the Launcher Access profile selected](../screenshots/isc-01-request-launcher-access.png)
 
-It's **auto-approved** when `access.launcherApproval` is `NONE` (as in the recording), otherwise it goes to the
-requester's **manager**. **Request Center → My Requests** then shows *Grant: … Launcher Access* as **Completed**.
+It's **auto-approved** when `access.approval` is `NONE` (as in the recording), otherwise it goes to the
+requester's **manager**. **Request Center → My Requests** then shows *Grant: … Submit Access* (here *Launcher Access*) as
+**Completed**.
 
 ![My Requests: Launcher Access completed](../screenshots/isc-02-launcher-access-completed.png)
 
-The same profile decides who may submit from the plugin. **Without it**, the plugin can still be opened, but a submit
-stops before anything is sent: *"To submit, you need '<prefix> Bulk Access Request - Launcher Access'. Request it in
+The role decides who may submit from the plugin. **Without it**, the plugin can still be opened, but a submit
+stops before anything is sent: *"To submit, you need '<prefix> Bulk Access Request - Submit Access'. Request it in
 the Request Center."* The page checks it with
-`GET /requestable-objects/v1?identity-id=<me>&types=ACCESS_PROFILE&filters=id eq "<profile id>"` (`requestStatus:
-ASSIGNED`), a call any user may make for themselves.
+`GET /requestable-objects/v1?identity-id=<me>&types=ROLE&filters=id eq "<role id>"` (`requestStatus: ASSIGNED`), a call
+any user may make for themselves.
 
 ## 2. The Launcher appears in the Launchpad
 **Who:** the requester. **Where:** Home → Launchpad.
@@ -86,7 +92,7 @@ there opens the native form (up to 30 people; see 3b). The plugin is the better 
 
 **Request access** then:
 
-1. Checks the requester holds *Launcher Access* (section 1).
+1. Checks the requester holds *Submit Access* (section 1).
 2. Files the access requests **as the signed-in user**: `POST /access-requests/v1`, one call per 10 people (SailPoint's
    limit per request), up to 3 at a time. Each call carries every chosen item, and each item carries:
    - the comment `INC0048391 | Bulk access request by <requester> | <access> | <justification>`, and

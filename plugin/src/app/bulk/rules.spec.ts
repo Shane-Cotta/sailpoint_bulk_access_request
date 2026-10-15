@@ -20,8 +20,8 @@ const committed = {
   mode: 'dry-run',
   submit: 'direct',
   launcherId: null,
-  launcherAccessId: null,        // install.py writes the tenant's Launcher Access profile ID
-  launcherAccessName: 'ACME Bulk Access Request - Launcher Access',
+  submitAccessId: null,          // install.py writes the tenant's Submit Access role ID
+  submitAccessName: 'ACME Bulk Access Request - Submit Access',
   incPattern: '^INC\\d{7}$',
   incMessage: 'Enter a ServiceNow incident number: INC followed by 7 digits, e.g. INC0012345.',
   incExample: 'INC0012345',
@@ -91,9 +91,9 @@ describe('runtime config', () => {
   });
 
   it('files the requests directly, or through the Launcher it names (plugin.submit)', () => {
-    expect([EXAMPLE.submit, EXAMPLE.launcherAccessName]).toEqual(['direct', 'ACME Bulk Access Request - Launcher Access']);
-    expect(cfgWith({ submit: 'launcher', launcherId: 'ln-1', launcherAccessId: 'lap-1' }))
-      .toMatchObject({ submit: 'launcher', launcherId: 'ln-1', launcherAccessId: 'lap-1' });
+    expect([EXAMPLE.submit, EXAMPLE.submitAccessName]).toEqual(['direct', 'ACME Bulk Access Request - Submit Access']);
+    expect(cfgWith({ submit: 'launcher', launcherId: 'ln-1', submitAccessId: 'lap-1' }))
+      .toMatchObject({ submit: 'launcher', launcherId: 'ln-1', submitAccessId: 'lap-1' });
     // A file from an older install: no `submit`, or the removed test endpoint. Both file directly now.
     const { submit: _s, ...old } = committed;
     expect(parseRuntimeConfig(old).submit).toBe('direct');
@@ -193,9 +193,9 @@ describe('rules (core/bulkaccess/rules.py)', () => {
       .toBe('requestable eq true and name sw "AC\\"ME\\\\"');
   });
 
-  it('never offers the profile that grants the tool itself (like rules.py)', () => {
-    const opts = catalogOptions(EXAMPLE, [
-      { id: '1', type: 'ACCESS_PROFILE', name: 'ACME Bulk Access Request - Launcher Access' },
+  it('never offers the role that grants the tool itself (like rules.py)', () => {
+    const opts = catalogOptions({ ...EXAMPLE, catalogTypes: ['ACCESS_PROFILE', 'ROLE'] }, [
+      { id: '1', type: 'ROLE', name: 'ACME Bulk Access Request - Submit Access' },
       { id: '2', type: 'ACCESS_PROFILE', name: 'ACME Bulk Test Access' },
     ]);
     expect(opts.map((o) => o.value.id)).toEqual(['2']);

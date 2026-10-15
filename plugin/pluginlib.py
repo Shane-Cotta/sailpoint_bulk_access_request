@@ -12,7 +12,6 @@ import os
 import shutil
 import subprocess
 import sys
-import urllib.parse
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -20,7 +19,7 @@ PLUGIN_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(PLUGIN_DIR.parent / "core"))
 
 from bulkaccess import config as config_mod  # noqa: E402
-from bulkaccess import api, catalog, definitions, rules  # noqa: E402
+from bulkaccess import api, catalog, definitions, rules, submit_access  # noqa: E402
 from bulkaccess.config import Config  # noqa: E402
 from bulkaccess.tenant import Tenant, TenantError, load_env_file  # noqa: E402
 
@@ -28,18 +27,18 @@ RUNTIME_CONFIG = Path("public") / "bulk-access.config.json"
 MANIFEST = Path("sp-ui-plugin.json")
 BUILD_OUT_DIR = "./dist/bulk-access-request-plugin/browser"
 
-__all__ = ["Config", "Tenant", "TenantError", "catalog", "config_mod", "definitions"]
+__all__ = ["Config", "Tenant", "TenantError", "api", "catalog", "config_mod", "definitions", "submit_access"]
 
 
 # ─────────────────────────────────────────────────────────── pure builders ──
-def runtime_config(cfg: Config, launcher_id: str | None = None, launcher_access_id: str | None = None,
+def runtime_config(cfg: Config, launcher_id: str | None = None, submit_access_id: str | None = None,
                    no_approval: Iterable[str] = ()) -> dict[str, Any]:
     """public/bulk-access.config.json: everything the page needs from the tenant config.
 
     `submit` says how the page submits (CONTRACTS §5, §9): "direct" (it files the access requests itself, as the
     signed-in user) or "launcher" (it launches `launcherId` and submits the Launcher form as the signed-in user; a
-    non-admin can't list launchers, so the ID is written here). Either way only holders of the Launcher Access
-    profile (`launcherAccessId`) may submit. `noApproval`: the catalog items SailPoint grants without any approval
+    non-admin can't list launchers, so the ID is written here). Either way only holders of the Submit Access role
+    (`submitAccessId`) may submit. `noApproval`: the catalog items SailPoint grants without any approval
     (catalog.no_approval_ids), which the page labels.
     """
     modes = cfg.plugin_temporary_modes
@@ -49,8 +48,8 @@ def runtime_config(cfg: Config, launcher_id: str | None = None, launcher_access_
         "mode": cfg.mode,
         "submit": cfg.plugin_submit,
         "launcherId": launcher_id if cfg.plugin_submits_via_launcher else None,
-        "launcherAccessId": launcher_access_id,
-        "launcherAccessName": cfg.launcher_access_profile_name,
+        "submitAccessId": submit_access_id,
+        "submitAccessName": cfg.submit_role_name,
         "incPattern": cfg.inc_pattern,
         "incMessage": cfg.inc_message,
         "incExample": cfg.inc_example,
@@ -91,7 +90,7 @@ def manifest(cfg: Config) -> dict[str, Any]:
             "name": {"en": cfg.plugin_display_name},
             "description": {"en": "Request access for several people at once, with a ServiceNow INC number on every "
                                   "request; each item is approved the way it's set up in SailPoint. Submitting needs "
-                                  f"the '{cfg.launcher_access_profile_name}' access."},
+                                  f"the '{cfg.submit_role_name}' access."},
             "apiScopes": ["sp:scopes:all"],
             "permissionPolicy": {},
             "iframeAllow": {},
@@ -114,12 +113,6 @@ def may_request_for_others(tenant: Tenant) -> bool:
     requests for the people they chose). Admin > Global > Access Request Settings, "Request for others"."""
     config = tenant.call("GET", api.ACCESS_REQUEST_CONFIG) or {}
     return bool((config.get("requestOnBehalfOfConfig") or {}).get("allowRequestOnBehalfOfAnyoneByAnyone"))
-
-
-def find_access_profile(tenant: Tenant, name: str) -> dict[str, Any] | None:
-    flt = urllib.parse.quote(f"name eq {rules.filter_quote(name)}")
-    return next((a for a in tenant.call("GET", f"{api.ACCESS_PROFILES}?filters={flt}&limit=5") or []
-                 if a.get("name") == name), None)
 
 
 def write_json(path: Path, data: Any) -> None:

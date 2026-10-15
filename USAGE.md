@@ -19,19 +19,22 @@ SailPoint (its owner, the person's manager, …), and an item with no approval o
 | [5. Emails](#5-emails-youll-get) | Requester (Launcher requests) | Your inbox: each email says what, why, and where to go next |
 
 ## 1. Get access to the tool (once)
-Everyone who submits bulk requests, from the plugin or from the Launchpad, needs the access profile
-**"<prefix> Bulk Access Request - Launcher Access"**. Approvers need nothing extra.
+Everyone who submits bulk requests, from the plugin or from the Launchpad, needs the role
+**"<prefix> Bulk Access Request - Submit Access"**. It covers both: with the Launcher installed too, it contains the
+Launcher's access profile. (Where only the Launcher is installed, request the access profile
+**"<prefix> Bulk Access Request - Launcher Access"** instead.) Approvers need nothing extra.
 
-1. In the **Request Center**, search for *<prefix> Bulk Access Request*, select **Launcher Access**, **Continue**, add a
-   comment and **Submit Request**.
+1. In the **Request Center**, search for *<prefix> Bulk Access Request*, select **Submit Access** (or **Launcher
+   Access**), **Continue**, add a comment and **Submit Request**. The screenshots below are from an older version, where
+   everyone requested **Launcher Access**; the steps are the same.
 
    ![Request Center: the Launcher Access profile selected](docs/screenshots/isc-01-request-launcher-access.png)
-2. It's approved automatically, or by your manager, depending on how your admin set it up (`access.launcherApproval`).
+2. It's approved automatically, or by your manager, depending on how your admin set it up (`access.approval`).
    **Request Center → My Requests** shows it as **Completed** once granted.
 
    ![My Requests: Launcher Access completed](docs/screenshots/isc-02-launcher-access-completed.png)
 3. About a minute later the Launcher appears in your **Launchpad**, and the plugin lets you submit. Until then, a
-   submit from the plugin stops with *"To submit, you need '<prefix> Bulk Access Request - Launcher Access'. Request it
+   submit from the plugin stops with *"To submit, you need '<prefix> Bulk Access Request - Submit Access'. Request it
    in the Request Center."* and nothing is sent.
 
    ![Launchpad with the Bulk Access Request Launcher](docs/screenshots/isc-03-launchpad.png)
@@ -204,14 +207,20 @@ In `dry-run` mode the first one is **Checked** instead, with a **DRY RUN** banne
 - **Install, update, uninstall:** see [INSTALL.md](INSTALL.md). Everything is set in one file, `config/<tenant>.json`.
   - Check health: `python bulkaccess.py status --config …`.
   - After any config change, or when the catalog changes: `python bulkaccess.py apply --config …`.
-- **Who can use it:** whoever holds the *Launcher Access* profile. It's an ordinary access profile, so it shows up in
-  certifications too, and people request it in the Request Center (auto-approved with `access.launcherApproval: "NONE"`,
-  else by their manager). The plugin checks the same profile before it submits. People must also be able to see the
+- **Who can use it:** whoever holds the *Submit Access* role (with only the Launcher installed, the *Launcher Access*
+  profile). It's ordinary access, so it shows up in certifications too, and people request it in the Request Center
+  (auto-approved with `access.approval: "NONE"`, else by their manager). With both installed, the role contains the
+  *Launcher Access* profile, which then isn't requestable on its own. The plugin checks the role before it submits.
+  `apply --grant` requests it for given people. People must also be able to see the
   plugin (make it public, or add them to its `restrictToUsers`); its Approvals tab works for any item approver who can
   see it. Item approvers need nothing extra.
 - **How the plugin submits** (`plugin.submit`): `direct` (the default) files the access requests as the signed-in user,
   which needs *Request for others* allowed in Access Request Settings; `launcher` goes through the Launcher's form.
   `apply` switches to `launcher` by itself when the tenant doesn't allow requesting for others.
+- **Restricted access** (for example privileged groups only the service desk may request): make it a requestable access
+  profile and put it in an access request segment; the plugin then offers it only to the segment's members. Step by
+  step in the ISC UI, and which user levels may set it up:
+  [docs/sailpoint/SEGMENTS_AND_USER_LEVELS.md](docs/sailpoint/SEGMENTS_AND_USER_LEVELS.md).
 - **Items without an approval:** `apply` lists every catalog item SailPoint would grant without approval (it prints
   how many), and the plugin warns about them. Give an item an approval scheme if it needs one, then run `apply` again.
 - **The workflow owner is the requester of every Launcher request** (`owner` in the config, or the installer's PAT user).

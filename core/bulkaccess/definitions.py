@@ -622,54 +622,92 @@ def bulk_launcher(cfg: Config, workflow_id: str) -> dict[str, Any]:
     }
 
 
+def _access_request_config(cfg: Config) -> dict[str, Any]:
+    """Who approves a request for the submit access (`access.approval`): the requester's manager, or nobody."""
+    return {"commentsRequired": False, "denialCommentsRequired": False,
+            "approvalSchemes": [{"approverType": "MANAGER"}] if cfg.access_approval == "MANAGER" else []}
+
+
 def launcher_access_profile(cfg: Config, owner_id: str, entitlement: dict[str, Any]) -> dict[str, Any]:
-    """Who may make bulk requests. SailPoint creates an `assignedLaunchers` entitlement on the
+    """Who may use the Launcher. SailPoint creates an `assignedLaunchers` entitlement on the
     built-in IdentityNow source for every Launcher; only identities holding it see it in the
-    Launchpad. Wrapping it in a requestable access profile lets users ask for it in the
-    Request Center (or admins grant it) like any other access. The plugin checks it too."""
+    Launchpad. Wrapping it in an access profile lets users get it like any other access: on its
+    own in the Request Center, or (with the plugin deployed) through the plugin's Submit Access role,
+    which contains it, so it isn't requestable by itself then."""
     source = entitlement.get("source") or {}
     return {
         "name": cfg.launcher_access_profile_name,
-        "description": f"Lets the holder make bulk access requests: the '{cfg.launcher_name}' Launcher in the Launchpad"
-                       + (f" and the '{cfg.plugin_display_name}' page" if cfg.deploy_plugin else "")
-                       + " (a ServiceNow INC number on every request).",
+        "description": f"Lets the holder make bulk access requests with the '{cfg.launcher_name}' Launcher in the "
+                       "Launchpad (a ServiceNow INC number on every request)."
+                       + (f" Request '{cfg.submit_role_name}' instead: it includes this." if cfg.deploy_plugin else ""),
         "owner": _owner(owner_id),
         "source": {"id": source.get("id"), "type": "SOURCE", "name": source.get("name")},
         "entitlements": [{"id": entitlement["id"], "type": "ENTITLEMENT", "name": entitlement.get("name")}],
         "enabled": True,
-        "requestable": True,
-        "accessRequestConfig": {"commentsRequired": False, "denialCommentsRequired": False,
-                                "approvalSchemes": [{"approverType": "MANAGER"}] if cfg.launcher_access_approval == "MANAGER" else []},
+        "requestable": cfg.launcher_access_requestable,
+        "accessRequestConfig": _access_request_config(cfg),
     }
 
 
-def access_profile_changes(current: dict[str, Any], wanted: dict[str, Any]) -> list[dict[str, Any]]:
-    """JSON Patch ops that bring an installed Launcher Access profile in line with `wanted`
-    (launcher_access_profile): its description, entitlements and approval setup, and only what differs.
+def submit_role(cfg: Config, owner_id: str, launcher_access: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Who may submit from the plugin: a requestable role, so it needs no source or entitlement (the plugin
+    checks it through requestable-objects). With the Launcher deployed it contains the Launcher Access
+    profile (`launcher_access`), so the same request also opens the Launchpad."""
+    return {
+        "name": cfg.submit_role_name,
+        "description": f"Lets the holder make bulk access requests: the '{cfg.plugin_display_name}' page"
+                       + (f" and the '{cfg.launcher_name}' Launcher in the Launchpad" if launcher_access else "")
+                       + " (a ServiceNow INC number on every request).",
+        "owner": _owner(owner_id),
+        "accessProfiles": [{"id": launcher_access["id"], "type": "ACCESS_PROFILE", "name": launcher_access.get("name")}]
+                          if launcher_access else [],
+        "entitlements": [],
+        "enabled": True,
+        "requestable": True,
+        "accessRequestConfig": _access_request_config(cfg),
+    }
 
-    An unchanged profile gets no PATCH: every update re-indexes it, and until requestable-objects catches up it
-    can report holders as AVAILABLE (seen live), which turns them away from the plugin."""
-    def ids(profile: dict[str, Any]) -> list[str]:
-        return sorted(e.get("id") for e in profile.get("entitlements") or [])
 
-    def approval(profile: dict[str, Any]) -> tuple:
-        cfg = profile.get("accessRequestConfig") or {}
-        return (bool(cfg.get("commentsRequired")), bool(cfg.get("denialCommentsRequired")),
-                [s.get("approverType") for s in cfg.get("approvalSchemes") or []])
+def _approval_setup(obj: dict[str, Any]) -> tuple:
+    cfg = obj.get("accessRequestConfig") or {}
+    return (bool(cfg.get("commentsRequired")), bool(cfg.get("denialCommentsRequired")),
+            [s.get("approverType") for s in cfg.get("approvalSchemes") or []])
+
+
+def _changes(current: dict[str, Any], wanted: dict[str, Any], lists: tuple[str, ...]) -> list[dict[str, Any]]:
+    def ids(obj: dict[str, Any], key: str) -> list[str]:
+        return sorted(e.get("id") for e in obj.get(key) or [])
 
     ops = []
     if (current.get("description") or "") != wanted["description"]:
         ops.append({"op": "replace", "path": "/description", "value": wanted["description"]})
-    if ids(current) != ids(wanted):
-        ops.append({"op": "replace", "path": "/entitlements", "value": wanted["entitlements"]})
-    if approval(current) != approval(wanted):
+    for key in lists:
+        if ids(current, key) != ids(wanted, key):
+            ops.append({"op": "replace", "path": f"/{key}", "value": wanted[key]})
+    if bool(current.get("requestable")) != wanted["requestable"]:
+        ops.append({"op": "replace", "path": "/requestable", "value": wanted["requestable"]})
+    if _approval_setup(current) != _approval_setup(wanted):
         ops.append({"op": "replace", "path": "/accessRequestConfig", "value": wanted["accessRequestConfig"]})
     return ops
+
+
+def access_profile_changes(current: dict[str, Any], wanted: dict[str, Any]) -> list[dict[str, Any]]:
+    """JSON Patch ops that bring an installed Launcher Access profile in line with `wanted`
+    (launcher_access_profile): its description, entitlements, requestability and approval setup, and only what differs.
+
+    An unchanged profile gets no PATCH: every update re-indexes it, and until requestable-objects catches up it
+    can report holders as AVAILABLE (seen live). The role is handled the same way, since the plugin reads that status."""
+    return _changes(current, wanted, ("entitlements",))
+
+
+def role_changes(current: dict[str, Any], wanted: dict[str, Any]) -> list[dict[str, Any]]:
+    """The same for the Submit Access role (submit_role): description, access profiles, requestability, approval."""
+    return _changes(current, wanted, ("accessProfiles",))
 
 
 def pretty(obj: Any) -> str:
     return json.dumps(obj, indent=2, sort_keys=False)
 
 
-__all__ = ["access_profile_changes", "bulk_form", "bulk_workflow", "bulk_launcher", "EmailLinks", "launcher_duration_units",
+__all__ = ["access_profile_changes", "role_changes", "submit_role", "bulk_form", "bulk_workflow", "bulk_launcher", "EmailLinks", "launcher_duration_units",
            "launcher_offers_temporary", "launcher_workflow_units", "F_PART_LABEL", "PART_LABEL_REGEX"]

@@ -323,7 +323,7 @@ const TITLE_CARD = card(`
   <div class="grid">
     <div class="box"><h2>Launcher + Form + Workflow</h2><p>Any user starts a bulk request from the Launchpad: an ISC Form collects
       people, items and INC; an ISC Workflow requests the access.</p></div>
-    <div class="box"><h2>UI plugin: New request</h2><p>Anyone with Launcher Access searches or pastes any number of people, picks
+    <div class="box"><h2>UI plugin: New request</h2><p>Anyone with the Submit Access role searches or pastes any number of people, picks
       items, sets temporary access, files the requests as themselves, and follows them on <em>My bulk requests</em>.</p></div>
     <div class="box"><h2>UI plugin: Approvals tab</h2><p>Item approvers (owners, managers) decide a whole bulk request at once,
       grouped by INC, instead of one approval per person and item.</p></div>
@@ -340,7 +340,7 @@ const CLOSING_CARD = card(`
       <li>Manage Access v2 with <code>removeDuration</code> for temporary access</li></ul></div>
     <div class="box"><h2>Forms + Launchers</h2><ul>
       <li>Form with REGEX-validated INC</li>
-      <li>Launcher on the Launchpad, gated by a requestable “Launcher Access” profile</li></ul></div>
+      <li>A requestable “Submit Access” role decides who may submit (it includes the Launcher)</li></ul></div>
     <div class="box"><h2>UI Plugins</h2><ul>
       <li>Angular + PrimeNG page inside ISC</li>
       <li>Files <code>/access-requests/v1</code> as the signed-in user, 10 people per request</li>

@@ -706,14 +706,14 @@ export class BulkApiService {
 
   // ── Who may submit ───────────────────────────────────────────────────────
   /**
-   * Whether the signed-in user holds the Launcher Access profile (null: none is installed, so nobody is turned
+   * Whether the signed-in user holds the Submit Access role (null: none is installed, so nobody is turned
    * away). A non-admin may ask requestable-objects about their own access (verified live: `requestStatus` ASSIGNED).
    */
-  async hasLauncherAccess(cfg: Pick<RuntimeConfig, 'launcherAccessId'>, me: string): Promise<boolean | null> {
-    if (!cfg.launcherAccessId) return null;
-    const filter = encodeURIComponent(`id eq ${quoted(cfg.launcherAccessId)}`);
+  async hasSubmitAccess(cfg: Pick<RuntimeConfig, 'submitAccessId'>, me: string): Promise<boolean | null> {
+    if (!cfg.submitAccessId) return null;
+    const filter = encodeURIComponent(`id eq ${quoted(cfg.submitAccessId)}`);
     const rows = await retry(() => this.plugin.get<Row[]>(
-      `${API.requestableObjects}?identity-id=${encodeURIComponent(me)}&types=ACCESS_PROFILE&limit=1&filters=${filter}`));
+      `${API.requestableObjects}?identity-id=${encodeURIComponent(me)}&types=ROLE&limit=1&filters=${filter}`));
     return (rows ?? []).some((r) => r['requestStatus'] === 'ASSIGNED');
   }
 
