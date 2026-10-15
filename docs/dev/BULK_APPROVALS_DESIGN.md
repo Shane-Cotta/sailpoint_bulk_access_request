@@ -44,11 +44,11 @@ From the docs, **not yet tested live**:
 
 ### Where it lives
 A new **Approvals** tab in the existing UI plugin, next to *New request* and *My bulk requests*.
-- **Submitting** needs the Launcher Access profile (no ORG_ADMIN).
+- **Submitting** needs the Submit Access role (no ORG_ADMIN).
 - **The Approvals tab** works for anyone who can see the plugin. It only ever reads and decides the signed-in user's own approvals.
 
 **Visibility:** each plugin slot has `restrictToUsers[]` (identity IDs; empty means everyone). Options:
-1. Make the plugin public. Everyone sees it; only holders of the Launcher Access profile can submit from *New request*.
+1. Make the plugin public. Everyone sees it; only holders of the Submit Access role can submit from *New request*.
 2. Keep it private and add item owners to `restrictToUsers`. That's a manual list; an installer helper could fill it from
    the owners of the catalog items.
 

@@ -12,12 +12,15 @@ What it does, idempotently:
        instead (when the Launcher deployment is on) and this script says so.
      - "launcher": looks up the Launcher "<prefix> Bulk Access Request" (install the Launcher deployment first).
        The plugin launches it and submits its form as the signed-in user.
-     Either way only holders of the Launcher Access profile may submit (the plugin checks it), and each item is
-     approved the way SailPoint has it set up.
-  2. Works out which catalog items SailPoint grants without any approval (the page labels them).
-  3. Writes public/bulk-access.config.json (submit mode, IDs, INC rule, limits, catalog filter, those items) and
+     Either way each item is approved the way SailPoint has it set up.
+  2. Creates (or updates only what differs) the requestable role "<prefix> Bulk Access Request - Submit Access":
+     only its holders may submit (the plugin checks it). With the Launcher deployed it contains the Launcher Access
+     profile, which is then no longer requestable on its own. Holders of the Launcher Access profile get the role
+     (an access request, approved like any other request for it), and --grant requests it for others.
+  3. Works out which catalog items SailPoint grants without any approval (the page labels them).
+  4. Writes public/bulk-access.config.json (submit mode, IDs, INC rule, limits, catalog filter, those items) and
      sp-ui-plugin.json (alias and name from the config).
-  4. With --deploy: `npm run build`, then `sail ui-plugins create --private` (first
+  5. With --deploy: `npm run build`, then `sail ui-plugins create --private` (first
      time only, push-manifest after that) and `sail ui-plugins upload`. The plugin is
      private unless the config's `plugin.public` is true or --public is given.
      --workdir builds another copy of this folder (one that has node_modules); the
@@ -36,6 +39,29 @@ import pluginlib as lib
 from pluginlib import TenantError, config_mod, definitions
 
 
+def submit_role(tenant: lib.Tenant, cfg: lib.Config, owner_id: str, dry_run: bool) -> dict | None:
+    """The Submit Access role: created or brought in line with the config, and given to everyone who holds the
+    Launcher Access profile (the old way to submit) but not the role yet. None on a dry run that would create it."""
+    sa = lib.submit_access
+    launcher_access = sa.find_named(tenant, lib.api.ACCESS_PROFILES, cfg.launcher_access_profile_name)
+    role, done = sa.apply_role(tenant, cfg, owner_id, launcher_access if cfg.deploy_launcher else None, dry_run)
+    print(f"Submit Access role {done}: " + (f"{role['id']}  " if role else "") + cfg.submit_role_name
+          + (f" (contains '{launcher_access['name']}')" if launcher_access and cfg.deploy_launcher else ""))
+    missing = sa.to_migrate(tenant, role, launcher_access)
+    if missing:
+        names = ", ".join(h["name"] or h["id"] for h in missing)
+        if dry_run:
+            print(f"Dry run: would request the role for {len(missing)} holder(s) of "
+                  f"'{launcher_access['name']}': {names}")
+        else:
+            sa.request(tenant, {"type": "ROLE", "id": role["id"]}, [h["id"] for h in missing],
+                       f"Bulk access request: moved from '{launcher_access['name']}' ({cfg.prefix})")
+            print(f"Requested the role for {len(missing)} holder(s) of '{launcher_access['name']}': {names}"
+                  + (" (each goes to their manager for approval: access.approval is MANAGER)"
+                     if cfg.access_approval == "MANAGER" else ""))
+    return role
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", required=True, help="config/<tenant>.json")
@@ -49,6 +75,8 @@ def main(argv: list[str] | None = None) -> int:
                            "(default: the config's plugin.public, which defaults to false)")
     seen.add_argument("--private", dest="public", action="store_false", default=None,
                       help="with --deploy: keep the plugin private to you even if plugin.public is true")
+    ap.add_argument("--grant", default="", help="comma-separated identity IDs (or 'me') to request the Submit Access "
+                                                "role for")
     a = ap.parse_args(argv)
 
     cfg = config_mod.load(a.config)
@@ -66,13 +94,10 @@ def main(argv: list[str] | None = None) -> int:
         cfg = dataclasses.replace(cfg, plugin_submit="launcher")
     via_launcher = cfg.plugin_submits_via_launcher
     launcher = lib.find_launcher(tenant, cfg.launcher_name) if via_launcher else None
-    access = lib.find_access_profile(tenant, cfg.launcher_access_profile_name)
     print("Submit: " + (f"through the Launcher '{cfg.launcher_name}' "
                         + (f"({launcher['id']})" if launcher else "(not installed yet)") if via_launcher
                         else "the plugin files the access requests itself")
-          + ", as the signed-in user; "
-          + (f"only holders of '{cfg.launcher_access_profile_name}' may submit" if access else
-             f"'{cfg.launcher_access_profile_name}' isn't installed, so anyone who can open the plugin may submit"))
+          + f", as the signed-in user; only holders of the role '{cfg.submit_role_name}' may submit")
     old = lib.find_workflow(tenant, cfg.old_plugin_workflow_name)
     if old:
         print(f"note: the workflow '{old['name']}' ({old['id']}) is no longer used; "
@@ -84,7 +109,17 @@ def main(argv: list[str] | None = None) -> int:
     no_approval = lib.catalog.no_approval_ids(tenant, objects) & offered
     print(f"Catalog: {len(no_approval)} item(s) have no approval of their own; the page labels them "
           "\"No approval: granted right away\".")
-    runtime = lib.runtime_config(cfg, (launcher or {}).get("id"), (access or {}).get("id"), no_approval)
+    me = tenant.me()
+    role = submit_role(tenant, cfg, cfg.owner_id or me["id"], a.dry_run)
+    grantees = [me["id"] if g.strip() == "me" else g.strip() for g in a.grant.split(",") if g.strip()]
+    if grantees and role and not a.dry_run:
+        n = lib.submit_access.request(tenant, {"type": "ROLE", "id": role["id"]}, grantees,
+                                      f"Granted by bulk-access-request installer ({cfg.prefix})")
+        print(f"Submit Access requested for {n} identit{'y' if n == 1 else 'ies'} "
+              "(the plugin lets them submit once it's granted, usually within a minute).")
+    elif grantees:
+        print(f"Dry run: would request the Submit Access role for {len(grantees)} identities.")
+    runtime = lib.runtime_config(cfg, (launcher or {}).get("id"), (role or {}).get("id"), no_approval)
     workdir = Path(a.workdir).resolve()
 
     if a.dry_run:

@@ -8,8 +8,8 @@ import { parseRuntimeConfig, type RuntimeConfig } from '../bulk/runtime-config';
 
 export const DEMO_ME = { id: 'd0000000000000000000000000000001', name: 'Jordan Lee', email: 'jordan.lee@example.edu' };
 
-/** The Launcher Access profile: holding it is what lets someone submit (the launcher-denied scenario lacks it). */
-export const DEMO_LAUNCHER_ACCESS = 'c0000000000000000000000000000100';
+/** The Submit Access role: holding it is what lets someone submit (the submit-denied scenario lacks it). */
+export const DEMO_SUBMIT_ACCESS = 'c0000000000000000000000000000100';
 
 export const DEMO_CONFIG: RuntimeConfig = parseRuntimeConfig({
   prefix: 'ACME',
@@ -17,8 +17,8 @@ export const DEMO_CONFIG: RuntimeConfig = parseRuntimeConfig({
   // The default: file the access requests directly as the signed-in user (the parts-* scenarios use the Launcher).
   submit: 'direct',
   launcherId: 'demo-launcher',
-  launcherAccessId: DEMO_LAUNCHER_ACCESS,
-  launcherAccessName: 'ACME Bulk Access Request - Launcher Access',
+  submitAccessId: DEMO_SUBMIT_ACCESS,
+  submitAccessName: 'ACME Bulk Access Request - Submit Access',
   incPattern: '^INC\\d{7}$',
   incMessage: 'Enter a ServiceNow incident number: INC followed by 7 digits, e.g. INC0012345.',
   incExample: 'INC0012345',

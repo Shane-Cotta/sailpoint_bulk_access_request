@@ -6,7 +6,7 @@ import {
   type Resolution,
 } from './bulk-api.service';
 import { BulkConfigService } from './bulk-config.service';
-import { describeError, describeSubmitError, isLauncherAccessDenied, msgNeedsLauncherAccess } from './errors';
+import { describeError, describeSubmitError, isLauncherAccessDenied, msgNeedsSubmitAccess } from './errors';
 import {
   accessLabel, bulkComment, JUSTIFICATION_MAX, launcherFormAccess, partLabel, PERMANENT, removeDate, removeDuration,
   splitIntoParts, temporaryModes, validateAccess, validateRequest, type AccessChoice, type CatalogOption,
@@ -278,11 +278,11 @@ export class RequestStore implements OnDestroy {
     }
   }
 
-  /** Why the user may not submit at all (they don't hold the Launcher Access profile), or null. */
+  /** Why the user may not submit at all (they don't hold the Submit Access role), or null. */
   private async mayNotSubmit(): Promise<string | null> {
     const cfg = this.bulkConfig.config();
     try {
-      return (await this.api.hasLauncherAccess(cfg, this.requesterId())) === false ? msgNeedsLauncherAccess(cfg) : null;
+      return (await this.api.hasSubmitAccess(cfg, this.requesterId())) === false ? msgNeedsSubmitAccess(cfg) : null;
     } catch (err) {
       return `Couldn't check that you may submit: ${describeError(err, 'read', 'your access')}`;
     }

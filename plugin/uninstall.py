@@ -3,8 +3,9 @@
 
     python plugin/uninstall.py --config config/<tenant>.json [--yes] [--plugin]
 
-Deletes the plugin's old workflow, if an earlier version installed it (named exactly
-"<prefix> Bulk Access Request (Plugin)"; the plugin no longer needs one) and, with --plugin,
+Deletes the "<prefix> Bulk Access Request - Submit Access" role (its holders lose it, and with it
+the Launcher Access profile it contains), the plugin's old workflow, if an earlier version installed it
+(named exactly "<prefix> Bulk Access Request (Plugin)"; the plugin no longer needs one) and, with --plugin,
 the UI plugin instance whose alias and name match the config.
 Each object is checked against the prefix before it is touched. Without --yes it
 asks first. The Launcher deployment and anything else in the tenant is left alone.
@@ -20,9 +21,14 @@ import pluginlib as lib
 from pluginlib import TenantError, config_mod
 
 
-def plan(cfg: lib.Config, workflow: dict | None, plugin: dict | None) -> list[tuple[str, str, str]]:
+def plan(cfg: lib.Config, workflow: dict | None, plugin: dict | None,
+         role: dict | None = None) -> list[tuple[str, str, str]]:
     """What would be removed, as (kind, id, name). Refuses anything that is not ours."""
     out = []
+    if role:
+        if role.get("name") != cfg.submit_role_name or not cfg.submit_role_name.startswith(cfg.prefix + " "):
+            raise TenantError(0, f"Refusing to delete role {role.get('name')!r}: not {cfg.submit_role_name!r}.")
+        out.append(("role", role["id"], role["name"]))
     if workflow:
         if not lib.is_old_plugin_workflow(cfg, workflow.get("name")):
             raise TenantError(0, f"Refusing to delete workflow {workflow.get('name')!r}: not {cfg.old_plugin_workflow_name!r}.")
@@ -50,7 +56,8 @@ def main(argv: list[str] | None = None) -> int:
     workdir = Path(a.workdir)
     workflow = lib.find_workflow(tenant, cfg.old_plugin_workflow_name)
     plugin = lib.find_plugin(cfg, workdir) if a.plugin else None
-    targets = plan(cfg, workflow, plugin)
+    role = lib.submit_access.find_named(tenant, lib.api.ROLES, cfg.submit_role_name)
+    targets = plan(cfg, workflow, plugin, role)
     if not targets:
         print("Nothing to remove.")
         return 0
@@ -65,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
     for kind, oid, name in targets:
         if kind == "workflow":
             tenant.call("DELETE", f"{lib.api.WORKFLOWS}/{oid}")
+        elif kind == "role":
+            tenant.call("DELETE", f"{lib.api.ROLES}/{oid}")
         else:
             lib.sail(cfg, ["ui-plugins", "delete", oid, "--force"], workdir)
         print(f"Deleted {kind} {oid}  {name}")

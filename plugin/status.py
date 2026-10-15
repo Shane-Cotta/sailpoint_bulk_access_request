@@ -45,9 +45,11 @@ def main(argv: list[str] | None = None) -> int:
         print("Submit: the plugin files the access requests itself (plugin.submit \"direct\"), as the signed-in user"
               + ("" if allowed else "; but this tenant doesn't let users request for others: re-run plugin/install.py, "
                                     "which then switches the plugin to the Launcher"))
-    access = lib.find_access_profile(tenant, cfg.launcher_access_profile_name)
-    print(f"Who may submit: holders of '{cfg.launcher_access_profile_name}' ({access['id']})" if access
-          else f"Who may submit: anyone who can open the plugin ('{cfg.launcher_access_profile_name}' isn't installed)")
+    role = lib.submit_access.find_named(tenant, lib.api.ROLES, cfg.submit_role_name)
+    print(f"Who may submit: holders of the role '{cfg.submit_role_name}' ({role['id']}, "
+          f"{len(lib.submit_access.holders(tenant, role['id']))} holder(s))" if role
+          else f"Who may submit: role '{cfg.submit_role_name}' MISSING; run plugin/install.py (until then the page "
+               "doesn't check who submits)")
     old = lib.find_workflow(tenant, cfg.old_plugin_workflow_name)
     if old:
         print(f"Old plugin workflow: {old['id']}  {old['name']}  (no longer used; uninstall removes it)")

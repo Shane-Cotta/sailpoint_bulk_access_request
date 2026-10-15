@@ -67,7 +67,7 @@ MSG_APPROVALS_MAX_ROWS = ("`approvals.maxRows` must be a whole number between "
 #                Needs the tenant to let users request access for others (the installer checks).
 #  "launcher" -- it starts the Launcher deployment's Launcher and submits its form as the signed-in user; the Launcher
 #                workflow then files the requests (as the workflow owner).
-# Either way, only holders of the Launcher Access profile may submit (verified live as a non-admin).
+# Either way, only holders of the Submit Access role may submit (verified live as a non-admin).
 PLUGIN_SUBMIT_MODES = ("direct", "launcher")
 MSG_PLUGIN_SUBMIT = '`plugin.submit` must be "direct" or "launcher".'
 MSG_PLUGIN_SUBMIT_LAUNCHER = ('`plugin.submit` "launcher" needs the Launcher deployment: set `deployments.launcher` '
@@ -112,7 +112,7 @@ class Config:
     owner_id: str | None
     plugin_alias: str
     plugin_display_name: str
-    launcher_access_approval: str = "MANAGER"
+    access_approval: str = "MANAGER"
     env_file: str | None = None
     part_size: int = LOOP_MAX
     temporary_enabled: bool = True
@@ -160,8 +160,26 @@ class Config:
 
     @property
     def launcher_access_profile_name(self) -> str:
-        """The requestable access profile that lets its holders use the Launcher and submit from the plugin."""
+        """The access profile that wraps the Launcher's `assignedLaunchers` entitlement (Launcher deployment)."""
         return f"{self.base_name} - Launcher Access"
+
+    @property
+    def submit_role_name(self) -> str:
+        """The requestable role that lets its holders submit from the plugin (plugin deployment). With the Launcher
+        deployed too it contains the Launcher Access profile, so the one request covers the Launchpad as well."""
+        return f"{self.base_name} - Submit Access"
+
+    @property
+    def submit_access_name(self) -> str:
+        """What people request to make bulk requests: the plugin's role, or without the plugin the Launcher Access
+        profile. The catalog never offers it, and `access_approval` decides who approves it."""
+        return self.submit_role_name if self.deploy_plugin else self.launcher_access_profile_name
+
+    @property
+    def launcher_access_requestable(self) -> bool:
+        """With the plugin deployed the Launcher Access profile comes through the role, so it isn't requested
+        on its own (one door, one approval)."""
+        return not self.deploy_plugin
 
     @property
     def live(self) -> bool:
@@ -350,14 +368,18 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
         help_contact = " ".join(help_contact.split()) or None
     _require(help_contact is None or (isinstance(help_contact, str) and len(help_contact) <= HELP_CONTACT_MAX),
              MSG_HELP_CONTACT)
-    access_approval = access.get("launcherApproval")
+    access_approval = access.get("approval")
+    if "launcherApproval" in access:
+        deprecations.append("`access.launcherApproval` is now `access.approval`.")
+        if access_approval is None:
+            access_approval = access["launcherApproval"]
     old_launcher = data.get("launcher") or {}
     if "accessApproval" in old_launcher:
-        deprecations.append("`launcher.accessApproval` is now `access.launcherApproval`.")
+        deprecations.append("`launcher.accessApproval` is now `access.approval`.")
         if access_approval is None:
             access_approval = old_launcher["accessApproval"]
     access_approval = access_approval or "MANAGER"
-    _require(access_approval in ("MANAGER", "NONE"), "`access.launcherApproval` must be \"MANAGER\" or \"NONE\".")
+    _require(access_approval in ("MANAGER", "NONE"), "`access.approval` must be \"MANAGER\" or \"NONE\".")
 
     approvals = _approvals(data.get("approvals"))
 
@@ -387,7 +409,7 @@ def from_dict(data: dict[str, Any], source_path: str | None = None) -> Config:
         owner_id=data.get("owner") or None,
         plugin_alias=alias,
         plugin_display_name=plugin.get("displayName") or f"{prefix} Bulk Access Request",
-        launcher_access_approval=access_approval,
+        access_approval=access_approval,
         env_file=data.get("envFile") or None,
         part_size=part_size,
         temporary_enabled=enabled,

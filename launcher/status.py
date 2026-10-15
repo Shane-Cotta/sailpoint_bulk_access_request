@@ -66,9 +66,12 @@ def main(argv=None) -> int:
         ok = False; print(f"[--] Launcher  missing: {cfg.launcher_name}")
 
     access = install.find_access_profile(t, cfg.launcher_access_profile_name)
-    print(f"[{'ok' if access else '--'}] Access    {access['id'] if access else 'missing'}  {cfg.launcher_access_profile_name}"
-          + ("" if not access else f"  (requestable={access.get('requestable')})"))
-    ok &= bool(access)
+    as_wanted = bool(access) and bool(access.get("requestable")) == cfg.launcher_access_requestable
+    print(f"[{'ok' if as_wanted else '--' if not access else '!!'}] Access    "
+          f"{access['id'] if access else 'missing'}  {cfg.launcher_access_profile_name}"
+          + ("" if not access else f"  (requestable={access.get('requestable')}"
+             + (f"; people get it through the role '{cfg.submit_role_name}')" if cfg.deploy_plugin else ")")))
+    ok &= as_wanted
     print("\nAll good." if ok else "\nSomething is missing or off; run launcher/install.py.")
     return 0 if ok else 1
 

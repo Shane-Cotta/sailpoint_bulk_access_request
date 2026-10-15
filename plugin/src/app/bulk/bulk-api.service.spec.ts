@@ -41,16 +41,16 @@ describe('BulkApiService', () => {
       ]);
     });
 
-    it('checks that the user holds the Launcher Access profile through requestable-objects', async () => {
-      const answers = [[{ id: 'lap', requestStatus: 'ASSIGNED' }], [{ id: 'lap', requestStatus: 'AVAILABLE' }], []];
+    it('checks that the user holds the Submit Access role through requestable-objects', async () => {
+      const answers = [[{ id: 'sar', requestStatus: 'ASSIGNED' }], [{ id: 'sar', requestStatus: 'AVAILABLE' }], []];
       const { api, plugin } = setup({ '/requestable-objects/v1': () => answers.shift() }, false);
-      await expect(api.hasLauncherAccess({ launcherAccessId: 'lap' }, 'me')).resolves.toBe(true);
-      await expect(api.hasLauncherAccess({ launcherAccessId: 'lap' }, 'me')).resolves.toBe(false);
-      await expect(api.hasLauncherAccess({ launcherAccessId: 'lap' }, 'me')).resolves.toBe(false);
+      await expect(api.hasSubmitAccess({ submitAccessId: 'sar' }, 'me')).resolves.toBe(true);
+      await expect(api.hasSubmitAccess({ submitAccessId: 'sar' }, 'me')).resolves.toBe(false);
+      await expect(api.hasSubmitAccess({ submitAccessId: 'sar' }, 'me')).resolves.toBe(false);
       const params = new URLSearchParams(String(plugin.get.mock.calls[0][0]).split('?')[1]);
-      expect([params.get('identity-id'), params.get('types'), params.get('filters')]).toEqual(['me', 'ACCESS_PROFILE', 'id eq "lap"']);
-      // No profile installed: nobody is turned away, and nothing is called.
-      await expect(api.hasLauncherAccess({ launcherAccessId: null }, 'me')).resolves.toBeNull();
+      expect([params.get('identity-id'), params.get('types'), params.get('filters')]).toEqual(['me', 'ROLE', 'id eq "sar"']);
+      // No role installed: nobody is turned away, and nothing is called.
+      await expect(api.hasSubmitAccess({ submitAccessId: null }, 'me')).resolves.toBeNull();
       expect(plugin.get).toHaveBeenCalledTimes(3);
     });
   });

@@ -49,15 +49,15 @@
   },
   "owner": null,
   "access": {
-    "launcherApproval": "MANAGER",
-    "_comment": "The Launcher Access profile decides who may make bulk requests (the Launchpad form and the plugin). Who approves requests for it: MANAGER (the requester's manager) or NONE (auto-approved)."
+    "approval": "MANAGER",
+    "_comment": "Who may make bulk requests: holders of the requestable role '<prefix> Bulk Access Request - Submit Access' (created by the plugin installer; it contains the Launcher Access profile when the Launcher is deployed too), or with the Launcher alone the '<prefix> Bulk Access Request - Launcher Access' profile. Who approves requests for it: MANAGER (the requester's manager) or NONE (auto-approved). `launcherApproval` is the old name."
   },
   "plugin": {
     "alias": "acme-bulk-access",
     "displayName": "ACME Bulk Access Request",
     "public": false,
     "submit": "direct",
-    "_comment": "submit: direct (default) = the plugin files the access requests itself, as the signed-in user, so they carry the requester's name and each item is approved the way it's set up in SailPoint (the tenant must let users request access for others; plugin/install.py checks and otherwise uses the Launcher). launcher = the plugin starts the Launcher and submits its form as the signed-in user; the Launcher workflow then files the requests. Either way only holders of the Launcher Access profile may submit."
+    "_comment": "submit: direct (default) = the plugin files the access requests itself, as the signed-in user, so they carry the requester's name and each item is approved the way it's set up in SailPoint (the tenant must let users request access for others; plugin/install.py checks and otherwise uses the Launcher). launcher = the plugin starts the Launcher and submits its form as the signed-in user; the Launcher workflow then files the requests. Either way only holders of the Submit Access role may submit."
   },
   "approvals": {
     "enabled": true,

@@ -8,8 +8,8 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
 ## Layout
 | Path | What |
 |---|---|
-| `bulkaccess.py` | The one CLI: `show-config`, `apply [--dry-run] [--only launcher\|plugin] [--deploy] [--grant me\|<ids>]`, `status`, `uninstall [--yes]`, `export [--offline] [--out]`; `apply --workdir` points `--deploy` at another Angular project. It calls each enabled deployment's `main(argv)`, loaded by file path (both folders have an `install.py`). |
-| `core/bulkaccess/` | Shared Python (standard library only): `config.py` (the only config loader, plus derived per-route values), `tenant.py` (PAT client), `api.py` (every API path), `rules.py` (validation, parts, temporary access, the bulk item comment, which items need no approval), `catalog.py` (tenant reads: the catalog and each item's approval setup), `definitions.py` (pure JSON builders for the form, workflow and launcher) |
+| `bulkaccess.py` | The one CLI: `show-config`, `apply [--dry-run] [--only launcher\|plugin] [--deploy] [--grant me\|<ids>]`, `status`, `uninstall [--yes]` (`--only` also works for a deployment switched off in `deployments`), `export [--offline] [--out]`; `apply --workdir` points `--deploy` at another Angular project. It calls each enabled deployment's `main(argv)`, loaded by file path (both folders have an `install.py`). |
+| `core/bulkaccess/` | Shared Python (standard library only): `config.py` (the only config loader, plus derived per-route values), `tenant.py` (PAT client), `api.py` (every API path), `rules.py` (validation, parts, temporary access, the bulk item comment, which items need no approval), `catalog.py` (tenant reads: the catalog and each item's approval setup), `definitions.py` (pure JSON builders for the form, workflow, launcher, Launcher Access profile and Submit Access role), `submit_access.py` (tenant reads and writes for the Submit Access role: create or PATCH, holders, the `--grant` and migration requests) |
 | `launcher/` | Deployment A: `install.py`, `status.py`, `uninstall.py`, `e2e.py` (still runnable on their own) |
 | `plugin/` | Deployment B: Angular + PrimeNG UI plugin (it files the access requests itself, or drives the Launcher), plus `install.py` / `status.py` / `uninstall.py` / `pluginlib.py`. Its API paths are in `src/app/bulk/api-paths.ts` |
 | `config/` | `bulk-access.example.json` (committed; the schema). Per-tenant `config/<tenant>.json` files are **gitignored**. |
@@ -24,7 +24,7 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
   `plugin_people_max`, `launcher_temporary_modes`, `plugin_temporary_modes`, `plugin_submits_directly`,
   `plugin_submits_via_launcher`, …); never re-implement them in an installer. `apply` installs the Launcher before the plugin
   (launcher submit mode needs its ID). Renamed keys stay readable and add a note to `cfg.deprecations` (e.g.
-  `launcher.accessApproval` → `access.launcherApproval`); removed ones (`approval`, `notifications.ccApprover`,
+  `access.launcherApproval` and `launcher.accessApproval` → `access.approval`); removed ones (`approval`, `notifications.ccApprover`,
   `notifications.pendingEmail`, `plugin.submit: "test-endpoint"`) still load, are ignored, and add a note too.
 - **API paths live in one module per language** (`core/bulkaccess/api.py`, `plugin/src/app/bulk/api-paths.ts`). Use GA
   `/<service>/v1` paths (legacy `v3`/`beta`/`v202X` lose support in Q2 2028). The only exceptions: `GET
@@ -132,17 +132,46 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
 - **Angular/PrimeNG:** the stepper (`p-step-panel` content templates) creates every step's component when the page
   opens, so a step must react to `store.step()` (an effect), not `ngOnInit`, to do work when it's shown.
 - **Launchers:**
-  - Visible and launchable only for holders of the auto-created `assignedLaunchers` entitlement (on the IdentityNow source). The installer wraps it in a requestable "Launcher Access" profile.
+  - Visible and launchable only for holders of the auto-created `assignedLaunchers` entitlement (on the IdentityNow source). The installer wraps it in a "Launcher Access" profile: requestable on its own when only the Launcher is deployed; with the plugin, it sits inside the plugin's "Submit Access" role and isn't requestable by itself (`cfg.launcher_access_requestable`).
   - **Replacing an access profile's `/entitlements`** (even with the same list) leaves its holders' requestable-objects
     `requestStatus` at `AVAILABLE` until their next identity refresh (seen live 2026-10-13: still wrong after 7 minutes;
     `POST /identities/v1/process` with `X-SailPoint-Experimental: true` fixed it in 30 s). A description-only PATCH
-    doesn't. The plugin's submit check reads that status, so the installer PATCHes only what differs
-    (`definitions.access_profile_changes`).
+    doesn't. The plugin's submit check reads that status (now for the Submit Access role), so the installers PATCH only
+    what differs (`definitions.access_profile_changes`, `definitions.role_changes`).
   - Disabling the workflow disables its Launcher a moment later.
+- **Who may submit: the "Submit Access" role** (`cfg.submit_role_name`; verified 2026-10-14):
+  - The plugin installer creates a requestable role (`definitions.submit_role`; PATCHes only what differs,
+    `definitions.role_changes`). With the Launcher deployed it contains the Launcher Access profile, so one request gives
+    both. `cfg.submit_access_name` is what people request: the role with the plugin, else the Launcher Access profile.
+    `access.approval` (MANAGER | NONE) sets who approves either. The catalog never offers them.
+  - An **empty** requestable role (`accessProfiles: []`, `entitlements: []`, no approval schemes) can be created with
+    `POST /roles/v1`, requested with `POST /access-requests/v1` (type `ROLE`), and is provisioned in about 2 s.
+  - `GET /requestable-objects/v1?identity-id=<me>&types=ROLE&filters=id eq "<role>"` from a non-admin's own session reads
+    `requestStatus: ASSIGNED` once granted (`AVAILABLE` without it); the admin PAT sees the same about 20 s after provisioning.
+  - `POST /search/v1` on `identities` with `@access(id:"<id>")` lists the holders of an access profile or role. The installer
+    uses it to request the role for holders of the Launcher Access profile who lack it (10 per request; dry run lists them).
+  - A role PATCH (description, or `/accessProfiles` replaced with the same list) left every holder at `ASSIGNED`
+    throughout (checked every 20 s for 3 minutes, 2026-10-15), unlike the access profile `/entitlements` case above.
+- **Access request segments** (`docs/sailpoint/SEGMENTS_AND_USER_LEVELS.md`; verified 2026-10-14/15):
+  - A non-requestable item is refused for everyone ("The following access items are not requestable"), ORG_ADMIN and
+    workflows included. The native way to restrict access is: make it requestable, and put it in a segment.
+  - Access profiles and roles in a segment are hidden and enforced (403 "…not allowed to request this item due to lack of
+    segment membership"). **Entitlement segments are not enforced**: `/entitlements/v1` lists them to everyone and the
+    request is accepted. So wrap restricted groups in a segmented access profile.
+  - Listing (`requestable-objects?identity-id=<X>`) follows X's membership; **submitting checks the requester's**: a
+    non-member is refused even for a member, and a member may request it for a non-member. ORG_ADMIN isn't exempt.
+    Changes take about 5 minutes to show.
+  - Segments are ORG_ADMIN only (`idn:segment:manage`); no custom-user-level right set covers them. Custom user levels
+    (`/authorization/custom-user-levels`, experimental) are built from right sets
+    (`/authorization/authorization-assignable-right-sets`, 40 in the demo tenant).
+  - `DELETE /roles/v1/{id}` succeeds even while the role is assigned (`plugin/uninstall.py` deletes it). `launcher/uninstall.py`
+    first takes the Launcher Access profile out of the role. Retiring the Launcher: `deployments.launcher: false`, `apply`,
+    then `uninstall --only launcher --yes`.
 - **Plugins:** a browser plugin can't hold a workflow's external-trigger secret. Two ways to submit (`plugin.submit`,
-  `docs/dev/CONTRACTS.md` §3 and §9); either way only holders of the Launcher Access profile may submit, checked with
-  `GET /requestable-objects/v1?identity-id=<me>&types=ACCESS_PROFILE&filters=id eq "<profile id>"` → `requestStatus: ASSIGNED`
-  (works for a non-admin; the installer writes `launcherAccessId` into the runtime config):
+  `docs/dev/CONTRACTS.md` §3 and §9); either way only holders of the Submit Access role may submit, checked with
+  `GET /requestable-objects/v1?identity-id=<me>&types=ROLE&limit=1&filters=id eq "<role id>"` → `requestStatus: ASSIGNED`
+  (works for a non-admin; the installer writes `submitAccessId` / `submitAccessName` into the runtime config; no ID, as in a
+  dry run, means no check):
   - **`direct`** (default): the plugin calls `POST /access-requests/v1` as the signed-in user, 10 people per request.
   - **`launcher`** (fallback when the tenant doesn't allow requesting for others): the plugin drives the Launcher **as the
     signed-in user** (verified as a real non-admin): `POST /launchers/v1/{id}/launch` `{}` → `{interactiveProcessId}`; poll
@@ -176,7 +205,7 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
   | Call | Non-admin | The plugin |
   |---|---|---|
   | `GET /requestable-objects/v1?types=…` without `identity-id` | **403** | always sends `identity-id=<me>` (200) |
-  | `GET /requestable-objects/v1?identity-id=<me>&filters=id eq "<Launcher Access profile>"` ✔ | 200, `requestStatus: ASSIGNED` for a holder | who may submit |
+  | `GET /requestable-objects/v1?identity-id=<me>&types=ROLE&filters=id eq "<Submit Access role>"` ✔ (2026-10-14) | 200, `requestStatus: ASSIGNED` for a holder | who may submit |
   | `GET /requestable-objects/v1?identity-id=<someone else>&…&filters=id in (…)` | 200, with that person's `requestStatus` | "already has it" for access profiles and roles |
   | `GET /entitlements/v1?filters=requestable eq true` | 200 | catalog entitlements |
   | `GET /identities/v1` (list and `/{other}`), `POST /search/v1`, `GET /accounts/v1`, `GET /access-profiles/v1/{id}` ✔ | **403** | admins only |
@@ -185,7 +214,7 @@ Human docs: `README.md` (overview), `INSTALL.md` (any tenant), `USAGE.md` (reque
   | `GET /access-request-status/v1?requested-by=<me>` ✔ | 200, their own requests with `approvalDetails` | My bulk requests |
   | `GET /access-request-status/v1?requested-for=<someone else>` | **400** "must be the current user" | entitlement "already has it": admins only |
   | `GET /generic-approvals/v1?mine=true&include-comments=true`, `POST …/{id}/approve\|reject` | 200, their own | Approvals tab |
-  | `POST /launchers/v1/{id}/launch`, `GET /beta/interactive-processes/{id}/blocks`, `GET`/`PATCH /form-instances/v1/{id}` | 200 (with Launcher Access) | submit (launcher mode) |
+  | `POST /launchers/v1/{id}/launch`, `GET /beta/interactive-processes/{id}/blocks`, `GET`/`PATCH /form-instances/v1/{id}` | 200 (with the Launcher Access profile, which the Submit Access role contains) | submit (launcher mode) |
 
   `/public-identities/v1` rows: `id, name, alias, email, status, identityState, manager, attributes[{key,name,value}]` (no
   display name; `department` is in `attributes`). Filters: `id` eq/in (50 IDs fine); `alias`, `email`, `firstname`,

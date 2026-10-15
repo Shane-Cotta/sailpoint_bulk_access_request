@@ -13,10 +13,12 @@ its own; this command just calls their main() in turn.
 
   show-config  what the config means for each route (people limit, parts, temporary access)
   apply        install or update; --dry-run prints every body and changes nothing,
-               --deploy also builds and uploads the plugin, --grant gives Launcher access
+               --deploy also builds and uploads the plugin, --grant requests the submit access
+               (the plugin's Submit Access role, or without the plugin the Launcher Access profile)
   status       what is installed (read-only)
-  uninstall    removes what apply created (asks first; --yes to delete)
-  export       writes the workflows, form, Launcher and access profile as JSON files: as installed
+  uninstall    removes what apply created (asks first; --yes to delete); --only works for a
+               deployment that is already switched off in the config
+  export       writes the workflows, form, Launcher, access profile and role as JSON files: as installed
                in the tenant (read-only), or with --offline as this code would build them
 """
 
@@ -36,7 +38,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "core"))   # before the repo root, so `bulkaccess` is the core package, not this file
 
 from bulkaccess import config as config_mod  # noqa: E402
-from bulkaccess import definitions  # noqa: E402
+from bulkaccess import api, definitions, submit_access  # noqa: E402
 from bulkaccess.config import FORM_SELECT_MAX, Config  # noqa: E402
 from bulkaccess.tenant import TenantError  # noqa: E402
 
@@ -97,8 +99,7 @@ def temporary_summary(cfg: Config, route: str) -> str:
 
 def submit_summary(cfg: Config) -> str:
     """How the plugin submits (`plugin.submit`) and so who can submit from it."""
-    who = (f"holders of '{cfg.launcher_access_profile_name}' can submit" if cfg.deploy_launcher
-           else "anyone who can open the plugin can submit (no Launcher Access profile without the Launcher)")
+    who = f"holders of the role '{cfg.submit_role_name}' can submit"
     if cfg.plugin_submits_via_launcher:
         return (f"plugin.submit \"launcher\": the plugin launches the '{cfg.launcher_name}' Launcher and submits its "
                 f"form as the signed-in user; {who}")
@@ -136,11 +137,13 @@ def describe(cfg: Config) -> list[str]:
     ]
     if cfg.deploy_launcher:
         lines.append(f"  launcher:  form '{cfg.form_name}', workflow '{cfg.launcher_workflow_name}', "
-                     f"Launcher '{cfg.launcher_name}', access profile '{cfg.launcher_access_profile_name}' "
-                     f"(approval: {'manager' if cfg.launcher_access_approval == 'MANAGER' else 'none, auto-approved'})")
+                     f"Launcher '{cfg.launcher_name}', access profile '{cfg.launcher_access_profile_name}'"
+                     + (" (inside the plugin's role, not requestable on its own)" if cfg.deploy_plugin else ""))
     if cfg.deploy_plugin:
         lines.append(f"  plugin:    plugin '{cfg.plugin_display_name}' "
                      f"(alias {cfg.plugin_alias}, {'visible to everyone' if cfg.plugin_public else 'private'})")
+        lines.append(f"  plugin:    role '{cfg.submit_role_name}'"
+                     + (f" (contains '{cfg.launcher_access_profile_name}')" if cfg.deploy_launcher else ""))
         lines.append(f"Submit:      {submit_summary(cfg)}")
     lines += [
         f"INC:         {cfg.inc_pattern}  e.g. {cfg.inc_example}",
@@ -154,6 +157,8 @@ def describe(cfg: Config) -> list[str]:
     if cfg.temporary_enabled:
         for route in routes:
             lines.append(f"  {route + ':':10} {temporary_summary(cfg, route)}")
+    lines.append(f"Access:      people request '{cfg.submit_access_name}' in the Request Center; approval: "
+                 + ("their manager" if cfg.access_approval == "MANAGER" else "none, auto-approved"))
     lines.append("Approval:    each item the way it's set up in SailPoint (items with no approval are granted "
                  "right away; the installers list them)")
     if cfg.deploy_launcher:
@@ -211,8 +216,9 @@ def run_script(deployment: str, script: str, argv: list[str], *, answer: str | N
             builtins.input = real_input
 
 
-def targets(cfg: Config, only: str | None) -> list[str]:
-    if only and only not in cfg.deployments:
+def targets(cfg: Config, only: str | None, *, switched_off_ok: bool = False) -> list[str]:
+    """The deployments to act on. `switched_off_ok`: uninstall may remove one that the config already turned off."""
+    if only and only not in cfg.deployments and not switched_off_ok:
         raise config_mod.ConfigError(f"`--only {only}`: the {only} deployment is switched off in `deployments`.")
     return [only] if only else list(cfg.deployments)
 
@@ -226,16 +232,19 @@ def cmd_show_config(cfg: Config, a: argparse.Namespace) -> int:
 def cmd_apply(cfg: Config, a: argparse.Namespace) -> int:
     base = ["--config", a.config] + (["--dry-run"] if a.dry_run else [])
     chosen = targets(cfg, a.only)
-    if a.grant and "launcher" not in chosen:
-        print("note: --grant only applies to the Launcher deployment; ignored.")
+    # --grant goes to whoever owns the submit access: the plugin's role, or without the plugin the Launcher's profile.
+    grant_by = "plugin" if cfg.deploy_plugin else "launcher"
+    if a.grant and grant_by not in chosen:
+        print(f"note: --grant is handled by the {grant_by} deployment, which isn't being applied; ignored.")
     if a.deploy and "plugin" not in chosen:
         print("note: --deploy only applies to the plugin deployment; ignored.")
     rc = 0
     for d in chosen:
         if d == "launcher":
-            rc |= run_script("launcher", "install", base + (["--grant", a.grant] if a.grant else []))
+            rc |= run_script("launcher", "install", base + (["--grant", a.grant] if a.grant and grant_by == d else []))
         else:
             rc |= run_script("plugin", "install", base + (["--deploy"] if a.deploy else [])
+                             + (["--grant", a.grant] if a.grant else [])
                              + (["--workdir", a.workdir] if a.workdir else [])
                              + (["--public"] if cfg.plugin_public else []))
     return rc
@@ -250,7 +259,7 @@ def cmd_status(cfg: Config, a: argparse.Namespace) -> int:
 
 def cmd_uninstall(cfg: Config, a: argparse.Namespace) -> int:
     rc = 0
-    for d in targets(cfg, a.only):
+    for d in targets(cfg, a.only, switched_off_ok=True):
         if d == "launcher":
             rc |= run_script("launcher", "uninstall", ["--config", a.config] + (["--yes"] if a.yes else []))
             continue
@@ -273,7 +282,8 @@ def cmd_uninstall(cfg: Config, a: argparse.Namespace) -> int:
 _SERVER_FIELDS = ("id", "created", "modified", "creator", "modifiedBy", "executionCount", "failureCount",
                   "dailyExecutionCount", "usedBy", "tenantId")
 _PLACEHOLDER = {"owner": "<OWNER_IDENTITY_ID>", "form": "<FORM_DEFINITION_ID>", "workflow": "<WORKFLOW_ID>",
-                "entitlement": "<ASSIGNED_LAUNCHERS_ENTITLEMENT_ID>", "source": "<IDENTITYNOW_SOURCE_ID>"}
+                "entitlement": "<ASSIGNED_LAUNCHERS_ENTITLEMENT_ID>", "source": "<IDENTITYNOW_SOURCE_ID>",
+                "access": "<LAUNCHER_ACCESS_PROFILE_ID>"}
 
 
 def _clean(obj: dict | None) -> dict | None:
@@ -293,6 +303,10 @@ def offline_objects(cfg: Config, only: str | None = None) -> dict[str, dict]:
             out["launcher/access-profile.json"] = definitions.launcher_access_profile(
                 cfg, _PLACEHOLDER["owner"], {"id": _PLACEHOLDER["entitlement"], "name": cfg.launcher_name,
                                              "source": {"id": _PLACEHOLDER["source"], "name": "IdentityNow"}})
+        else:
+            launcher_access = ({"id": _PLACEHOLDER["access"], "name": cfg.launcher_access_profile_name}
+                               if cfg.deploy_launcher else None)
+            out["plugin/submit-role.json"] = definitions.submit_role(cfg, _PLACEHOLDER["owner"], launcher_access)
     return out
 
 
@@ -309,6 +323,8 @@ def tenant_objects(cfg: Config, only: str | None = None) -> tuple[str, dict[str,
             out["launcher/workflow.json"] = lib.find_workflow(t, cfg.launcher_workflow_name)
             out["launcher/launcher.json"] = lib.find_launcher(t, cfg.launcher_name)
             out["launcher/access-profile.json"] = lib.find_access_profile(t, cfg.launcher_access_profile_name)
+        else:
+            out["plugin/submit-role.json"] = submit_access.find_named(t, api.ROLES, cfg.submit_role_name)
     return t.tenant_name, {k: _clean(v) for k, v in out.items()}
 
 
@@ -349,12 +365,12 @@ def main(argv: list[str] | None = None) -> int:
     p = command("apply", "Install or update the enabled deployments.")
     p.add_argument("--dry-run", action="store_true", help="print every body; change nothing")
     p.add_argument("--deploy", action="store_true", help="plugin: also build and upload it with the SailPoint CLI")
-    p.add_argument("--grant", default="", help="Launcher: comma-separated identity IDs (or 'me') to give Launcher access")
+    p.add_argument("--grant", default="", help="comma-separated identity IDs (or 'me') to request the submit access for")
     p.add_argument("--workdir", default="", help="plugin: Angular project to build and upload (default: plugin/)")
     command("status", "Show what is installed (read-only).")
     p = command("uninstall", "Remove what apply created.")
     p.add_argument("--yes", action="store_true", help="actually delete (otherwise only shows what would go)")
-    p = command("export", "Write the workflows, form, Launcher and access profile as JSON files.")
+    p = command("export", "Write the workflows, form, Launcher, access profile and role as JSON files.")
     p.add_argument("--offline", action="store_true", help="build them from this code and config, without a tenant")
     p.add_argument("--out", default="", help="folder to write to (default: exports/<prefix>-<tenant|offline>/)")
 

@@ -23,7 +23,7 @@ installer finds those items and the plugin warns about them before you submit.
 | | **A. Launcher** (native) | **B. UI plugin** |
 |---|---|---|
 | Where users find it | **Launchpad**, as a native SailPoint form | A page inside ISC, reachable from a nav-bar link |
-| Who can use it | **Any user** you give the *Launcher Access* profile to (they can request it in the Request Center) | **The same users**. By default (`plugin.submit: "direct"`) the plugin files the access requests **as the signed-in user**; if the tenant doesn't let users request for others, it submits through the Launcher instead (`"launcher"`) |
+| Who can use it | **Any user** you give the *Launcher Access* profile to (they can request it in the Request Center) | **Any user** you give the *Submit Access* role to (they request it in the Request Center; with A deployed it includes the *Launcher Access* profile, so one request covers both). By default (`plugin.submit: "direct"`) the plugin files the access requests **as the signed-in user**; if the tenant doesn't let users request for others, it submits through the Launcher instead (`"launcher"`) |
 | People | Form picker, **up to 30** (SailPoint's form limit) | Search or paste a list, **no limit**: sent 10 people per access request (SailPoint's limit), or 250 per Launcher run. Warns about access people already have. |
 | Temporary access | By **duration**: hours, days, weeks or months | By **duration** or **end date** |
 | Requester of the item requests | The workflow owner (the admin account the tool was installed with) | **You**, so they're in your Request Center (through the Launcher: the workflow owner) |
@@ -41,15 +41,18 @@ python bulkaccess.py status --config config/<tenant>.json             # check
 ```
 
 **Not sure which?** Start with **A**: it works for everyone and needs nothing but this folder. Add **B** if your
-requesters want the richer screen or bigger lists. Both run side by side in one tenant, and the plugin uses A's
-*Launcher Access* profile to decide who may submit, so whoever may use the Launcher may submit from the plugin.
+requesters want the richer screen or bigger lists. Both run side by side in one tenant. With both, people request one
+thing, the plugin's *Submit Access* role: it contains A's *Launcher Access* profile, so it opens the plugin's submit and
+the Launchpad at once (the profile is then not requestable on its own). With A alone, they request the *Launcher Access*
+profile.
 
 ## What gets created in the tenant
 Everything is named with your **prefix** (for example `ACME`), so it is easy to find and to remove:
 
 - **A:** *"ACME Bulk Access Request Form"*, the *"ACME Bulk Access Request"* workflow and Launcher, and the
   *"ACME Bulk Access Request - Launcher Access"* access profile.
-- **B:** the *ACME Bulk Access Request* UI plugin, nothing else. (An older install's disabled
+- **B:** the *ACME Bulk Access Request* UI plugin and the requestable *"ACME Bulk Access Request - Submit Access"* role
+  (who may submit; with A it contains the Launcher Access profile). (An older install's disabled
   *"ACME Bulk Access Request (Plugin)"* workflow is no longer used; `uninstall` removes it.)
 
 Temporary access and large requests need nothing extra: SailPoint removes temporary access on its own, and a large
@@ -74,6 +77,7 @@ Before installing in a production tenant, check that the tenant offers everythin
 | [API inventory](docs/sailpoint/API_INVENTORY.md) | Every API call (method, path, version, caller, user level, scopes), workflow step, form feature and `sail` command |
 | [API contract alignment](docs/sailpoint/API_CONTRACT_ALIGNMENT.md) | How each call maps to SailPoint's GA `/<service>/v1` paths (what the tool uses), the older versions and the experimental APIs; known deviations from the spec |
 | [Requirements checklist](docs/sailpoint/REQUIREMENTS_CHECKLIST.md) | A tick-box list of features, user levels, scopes, settings, limits and tooling, each with a one-line check |
+| [Segments and user levels](docs/sailpoint/SEGMENTS_AND_USER_LEVELS.md) | How to let chosen people request restricted access (for example privileged groups) with access request segments, set up in the ISC UI; and which user levels, built-in or custom, may set it up |
 | [End-to-end walkthrough](docs/sailpoint/END_TO_END_WALKTHROUGH.md) | The full lifecycle on a real tenant, step by step: who acts, where in ISC, what they see, and which API or ISC feature is used; plus what each person's Request Center shows before and after approval |
 
 ## Screenshots
@@ -83,7 +87,7 @@ Real SailPoint screens (`docs/screenshots/isc-*`, `launcher-*`) from a test inst
 | 1. Get the tool (Request Center) | 2. Submit from the plugin |
 |---|---|
 | ![Request Launcher Access in the Request Center](docs/screenshots/isc-01-request-launcher-access.png) | ![The plugin's review step](docs/screenshots/isc-13-plugin-review.png) |
-| *Requesters ask for "Launcher Access" once; it then shows in the Launchpad too* | *People, access, INC, review: filed as the signed-in user* |
+| *Requesters ask for access once (this older screen shows "Launcher Access"; now it's "Submit Access")* | *People, access, INC, review: filed as the signed-in user* |
 
 | 3. Item approvers (plugin Approvals tab) | 4. Track it (plugin My bulk requests) |
 |---|---|
@@ -127,6 +131,7 @@ test access profile. Before the bulk approver was removed:
 
 For the design without it, verified live as a non-admin: `POST /access-requests/v1` for others (up to 10 people, all three
 item types, per-item comment and `removeDate`), reading those requests back with `/access-request-status/v1?requested-by=`,
-items without an approval scheme granted at once, and the *Launcher Access* check through `/requestable-objects/v1`.
+items without an approval scheme granted at once, and the submit check through `/requestable-objects/v1` (for the
+*Launcher Access* profile then, and for the *Submit Access* role since, `types=ROLE`).
 
 **Unit tests:** core and plugin installer 320 (`pytest`), plugin UI 203 (`ng test`), none of them needing a tenant.

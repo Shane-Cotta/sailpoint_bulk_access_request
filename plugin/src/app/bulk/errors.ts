@@ -48,21 +48,21 @@ export function isLauncherAccessDenied(err: unknown): boolean {
   return e?.status === 500 && /insufficient authori[sz]ation/i.test(`${bodyText(e.body)} ${e.message ?? ''}`);
 }
 
-type SubmitConfig = Pick<RuntimeConfig, 'submit' | 'launcherAccessName'>;
+type SubmitConfig = Pick<RuntimeConfig, 'submit' | 'submitAccessName'>;
 
-/** What a user without the Launcher Access profile is told (before anything is sent). */
-export function msgNeedsLauncherAccess(cfg: Pick<RuntimeConfig, 'launcherAccessName'>): string {
-  return `To submit, you need '${cfg.launcherAccessName}'. Request it in the Request Center.`;
+/** What a user without the Submit Access role is told (before anything is sent). */
+export function msgNeedsSubmitAccess(cfg: Pick<RuntimeConfig, 'submitAccessName'>): string {
+  return `To submit, you need '${cfg.submitAccessName}'. Request it in the Request Center.`;
 }
 
 /**
  * An error while submitting, worded for the submit mode: through the Launcher a refusal means the user lacks the
- * Launcher Access profile; a direct request that SailPoint refuses means the user may not request access for those
+ * Submit Access role (which contains the Launcher Access profile); a direct request that SailPoint refuses means the user may not request access for those
  * people (the tenant's "request for others" settings), or the session expired.
  */
 export function describeSubmitError(err: unknown, cfg: SubmitConfig): string {
   if (cfg.submit === 'launcher') {
-    if (isLauncherAccessDenied(err)) return msgNeedsLauncherAccess(cfg);
+    if (isLauncherAccessDenied(err)) return msgNeedsSubmitAccess(cfg);
   } else if (refused(err)) {
     return `SailPoint refused the request (HTTP ${(err as ApiErrorLike).status}). Your account may not be allowed to `
       + 'request access for these people (the tenant\'s "request for others" settings), or your session expired: '

@@ -111,7 +111,7 @@ def catalog_options(cfg: Config, requestable: Iterable[dict[str, Any]],
     """
     options = []
     granted_at_once = set(no_approval)
-    own = cfg.launcher_access_profile_name   # the profile that grants this tool; never offer it
+    own = cfg.submit_access_name   # what people request to use this tool; never offer it
     for obj in requestable:
         if obj.get("name") == own:
             continue

@@ -117,21 +117,21 @@ The whole page, including large requests and partial results, made with the plug
 | ![Approvals tab: decisions going out](../docs/screenshots/plugin-12a-approvals-progress.png) | ![Approvals tab: all confirmed](../docs/screenshots/plugin-12-approvals-progress-result.png) |
 | ![Approvals tab: partly done, with Retry](../docs/screenshots/plugin-13-approvals-partial-retry.png) | *(Screenshots use made-up demo data. To retake them, see [tools/demo-capture](../tools/demo-capture/README.md).)* |
 
-## Who can use it: Launcher Access to submit, any approver for the Approvals tab
+## Who can use it: Submit Access to submit, any approver for the Approvals tab
 
 | Who | Needs | Can use |
 |---|---|---|
-| **Requester** (any user) | The *"<prefix> Bulk Access Request - Launcher Access"* profile, requested in the Request Center (auto-approved with `access.launcherApproval: "NONE"`, else by their manager). It also puts the Launcher in their Launchpad | *New request*, *My bulk requests*, *Approvals* |
+| **Requester** (any user) | The *"<prefix> Bulk Access Request - Submit Access"* role, requested in the Request Center (auto-approved with `access.approval: "NONE"`, else by their manager). With the Launcher deployed it contains the *Launcher Access* profile, so it also puts the Launcher in their Launchpad | *New request*, *My bulk requests*, *Approvals* |
 | **Item approver** (owner, manager, governance group) | Nothing extra, beyond seeing the plugin | *Approvals* tab, or ISC **Approvals → Access Requests** |
 | **ORG_ADMIN** | — | Everything; the "already has it" check also covers entitlements |
 
 Everyone must be able to see the plugin: make it public (`plugin.public: true`), or add them to its `restrictToUsers`.
 
-Before it sends anything, the page checks that the signed-in user holds the *Launcher Access* profile
-(`GET /requestable-objects/v1?identity-id=<me>&types=ACCESS_PROFILE&filters=id eq "<profile id>"` answers
-`requestStatus: ASSIGNED`; the installer writes the profile's ID into the runtime config). Someone without it gets
-**"To submit, you need '*<prefix> Bulk Access Request - Launcher Access*'. Request it in the Request Center."** and
-nothing is sent. Without the Launcher deployment there is no such profile, and anyone who can open the plugin can submit.
+Before it sends anything, the page checks that the signed-in user holds the *Submit Access* role
+(`GET /requestable-objects/v1?identity-id=<me>&types=ROLE&filters=id eq "<role id>"` answers
+`requestStatus: ASSIGNED`; the installer writes the role's ID into the runtime config). Someone without it gets
+**"To submit, you need '*<prefix> Bulk Access Request - Submit Access*'. Request it in the Request Center."** and
+nothing is sent. The role needs no source or entitlement, so this works with or without the Launcher deployment.
 
 How the page submits is set by `plugin.submit` in the config (`show-config` says which applies):
 
@@ -174,9 +174,12 @@ tell them apart:
 | Object | Name | Notes |
 |---|---|---|
 | UI plugin | alias `plugin.alias` (default `<prefix>-bulk-access`), name `plugin.displayName` | Created **private** (only you can see it) unless `plugin.public` is true or you pass `--public`. |
+| Role | `<prefix> Bulk Access Request - Submit Access` | Requestable; only its holders may submit. Approved per `access.approval`. With the Launcher deployed it contains the *Launcher Access* profile, which is then not requestable on its own. The installer creates it, or PATCHes only what differs. |
 
-Nothing else: the page uses the Launcher deployment's *Launcher Access* profile (and, in launcher mode, its Launcher; see
-[INSTALL.md](../INSTALL.md)). An older install's disabled workflow `<prefix> Bulk Access Request (Plugin)` is no longer
+The installer also gives the role to everyone who holds the *Launcher Access* profile but not the role yet (an access
+request for them, approved per `access.approval`; `--dry-run` lists them), so nobody who could submit before loses it.
+`--grant me` or `--grant <id>,<id>` requests the role for those identities. In launcher mode the page also uses the
+Launcher deployment's Launcher (see [INSTALL.md](../INSTALL.md)). An older install's disabled workflow `<prefix> Bulk Access Request (Plugin)` is no longer
 used; `install.py` and `status.py` point it out and `uninstall.py` removes it.
 
 In `dry-run` mode the page checks everything and requests nothing (through the Launcher, its workflow runs its checks and
@@ -204,16 +207,17 @@ emails). Start in dry-run.
    | `approvals.*` | The Approvals tab: `enabled` (default true), `concurrency` (1 to 8, default 4), `useBulkEndpoint` (`auto`, `always`, `never`), `maxRows` (250 to 20,000, default 5,000), `showOther` (default false), `denyCommentRequired` (default true). |
    | `notifications.overrideRecipients` | For test tenants: send every email the Launcher's workflow sends here instead of to real people. |
    | `plugin.alias`, `plugin.displayName`, `plugin.public` | The plugin's alias (lowercase, digits, dashes), the name shown in ISC, and whether everyone can see it (default false: only you). |
+   | `access.approval` | Who approves a request for the *Submit Access* role: `MANAGER` (default, the requester's manager) or `NONE` (auto-approved). The old `access.launcherApproval` still loads, with a note. |
    | `plugin.submit` | `"direct"` (default): file the access requests as the signed-in user. `"launcher"`: submit through the Launcher's form (needs the Launcher deployment; the installer switches to it if the tenant doesn't allow requesting for others). See *Who can use it*. |
 
    `approval.*`, `notifications.ccApprover` and `notifications.pendingEmail` belonged to the bulk approver, which is gone:
    they still load, are ignored, and `show-config` notes each one.
 
 2. The installer turns this into two files the page reads. Don't edit them by hand:
-   - `public/bulk-access.config.json`: the runtime config (`submit`, the *Launcher Access* profile's ID and name, the
+   - `public/bulk-access.config.json`: the runtime config (`submit`, the *Submit Access* role's ID and name (`submitAccessId`, `submitAccessName`), the
      Launcher's ID in launcher mode, INC rule, `peopleMax`, `partSize`, `itemsMax`, catalog filter, `noApproval` (the
      catalog items SailPoint grants without approval, refreshed on every install), `temporary`). The committed copy holds
-     neutral defaults (no profile ID, so it turns nobody away; no Launcher ID, so launcher mode refuses to submit). One
+     neutral defaults (no role ID, so it turns nobody away; no Launcher ID, so launcher mode refuses to submit). One
      without `submit`, or with the old `test-endpoint`, files directly. A runtime config without a `temporary` block
      (from an older install) turns temporary access off, because an older workflow would grant the access permanently.
      One without an `approvals` block hides the Approvals tab.
@@ -230,7 +234,8 @@ Run these from `bulk-access-request/`:
 # 1. See exactly what would be sent. This changes nothing.
 python plugin/install.py --config config/<tenant>.json --dry-run
 
-# 2. Look up the Launcher Access profile (and, in launcher mode, the Launcher; install the Launcher deployment first),
+# 2. Create or update the Submit Access role (with the Launcher deployed it contains the Launcher Access profile;
+#    install the Launcher deployment first), look up the Launcher in launcher mode,
 #    list the items without an approval, write the runtime config and manifest,
 #    build the page and upload it (first time: `sail ui-plugins create --private`)
 python plugin/install.py --config config/<tenant>.json --deploy
@@ -298,7 +303,8 @@ When dry-run behaves, set `"mode": "live"` in the config and run `install.py` ag
 python plugin/uninstall.py --config config/<tenant>.json --plugin   # asks before deleting; --yes to skip
 ```
 
-This deletes, with `--plugin`, the plugin whose alias and name match the config, and the old workflow named exactly
+This deletes the *Submit Access* role (its holders lose it, and with it the *Launcher Access* profile it contains),
+with `--plugin` the plugin whose alias and name match the config, and the old workflow named exactly
 `<prefix> Bulk Access Request (Plugin)` if an earlier install left one. It refuses anything whose name doesn't start with the prefix. It doesn't touch access requests or approvals that already exist.
 
 ## Develop and test
@@ -316,7 +322,7 @@ cd .. && python -m pytest plugin/tests -q    # installer tests (dry-run payloads
 **Demo mode.** `?demo=<scenario>` runs the page on its own with made-up data. The scenarios are `new`, `people` (600
 people), `items`, `details`, `inc-error` (a mistyped INC), `temporary`, `review` (one item has no approval: the warning),
 `submitted` (filed directly, the default), `parts-review` and `parts-submitted` (600 people through the Launcher: 3 runs
-of 250, temporary), `launcher-denied` (a user without the Launcher Access profile submits), `history`, `approvals` (a
+of 250, temporary), `submit-denied` (a user without the Submit Access role submits), `history`, `approvals` (a
 non-admin item approver with 300 + 40 approvals from two bulk requests, and 3 others) and `approvals-partial` (the same,
 but some calls are throttled or fail, a colleague decides some first, and a few stay pending). Demo mode is ignored inside ISC, where the page always runs in an iframe, and its code
 loads only when `?demo=` is in the URL (`src/main.ts` imports it on demand). The screenshots above
@@ -336,7 +342,7 @@ catalog filter and the no-approval label, the bulk comment and reading it back (
 | "The Launcher stopped it: …" | Launcher mode: the workflow's own checks refused the request (e.g. the INC or the duration). Nothing was requested; the requester also gets a *Not requested* email. |
 | `sail` prints "Secrets storage is not currently functional" | This is harmless. The scripts pass the PAT through environment variables. |
 | "part 2 weren't sent" after submitting a big request | That request (or Launcher run) failed; the message says why. The other parts are unaffected; press **Retry part 2**. |
-| "To submit, you need '… Launcher Access'" | The user doesn't hold the Launcher Access profile (yet). They request it in the Request Center; once it's provisioned (about a minute), submit again. |
+| "To submit, you need '… Submit Access'" | The user doesn't hold the Submit Access role (yet). They request it in the Request Center; once it's provisioned (about a minute), submit again. |
 | "The Launcher form refused the request (…)" | The Launcher form's own checks refused a value (e.g. the INC). Nothing was requested; fix it and submit again. |
 | "…its form didn't appear within 30 seconds" | The Launcher started but its workflow didn't show the form. Check that the Launcher's workflow is enabled (`bulkaccess.py status`). |
 | "This page doesn't know which Launcher to use yet (launcherId is missing)…" | Launcher mode, but the runtime config was not written by `plugin/install.py` (the committed copy has no Launcher ID). Run `bulkaccess.py apply`. |
